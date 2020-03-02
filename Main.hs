@@ -103,11 +103,16 @@ singleEval = \case
 multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
 
+
+--------------------
+--- Sample Terms ---
+--------------------
+
 isZero :: Term
 isZero = Abs "n" Nat (Case (Var "n") "m" Z (S Z))
 
-absTest :: Term
-absTest = Abs "n" Nat (Var "n")
+iden :: Term
+iden = Abs "n" Nat (Var "n")
 
 main :: IO ()
 main =
