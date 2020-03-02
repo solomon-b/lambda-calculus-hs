@@ -1,4 +1,4 @@
-% Created 2020-03-01 Sun 21:23
+% Created 2020-03-01 Sun 22:43
 % Intended LaTeX compiler: pdflatex
 \documentclass[presentation]{beamer}
 \usepackage[utf8]{inputenc}
@@ -21,10 +21,10 @@
 \usetheme{default}
 \author{Solomon Bothwell}
 \date{2020-03-02}
-\title{Interpreting and Typechecking Simply Typed Lambda Calculus!}
+\title{Interpreting and Typechecking Simply Typed Lambda Calculus}
 \hypersetup{
  pdfauthor={Solomon Bothwell},
- pdftitle={Interpreting and Typechecking Simply Typed Lambda Calculus!},
+ pdftitle={Interpreting and Typechecking Simply Typed Lambda Calculus},
  pdfkeywords={},
  pdfsubject={},
  pdfcreator={Emacs 26.3 (Org mode 9.3.6)}, 
@@ -33,25 +33,25 @@
 
 \maketitle
 
-\begin{frame}[label={sec:orgf05eaee}]{Untyped Lambda Calculus}
+\begin{frame}[label={sec:org1ea37d6}]{Untyped Lambda Calculus}
 A formal system for expressing computation using function abstraction,
 application, and reduction.
 \end{frame}
-\begin{frame}[label={sec:org2d78ad9}]{Syntax}
+\begin{frame}[label={sec:org95d1eef}]{Syntax}
 \begin{itemize}
 \item Variables: \(x\)
 \item Lambda Abstractions: \(\lambda x.x\)
 \item Application: \(t_1 t_2\)
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:org51d1a4a}]{Reduction}
+\begin{frame}[label={sec:org2d546b7}]{Reduction}
 \begin{itemize}
 \item Alpha Conversion (name changes)
 \item Beta Reduction (applying functions to their arguments)
 \item Eta Reduction (reducing abstraction around a function)
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:org30769f8}]{Example Terms}
+\begin{frame}[label={sec:org307a189}]{Example Terms}
 \begin{itemize}
 \item \(id := \lambda x.x\)
 \item \(const := \lambda a.\lambda b.a\)
@@ -64,7 +64,7 @@ application, and reduction.
 \item \(Or := \lambda p.\lambda q.p\,p\,q\)
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:orgcc8087b}]{Sample reduction}
+\begin{frame}[label={sec:org50bdb65}]{Sample reduction}
 \center{Not True} \\
 \(\color{red}(\lambda p.p (\lambda p.\lambda q.q) (\lambda p.\lambda q.p))\,\color{blue}(\lambda p.\lambda q.p)\) \\
 \(\color{red}(\lambda p.p (\lambda x.\lambda y.y) (\lambda f.\lambda g.f))\,\color{blue}(\lambda a.\lambda b.a)\) \\
@@ -72,10 +72,10 @@ application, and reduction.
 \(\color{blue}(\lambda b.\color{red}(\lambda x.\lambda y.y)\color{blue})\,\color{red}(\lambda f.\lambda g.f)\) \\
 \(\color{red}\lambda x.\lambda y.y\)
 \end{frame}
-\begin{frame}[label={sec:org1446cf1}]{How powerful is this?}
+\begin{frame}[label={sec:org61893f8}]{How powerful is this?}
 Very powerful. Fully isomorphic to turning machines. 
 \end{frame}
-\begin{frame}[label={sec:org952350c}]{Evaluation Semantics}
+\begin{frame}[label={sec:org2bdc5d0}]{Evaluation Semantics}
 \begin{block}{Operational Semantics - Intensional | How}
 Create an abstract state machine consisting of terms as state and reduction
 rules for terms which can be followed in sequence to reach some halting
@@ -85,14 +85,14 @@ state.
 Create a mapping to a mathematical domain that denotes the meanings of terms.
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:orgff17274}]{Small Step/Big Step}
+\begin{frame}[label={sec:org7ce6b77}]{Small Step/Big Step}
 Operational Semantics comes in two flavors: 
 \begin{itemize}
 \item Small Step: describe individual steps of computation.
 \item Big Step: describe the overall result of execution.
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:org92de9d3}]{Untyped Lambda Calculus}
+\begin{frame}[label={sec:orge51eec9}]{Untyped Lambda Calculus}
 \begin{columns}
 \begin{column}[t]{0.4\columnwidth}
 \begin{block}{Syntax}
@@ -128,7 +128,7 @@ Operational Semantics comes in two flavors:
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:org4b38b26}]{Substitution Rules}
+\begin{frame}[label={sec:org2941ea3}]{Substitution Rules}
 \begin{itemize}
 \item \([x \mapsto s]x = s\)
 \item \([x \mapsto s]y = y\)
@@ -136,12 +136,12 @@ Operational Semantics comes in two flavors:
 \item \([x \mapsto s](t_1 t_2) = ([x \mapsto s]t_1)\,([x \mapsto s]t_2)\)
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:org41f86bf}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org5b468fe}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda.x\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org0013f10}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org2ac7ef6}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda x.\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
@@ -149,7 +149,7 @@ Operational Semantics comes in two flavors:
 \color{red}\((\lambda x . t_1_2)\color{blue}v_2 \color{black}\to [x  \mapsto v_2]t_1_2\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org60a8a60}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org3105087}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda x.\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
@@ -160,7 +160,7 @@ Operational Semantics comes in two flavors:
 \([x \mapsto \color{blue}(\lambda y.y\,(\lambda x.x))\color{black}]\color{red}(\lambda y. (\lambda x.x)\,y\,x)\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:orgb8e65eb}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org0ad3bb5}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda x.\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
@@ -174,11 +174,11 @@ Operational Semantics comes in two flavors:
 \color{red}\((\lambda y. (\lambda x.x)\,y\,\color{blue}(\lambda y.y\,(\lambda x.x))\color{red})\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org93c4eb2}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org312539c}]{Avoiding Name Collisions In Substitution}
 \begin{block}{How do we perform this substitution without capturing free variables?}
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org7e45ae5}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org848a181}]{Avoiding Name Collisions In Substitution}
 \begin{block}{How do we perform this substitution without capturing free variables?}
 \end{block}
 \begin{block}{Two Options:}
@@ -188,7 +188,7 @@ Operational Semantics comes in two flavors:
 \end{enumerate}
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:orgffb76d2}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org1c58771}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Capture Avoiding Substitution}
 \begin{enumerate}
 \item Given the substitution \([\color{red}x  \color{black}\mapsto \color{blue}v_2\color{black}]\color{purple}t_1_2\)
@@ -209,7 +209,7 @@ Examples:
 \end{itemize}
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org6b22a66},fragile]{A haskell implementation}
+\begin{frame}[label={sec:org672b501},fragile]{A haskell implementation}
  \begin{minted}[,linenos=true, fontsize=\scriptsize]{haskell}
 data Term = Var String 
           | Abs String Term 
@@ -227,7 +227,7 @@ multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
 \end{minted}
 \end{frame}
-\begin{frame}[label={sec:orgb00c120}]{Simply Typed Lambda Calculus}
+\begin{frame}[label={sec:orgacec5cc}]{Simply Typed Lambda Calculus}
 \note{Notes
 this is my note}
 \begin{columns}
@@ -303,7 +303,7 @@ this is my note}
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:orgbb7919b}]{Simply Typed Lambda Calculus}
+\begin{frame}[label={sec:org2980108}]{Simply Typed Lambda Calculus}
 \begin{columns}
 \begin{column}[t]{0.45\columnwidth}
 \begin{block}{Syntax}
@@ -383,7 +383,7 @@ this is my note}
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:org08f09ea}]{New Evaluation Rules}
+\begin{frame}[label={sec:orga7d8026}]{New Evaluation Rules}
 \begin{prooftree}
 \RightLabel{\textbf{E-Succ}}
 \AxiomC{$ t_1 \to t_1' $}
@@ -404,7 +404,7 @@ $(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2
  $\longrightarrow(Case\,t_0'\,of\,0 \to t_1\,|\, S\,m \to t_2)$
 \end{prooftree}
 \end{frame}
-\begin{frame}[label={sec:org760e09d}]{New Typing Rules}
+\begin{frame}[label={sec:orgdbcef5a}]{New Typing Rules}
 \begin{prooftree}
 \RightLabel{T-NatZ}
 \AxiomC{}
@@ -428,12 +428,78 @@ $(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2
 \DisplayProof
 \end{prooftree}
 \end{frame}
-\begin{frame}[label={sec:org36c6982}]{Typechecking}
+\begin{frame}[label={sec:org56af777},fragile]{Implementation: Terms and Types}
+ \begin{minted}[,linenos=true, fontsize=\scriptsize]{haskell}
+data Term = Var String
+          | Abs String Type Term
+          | App Term Term
+          | Z
+          | S Term
+          | Case Term String Term Term
+  deriving (Show, Eq)
+
+data Type = Type :-> Type | Nat
+  deriving (Show, Eq)
+
+type Context = [(String, Type)]
+data TypeErr = TypeError deriving (Show, Eq)
+\end{minted}
 \end{frame}
-\begin{frame}[label={sec:orga185a3a}]{Implementation: Typechecker}
+\begin{frame}[label={sec:orgdcdc669},fragile]{Implementation: Typechecker}
+ \begin{minted}[,linenos=true, fontsize=\tiny]{haskell}
+newtype TypecheckM a =
+  TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Context) a }
+  deriving (Functor, Applicative, Monad, MonadReader Context, MonadError TypeErr)
+
+runTypecheckM :: TypecheckM Type -> Either TypeErr Type
+runTypecheckM = flip runReader [] . runExceptT . unTypecheckM
+
+typecheck :: Term -> TypecheckM Type
+typecheck = \case
+  Var x -> do
+    ty <- asks $ lookup x
+    maybe (throwError TypeError) pure ty
+  Abs bndr ty1 trm -> do
+    ty2 <- local ((:) (bndr, ty1)) (typecheck trm)
+    pure $ ty1 :-> ty2
+  App t1 t2 -> do
+    ty1 <- typecheck t1
+    case ty1 of
+      tyA :-> tyB -> do
+        ty2 <- typecheck t2
+        if tyB == ty2 then pure ty1 else throwError TypeError
+      _ -> throwError TypeError
+  Z -> pure Nat
+  S n -> do
+    ty <- typecheck n
+    if ty == Nat then pure Nat else throwError TypeError
+  Case t0 bndr t1 t2 -> do
+    ty0 <- typecheck t0
+    ty1 <- typecheck t1
+    ty2 <- local ((:) (bndr, ty1)) (typecheck t2)
+    if ty0 == Nat && ty1 == ty2
+      then pure ty1
+      else throwError TypeError
+\end{minted}
 \end{frame}
-\begin{frame}[label={sec:org7bb0eaa}]{Implementation: Evaluator}
+\begin{frame}[label={sec:org2dfabf5},fragile]{Implementation: Evaluator}
+ \begin{minted}[,linenos=true, fontsize=\scriptsize]{haskell}
+singleEval :: Term -> Maybe Term
+singleEval = \case
+  (App (Abs x ty t12) v2) | isVal v2 -> Just $ subst x v2 t12
+  (App v1@Abs{} t2) -> App v1 <$> singleEval t2
+  (App t1 t2) -> flip App t2 <$> singleEval t1
+  (S t) | not (isVal t) -> S <$> singleEval t
+  (Case t0 bndr t1 t2) | not (isVal t0) -> 
+      singleEval t0 >>= \t0' -> pure $ Case t0' bndr t1 t2
+  (Case v1 bndr t1 t2) | v1 == Z -> pure t1
+  (Case (S v1) bndr t1 t2) -> Just $ subst bndr v1 t2
+  _ -> Nothing
+\end{minted}
 \end{frame}
-\begin{frame}[label={sec:orgca6c433}]{Thank You!}
+\begin{frame}[label={sec:org8054a0c}]{All Done}
+\center
+Thank You!
+\url{https://github.com/ssbothwell/SimplyTypedPresentation/}
 \end{frame}
 \end{document}

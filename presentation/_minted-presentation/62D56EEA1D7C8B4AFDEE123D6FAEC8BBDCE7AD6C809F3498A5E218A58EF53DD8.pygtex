@@ -1,0 +1,15 @@
+\begin{Verbatim}[commandchars=\\\{\}]
+\PYG{k+kr}{data} \PYG{k+kt}{Term} \PYG{o+ow}{=} \PYG{k+kt}{Var} \PYG{k+kt}{String}
+          \PYG{o}{|} \PYG{k+kt}{Abs} \PYG{k+kt}{String} \PYG{k+kt}{Type} \PYG{k+kt}{Term}
+          \PYG{o}{|} \PYG{k+kt}{App} \PYG{k+kt}{Term} \PYG{k+kt}{Term}
+          \PYG{o}{|} \PYG{k+kt}{Z}
+          \PYG{o}{|} \PYG{k+kt}{S} \PYG{k+kt}{Term}
+          \PYG{o}{|} \PYG{k+kt}{Case} \PYG{k+kt}{Term} \PYG{k+kt}{String} \PYG{k+kt}{Term} \PYG{k+kt}{Term}
+  \PYG{k+kr}{deriving} \PYG{p}{(}\PYG{k+kt}{Show}\PYG{p}{,} \PYG{k+kt}{Eq}\PYG{p}{)}
+
+\PYG{k+kr}{data} \PYG{k+kt}{Type} \PYG{o+ow}{=} \PYG{k+kt}{Type} \PYG{k+kt}{:\PYGZhy{}\PYGZgt{}} \PYG{k+kt}{Type} \PYG{o}{|} \PYG{k+kt}{Nat}
+  \PYG{k+kr}{deriving} \PYG{p}{(}\PYG{k+kt}{Show}\PYG{p}{,} \PYG{k+kt}{Eq}\PYG{p}{)}
+
+\PYG{k+kr}{type} \PYG{k+kt}{Context} \PYG{o+ow}{=} \PYG{p}{[(}\PYG{k+kt}{String}\PYG{p}{,} \PYG{k+kt}{Type}\PYG{p}{)]}
+\PYG{k+kr}{data} \PYG{k+kt}{TypeErr} \PYG{o+ow}{=} \PYG{k+kt}{TypeError} \PYG{k+kr}{deriving} \PYG{p}{(}\PYG{k+kt}{Show}\PYG{p}{,} \PYG{k+kt}{Eq}\PYG{p}{)}
+\end{Verbatim}

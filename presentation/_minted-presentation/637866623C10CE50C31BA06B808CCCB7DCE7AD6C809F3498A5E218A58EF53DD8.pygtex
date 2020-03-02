@@ -1,0 +1,13 @@
+\begin{Verbatim}[commandchars=\\\{\}]
+\PYG{n+nf}{singleEval} \PYG{o+ow}{::} \PYG{k+kt}{Term} \PYG{o+ow}{\PYGZhy{}\PYGZgt{}} \PYG{k+kt}{Maybe} \PYG{k+kt}{Term}
+\PYG{n+nf}{singleEval} \PYG{o+ow}{=} \PYG{n+nf}{\PYGZbs{}}\PYG{k+kr}{case}
+  \PYG{p}{(}\PYG{k+kt}{App} \PYG{p}{(}\PYG{k+kt}{Abs} \PYG{n}{x} \PYG{n}{ty} \PYG{n}{t12}\PYG{p}{)} \PYG{n}{v2}\PYG{p}{)} \PYG{o}{|} \PYG{n}{isVal} \PYG{n}{v2} \PYG{o+ow}{\PYGZhy{}\PYGZgt{}} \PYG{k+kt}{Just} \PYG{o}{\PYGZdl{}} \PYG{n}{subst} \PYG{n}{x} \PYG{n}{v2} \PYG{n}{t12}
+  \PYG{p}{(}\PYG{k+kt}{App} \PYG{n}{v1}\PYG{o}{@}\PYG{k+kt}{Abs}\PYG{p}{\PYGZob{}\PYGZcb{}} \PYG{n}{t2}\PYG{p}{)} \PYG{o+ow}{\PYGZhy{}\PYGZgt{}} \PYG{k+kt}{App} \PYG{n}{v1} \PYG{o}{\PYGZlt{}\PYGZdl{}\PYGZgt{}} \PYG{n}{singleEval} \PYG{n}{t2}
+  \PYG{p}{(}\PYG{k+kt}{App} \PYG{n}{t1} \PYG{n}{t2}\PYG{p}{)} \PYG{o+ow}{\PYGZhy{}\PYGZgt{}} \PYG{n}{flip} \PYG{k+kt}{App} \PYG{n}{t2} \PYG{o}{\PYGZlt{}\PYGZdl{}\PYGZgt{}} \PYG{n}{singleEval} \PYG{n}{t1}
+  \PYG{p}{(}\PYG{k+kt}{S} \PYG{n}{t}\PYG{p}{)} \PYG{o}{|} \PYG{n}{not} \PYG{p}{(}\PYG{n}{isVal} \PYG{n}{t}\PYG{p}{)} \PYG{o+ow}{\PYGZhy{}\PYGZgt{}} \PYG{k+kt}{S} \PYG{o}{\PYGZlt{}\PYGZdl{}\PYGZgt{}} \PYG{n}{singleEval} \PYG{n}{t}
+  \PYG{p}{(}\PYG{k+kt}{Case} \PYG{n}{t0} \PYG{n}{bndr} \PYG{n}{t1} \PYG{n}{t2}\PYG{p}{)} \PYG{o}{|} \PYG{n}{not} \PYG{p}{(}\PYG{n}{isVal} \PYG{n}{t0}\PYG{p}{)} \PYG{o+ow}{\PYGZhy{}\PYGZgt{}}
+      \PYG{n}{singleEval} \PYG{n}{t0} \PYG{o}{\PYGZgt{}\PYGZgt{}=} \PYG{n+nf}{\PYGZbs{}}\PYG{n}{t0\PYGZsq{}} \PYG{o+ow}{\PYGZhy{}\PYGZgt{}} \PYG{n}{pure} \PYG{o}{\PYGZdl{}} \PYG{k+kt}{Case} \PYG{n}{t0\PYGZsq{}} \PYG{n}{bndr} \PYG{n}{t1} \PYG{n}{t2}
+  \PYG{p}{(}\PYG{k+kt}{Case} \PYG{n}{v1} \PYG{n}{bndr} \PYG{n}{t1} \PYG{n}{t2}\PYG{p}{)} \PYG{o}{|} \PYG{n}{v1} \PYG{o}{==} \PYG{k+kt}{Z} \PYG{o+ow}{\PYGZhy{}\PYGZgt{}} \PYG{n}{pure} \PYG{n}{t1}
+  \PYG{p}{(}\PYG{k+kt}{Case} \PYG{p}{(}\PYG{k+kt}{S} \PYG{n}{v1}\PYG{p}{)} \PYG{n}{bndr} \PYG{n}{t1} \PYG{n}{t2}\PYG{p}{)} \PYG{o+ow}{\PYGZhy{}\PYGZgt{}} \PYG{k+kt}{Just} \PYG{o}{\PYGZdl{}} \PYG{n}{subst} \PYG{n}{bndr} \PYG{n}{v1} \PYG{n}{t2}
+  \PYG{k+kr}{\PYGZus{}} \PYG{o+ow}{\PYGZhy{}\PYGZgt{}} \PYG{k+kt}{Nothing}
+\end{Verbatim}

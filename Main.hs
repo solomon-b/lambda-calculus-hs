@@ -20,7 +20,6 @@ data Type = Type :-> Type | Nat
   deriving (Show, Eq)
 
 type Context = [(String, Type)]
-
 data TypeErr = TypeError deriving (Show, Eq)
 
 
