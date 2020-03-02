@@ -88,6 +88,9 @@ freevars :: Term -> [String]
 freevars (Var x) = [x]
 freevars (Abs x _ t) = freevars t \\ [x]
 freevars (App t1 t2) = freevars t1 ++ freevars t2
+freevars Z = []
+freevars (S t) = freevars t
+freevars (Case t0 _ t1 t2) = freevars t0 ++ freevars t1 ++ freevars t2
 
 singleEval :: Term -> Maybe Term
 singleEval = \case
