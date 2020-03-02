@@ -21,9 +21,6 @@ data Type = Type :-> Type | Nat
 
 type Context = [(String, Type)]
 
-updateContext :: (String, Type) -> Context -> Context
-updateContext = (:)
-
 data TypeErr = TypeError deriving (Show, Eq)
 
 
@@ -32,21 +29,27 @@ data TypeErr = TypeError deriving (Show, Eq)
 --------------------
 
 newtype TypecheckM a =
-  TypecheckM { unTypecheckT :: ExceptT TypeErr (Reader Context) a }
+  TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Context) a }
   deriving (Functor, Applicative, Monad, MonadReader Context, MonadError TypeErr)
+
+runTypecheckM :: TypecheckM Type -> Either TypeErr Type
+runTypecheckM = flip runReader [] . runExceptT . unTypecheckM
 
 typecheck :: Term -> TypecheckM Type
 typecheck = \case
   Var x -> do
-    ty <- lookup x <$> ask
+    ty <- asks $ lookup x
     maybe (throwError TypeError) pure ty
-  Abs _ ty1 trm -> do
-    ty2 <- typecheck trm
+  Abs bndr ty1 trm -> do
+    ty2 <- local ((:) (bndr, ty1)) (typecheck trm)
     pure $ ty1 :-> ty2
   App t1 t2 -> do
     ty1 <- typecheck t1
-    ty2 <- typecheck t2
-    if ty1 == ty2 then pure ty1 else throwError TypeError
+    case ty1 of
+      tyA :-> tyB -> do
+        ty2 <- typecheck t2
+        if tyB == ty2 then pure ty1 else throwError TypeError
+      _ -> throwError TypeError
   Z -> pure Nat
   S n -> do
     ty <- typecheck n
@@ -54,7 +57,7 @@ typecheck = \case
   Case t0 bndr t1 t2 -> do
     ty0 <- typecheck t0
     ty1 <- typecheck t1
-    ty2 <- typecheck t2
+    ty2 <- local ((:) (bndr, ty1)) (typecheck t2)
     if ty0 == Nat && ty1 == ty2
       then pure ty1
       else throwError TypeError
@@ -77,6 +80,9 @@ subst x v1 (Abs y ty t1) | x == y = Abs y ty t1
                       | y `notElem` freevars v1 = Abs y ty (subst x v1 t1)
                       | otherwise = error "oops name collision"
 subst x v1 (App t1 t2) = App (subst x v1 t1) (subst x v1 t2)
+subst x v1 (Case t0 bndr t1 t2) = Case (subst x v1 t0) bndr (subst x v1 t1) (subst x v1 t2)
+subst x v1 Z = Z
+subst x v1 (S t) = S (subst x v1 t)
 
 freevars :: Term -> [String]
 freevars (Var x) = [x]
@@ -84,19 +90,28 @@ freevars (Abs x _ t) = freevars t \\ [x]
 freevars (App t1 t2) = freevars t1 ++ freevars t2
 
 singleEval :: Term -> Maybe Term
-singleEval t =
-  case t of
-    (App (Abs x ty t12) v2) | isVal v2 -> Just $ subst x v2 t12
-    (App v1@(Abs _ _ _) t2)           ->    App v1 <$> singleEval t2
-    (App t1 t2)                     -> flip App t2 <$> singleEval t1
-    _ -> Nothing
+singleEval = \case
+  (App (Abs x ty t12) v2) | isVal v2 -> Just $ subst x v2 t12
+  (App v1@Abs{} t2) -> App v1 <$> singleEval t2
+  (App t1 t2) -> flip App t2 <$> singleEval t1
+  (S t) | not (isVal t) -> S <$> singleEval t
+  (Case t0 bndr t1 t2) | not (isVal t0) -> singleEval t0 >>= \t0' -> pure $ Case t0' bndr t1 t2
+  (Case v1 bndr t1 t2) | v1 == Z -> pure t1
+  (Case (S v1) bndr t1 t2) -> Just $ subst bndr v1 t2
+  _ -> Nothing
 
 multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
 
+isZero :: Term
+isZero = Abs "n" Nat (Case (Var "n") "m" Z (S Z))
 
-caseExample :: Term
-caseExample = undefined -- Abs "z" (App (App (Var "z") fls) tru)
+absTest :: Term
+absTest = Abs "n" Nat (Var "n")
 
 main :: IO ()
-main = print $ multiStepEval (App nt fls)
+main =
+  let term = App isZero (S Z)
+  in case runTypecheckM $ typecheck term of
+    Left e -> print e
+    Right _ -> print $ multiStepEval term
