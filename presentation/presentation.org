@@ -124,12 +124,12 @@ $[x \mapsto \color{blue}(\lambda y.y\,(\lambda x.x))\color{black}]\color{red}(\l
 * Avoiding Name Collisions In Substitution
 ** How do we perform this substitution without capturing free variables?
 ** Two Options:
-1. Identify free variables and use Alpha Conversion prevent shadowing\\
+1. Identify free variables and use Alpha Conversion to prevent shadowing.\\
 2. Convert our Lambda Terms to Nameless Form using DeBruijn Indices.
 * Avoiding Name Collisions In Substitution
 ** Capture Avoiding Substitution
    1. Given the substitution $[\color{red}x  \color{black}\mapsto \color{blue}v_2\color{black}]\color{purple}t_1_2$
-   2. Identiy all the bound variables in $\color{purple}t_1_2$.
+   2. Identify all the bound variables in $\color{purple}t_1_2$.
    3. Rename all bound variables inside $\color{purple}t_1_2$ with \emph{fresh} variables.
    4. Perform the substitution of $\color{blue}v_2$ for $\color{red}x$ in $\color{purple}t_1_2$.
 ** Nameless Form (DeBruijn Indices)
