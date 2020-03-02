@@ -1,0 +1,84 @@
+
+\makeatletter
+\def\PYGborland@reset{\let\PYGborland@it=\relax \let\PYGborland@bf=\relax%
+    \let\PYGborland@ul=\relax \let\PYGborland@tc=\relax%
+    \let\PYGborland@bc=\relax \let\PYGborland@ff=\relax}
+\def\PYGborland@tok#1{\csname PYGborland@tok@#1\endcsname}
+\def\PYGborland@toks#1+{\ifx\relax#1\empty\else%
+    \PYGborland@tok{#1}\expandafter\PYGborland@toks\fi}
+\def\PYGborland@do#1{\PYGborland@bc{\PYGborland@tc{\PYGborland@ul{%
+    \PYGborland@it{\PYGborland@bf{\PYGborland@ff{#1}}}}}}}
+\def\PYGborland#1#2{\PYGborland@reset\PYGborland@toks#1+\relax+\PYGborland@do{#2}}
+
+\expandafter\def\csname PYGborland@tok@w\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.73,0.73,0.73}{##1}}}
+\expandafter\def\csname PYGborland@tok@c\endcsname{\let\PYGborland@it=\textit\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.53,0.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@cp\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.50,0.50}{##1}}}
+\expandafter\def\csname PYGborland@tok@cs\endcsname{\let\PYGborland@bf=\textbf\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.53,0.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@s\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@sc\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.50,0.00,0.50}{##1}}}
+\expandafter\def\csname PYGborland@tok@m\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@k\endcsname{\let\PYGborland@bf=\textbf\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,0.50}{##1}}}
+\expandafter\def\csname PYGborland@tok@ow\endcsname{\let\PYGborland@bf=\textbf}
+\expandafter\def\csname PYGborland@tok@nt\endcsname{\let\PYGborland@bf=\textbf\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,0.50}{##1}}}
+\expandafter\def\csname PYGborland@tok@na\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{1.00,0.00,0.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@gh\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.60,0.60,0.60}{##1}}}
+\expandafter\def\csname PYGborland@tok@gu\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.67,0.67,0.67}{##1}}}
+\expandafter\def\csname PYGborland@tok@gd\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,0.00}{##1}}\def\PYGborland@bc##1{\setlength{\fboxsep}{0pt}\colorbox[rgb]{1.00,0.87,0.87}{\strut ##1}}}
+\expandafter\def\csname PYGborland@tok@gi\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,0.00}{##1}}\def\PYGborland@bc##1{\setlength{\fboxsep}{0pt}\colorbox[rgb]{0.87,1.00,0.87}{\strut ##1}}}
+\expandafter\def\csname PYGborland@tok@gr\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.67,0.00,0.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@ge\endcsname{\let\PYGborland@it=\textit}
+\expandafter\def\csname PYGborland@tok@gs\endcsname{\let\PYGborland@bf=\textbf}
+\expandafter\def\csname PYGborland@tok@gp\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.33,0.33,0.33}{##1}}}
+\expandafter\def\csname PYGborland@tok@go\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.53,0.53,0.53}{##1}}}
+\expandafter\def\csname PYGborland@tok@gt\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.67,0.00,0.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@err\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.65,0.09,0.09}{##1}}\def\PYGborland@bc##1{\setlength{\fboxsep}{0pt}\colorbox[rgb]{0.89,0.82,0.82}{\strut ##1}}}
+\expandafter\def\csname PYGborland@tok@kc\endcsname{\let\PYGborland@bf=\textbf\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,0.50}{##1}}}
+\expandafter\def\csname PYGborland@tok@kd\endcsname{\let\PYGborland@bf=\textbf\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,0.50}{##1}}}
+\expandafter\def\csname PYGborland@tok@kn\endcsname{\let\PYGborland@bf=\textbf\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,0.50}{##1}}}
+\expandafter\def\csname PYGborland@tok@kp\endcsname{\let\PYGborland@bf=\textbf\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,0.50}{##1}}}
+\expandafter\def\csname PYGborland@tok@kr\endcsname{\let\PYGborland@bf=\textbf\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,0.50}{##1}}}
+\expandafter\def\csname PYGborland@tok@kt\endcsname{\let\PYGborland@bf=\textbf\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,0.50}{##1}}}
+\expandafter\def\csname PYGborland@tok@sa\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@sb\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@dl\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@sd\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@s2\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@se\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@sh\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@si\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@sx\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@sr\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@s1\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@ss\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@mb\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@mf\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@mh\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@mi\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@il\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@mo\endcsname{\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.00,1.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@ch\endcsname{\let\PYGborland@it=\textit\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.53,0.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@cm\endcsname{\let\PYGborland@it=\textit\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.53,0.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@cpf\endcsname{\let\PYGborland@it=\textit\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.53,0.00}{##1}}}
+\expandafter\def\csname PYGborland@tok@c1\endcsname{\let\PYGborland@it=\textit\def\PYGborland@tc##1{\textcolor[rgb]{0.00,0.53,0.00}{##1}}}
+
+\def\PYGborlandZbs{\char`\\}
+\def\PYGborlandZus{\char`\_}
+\def\PYGborlandZob{\char`\{}
+\def\PYGborlandZcb{\char`\}}
+\def\PYGborlandZca{\char`\^}
+\def\PYGborlandZam{\char`\&}
+\def\PYGborlandZlt{\char`\<}
+\def\PYGborlandZgt{\char`\>}
+\def\PYGborlandZsh{\char`\#}
+\def\PYGborlandZpc{\char`\%}
+\def\PYGborlandZdl{\char`\$}
+\def\PYGborlandZhy{\char`\-}
+\def\PYGborlandZsq{\char`\'}
+\def\PYGborlandZdq{\char`\"}
+\def\PYGborlandZti{\char`\~}
+% for compatibility with earlier versions
+\def\PYGborlandZat{@}
+\def\PYGborlandZlb{[}
+\def\PYGborlandZrb{]}
+\makeatother
+
