@@ -41,7 +41,7 @@
   $\color{blue}(\lambda b.\color{red}(\lambda x.\lambda y.y)\color{blue})\,\color{red}(\lambda f.\lambda g.f)$ \\
   $\color{red}\lambda x.\lambda y.y$
 * How powerful is this?
-  Very powerful. Fully isomorphic to turning machines. 
+  Very powerful. Fully isomorphic to turing machines. 
 * Evaluation Semantics
 ** Operational Semantics - Intensional | How
    Create an abstract state machine consisting of terms as state and reduction
@@ -92,9 +92,16 @@
    $(\lambda x . t_1_2)v_2 \to [x  \mapsto v_2]t_1_2$ E-AppAbs
 * Substitution Rules
    - $[x \mapsto s]x = s$
-   - $[x \mapsto s]y = y$
-   - $[x \mapsto s](\lambda y.t_1) = \lambda y. [x \mapsto s]t_1$
+   - $[x \mapsto s]y = y \hspace{115pt}if\,y \ne x$
+   - $[x \mapsto s](\lambda y.t_1) = \lambda y. [x \mapsto s]t_1 \hspace{35pt}if\,y \ne x \, and \,y \notin fv(s)$ 
    - $[x \mapsto s](t_1 t_2) = ([x \mapsto s]t_1)\,([x \mapsto s]t_2)$
+** Notes
+   :PROPERTIES:
+   :BEAMER_ENV: note
+   :END:
+   [x -> y z](\y.x y)
+   [x -> y z](\w.x w)
+   (\w.y z w)
 * Avoiding Name Collisions In Substitution
 ** Given Expression:
 \color{red}$(\lambda.x\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))$
