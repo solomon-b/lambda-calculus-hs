@@ -440,6 +440,7 @@ typecheck = \case
 \center
 Thank You!
 https://github.com/ssbothwell/SimplyTypedPresentation/
+https://github.com/ssbothwell/HowardLang
 # Local Variables:
 # after-save-hook: (org-beamer-export-to-pdf)
 # End:
