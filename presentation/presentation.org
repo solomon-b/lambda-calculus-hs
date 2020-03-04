@@ -1,7 +1,7 @@
 #+TITLE:     Interpreting and Typechecking Simply Typed Lambda Calculus
 #+AUTHOR:    Solomon Bothwell
 #+EMAIL:     ssbothwell@gmail.com
-#+DATE:      2020-03-02
+#+DATE:      2020-03-03
 #+OPTIONS:   H:1 num:t toc:nil \n:nil @:t ::t |:t ^:t -:t f:t *:t <:t
 #+OPTIONS:   TeX:t LaTeX:t skip:nil d:nil todo:t pri:nil tags:not-in-toc
 #+startup: beamer
@@ -349,19 +349,21 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
    \end{prooftree}
 * New Evaluation Rules
 \begin{prooftree}
-\RightLabel{\textbf{E-Succ}}
+\RightLabel{E-Succ}
 \AxiomC{$ t_1 \to t_1' $}
 \UnaryInfC{$S\,t1'$}
 \DisplayProof
 \end{prooftree}
+
 \begin{prooftree}
-$(Case\,Z\,of$\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow t1$ \textbf{E-CaseZ}
+$(Case\,Z\,of$\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow t1$ E-CaseZ
+\end{prooftree}
+
+\begin{prooftree}
+$(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2$ E-CaseS
 \end{prooftree}
 \begin{prooftree}
-$(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2$ \textbf{E-CaseS}
-\end{prooftree}
-\begin{prooftree}
-\RightLabel{\textbf{E-Case}}
+\RightLabel{E-Case}
 \AxiomC{$ t_0 \to t_0' $}
 \UnaryInfC{$(Case\,t_0\,of\,0 \to t_1\,|\, S\,m \to t_2)$}
 \DisplayProof
@@ -568,7 +570,7 @@ https://github.com/ssbothwell/HowardLang
 * Evaluation
 ** Left
    :PROPERTIES:
-   :BEAMER_col: 0.5
+   :BEAMER_col: 0.4
    :BEAMER_opt: [t]
    :END:
    \scriptsize
@@ -597,7 +599,7 @@ https://github.com/ssbothwell/HowardLang
    
 ** Right
    :PROPERTIES:
-   :BEAMER_col: 0.5
+   :BEAMER_col: 0.6
    :BEAMER_opt: [t]
    :END:
    \tiny
@@ -605,14 +607,14 @@ https://github.com/ssbothwell/HowardLang
    \begin{prooftree}
    \RightLabel{E-NatBase}
    \AxiomC{}
-   \UnaryInfC{$rec\,base\,step\,0 \to base$}
+   \UnaryInfC{$(rec\,base\,step)\,0 \to base$}
    \DisplayProof
    \end{prooftree}
    \begin{prooftree}
 
    \RightLabel{E-NatRec}
    \AxiomC{}
-   \UnaryInfC{$rec\,base\,step\,(S\,n) \to rec\,base\,step\,n$}
+   \UnaryInfC{$(rec\,base\,step)\,(S\,n) \to step\, n\, ((rec\,base\,step)\,n)$}
    \DisplayProof
    \end{prooftree}
 

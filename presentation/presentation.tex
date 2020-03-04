@@ -1,4 +1,4 @@
-% Created 2020-03-03 Tue 16:20
+% Created 2020-03-04 Wed 09:19
 % Intended LaTeX compiler: pdflatex
 \documentclass[presentation]{beamer}
 \usepackage[utf8]{inputenc}
@@ -20,7 +20,7 @@
 \usemintedstyle{borland}
 \usetheme{default}
 \author{Solomon Bothwell}
-\date{2020-03-02}
+\date{2020-03-03}
 \title{Interpreting and Typechecking Simply Typed Lambda Calculus}
 \hypersetup{
  pdfauthor={Solomon Bothwell},
@@ -33,25 +33,25 @@
 
 \maketitle
 
-\begin{frame}[label={sec:org5832460}]{Untyped Lambda Calculus}
+\begin{frame}[label={sec:orgefc96a0}]{Untyped Lambda Calculus}
 A formal system for expressing computation using function abstraction,
 application, and reduction.
 \end{frame}
-\begin{frame}[label={sec:orgba42568}]{Syntax}
+\begin{frame}[label={sec:org0a8d6db}]{Syntax}
 \begin{itemize}
 \item Variables: \(x\)
 \item Lambda Abstractions: \(\lambda x.x\)
 \item Application: \(t_1 t_2\)
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:org329dfbe}]{Reduction}
+\begin{frame}[label={sec:org342c828}]{Reduction}
 \begin{itemize}
 \item Alpha Conversion (name changes)
 \item Beta Reduction (applying functions to their arguments)
 \item Eta Reduction (reducing abstraction around a function)
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:orga41514e}]{Example Terms}
+\begin{frame}[label={sec:org262becf}]{Example Terms}
 \begin{itemize}
 \item \(id := \lambda x.x\)
 \item \(const := \lambda a.\lambda b.a\)
@@ -64,7 +64,7 @@ application, and reduction.
 \item \(Or := \lambda p.\lambda q.p\,p\,q\)
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:org0f0e558}]{Sample reduction}
+\begin{frame}[label={sec:orgc1524cd}]{Sample reduction}
 \center{Not True} \\
 \(\color{red}(\lambda p.p (\lambda p.\lambda q.q) (\lambda p.\lambda q.p))\,\color{blue}(\lambda p.\lambda q.p)\) \\
 \(\color{red}(\lambda p.p (\lambda x.\lambda y.y) (\lambda f.\lambda g.f))\,\color{blue}(\lambda a.\lambda b.a)\) \\
@@ -72,10 +72,10 @@ application, and reduction.
 \(\color{blue}(\lambda b.\color{red}(\lambda x.\lambda y.y)\color{blue})\,\color{red}(\lambda f.\lambda g.f)\) \\
 \(\color{red}\lambda x.\lambda y.y\)
 \end{frame}
-\begin{frame}[label={sec:orgb819082}]{How powerful is this?}
+\begin{frame}[label={sec:orgbe0e42e}]{How powerful is this?}
 Very powerful. Fully isomorphic to turing machines. 
 \end{frame}
-\begin{frame}[label={sec:org15305d2}]{Evaluation Semantics}
+\begin{frame}[label={sec:org4c7a925}]{Evaluation Semantics}
 \begin{block}{Operational Semantics - Intensional | How}
 Create an abstract state machine consisting of terms as state and reduction
 rules for terms which can be followed in sequence to reach some halting
@@ -85,14 +85,14 @@ state.
 Create a mapping to a mathematical domain that denotes the meanings of terms.
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org0037774}]{Small Step/Big Step}
+\begin{frame}[label={sec:org0f96f07}]{Small Step/Big Step}
 Operational Semantics comes in two flavors: 
 \begin{itemize}
 \item Small Step: describe individual steps of computation.
 \item Big Step: describe the overall result of execution.
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:orgb0c8789}]{Untyped Lambda Calculus}
+\begin{frame}[label={sec:orgefcbac4}]{Untyped Lambda Calculus}
 \begin{columns}
 \begin{column}[t]{0.4\columnwidth}
 \begin{block}{Syntax}
@@ -128,7 +128,7 @@ Operational Semantics comes in two flavors:
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:org282f11d}]{Substitution Rules}
+\begin{frame}[label={sec:orge7e728d}]{Substitution Rules}
 \begin{itemize}
 \item \([x \mapsto s]x = s\)
 \item \([x \mapsto s]y = y \hspace{115pt}if\,y \ne x\)
@@ -140,12 +140,12 @@ Operational Semantics comes in two flavors:
 [x -> y z](\w.x w)
 (\w.y z w)}
 \end{frame}
-\begin{frame}[label={sec:org6668657}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org8548fa3}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda.x\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org0b6c268}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org4bc7f15}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda x.\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
@@ -153,7 +153,7 @@ Operational Semantics comes in two flavors:
 \color{red}\((\lambda x . t_1_2)\color{blue}v_2 \color{black}\to [x  \mapsto v_2]t_1_2\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org8286556}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:orga66b7e4}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda x.\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
@@ -164,7 +164,7 @@ Operational Semantics comes in two flavors:
 \([x \mapsto \color{blue}(\lambda y.y\,(\lambda x.x))\color{black}]\color{red}(\lambda y. (\lambda x.x)\,y\,x)\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:orgffbb2f6}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:orge48f31c}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda x.\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
@@ -178,11 +178,11 @@ Operational Semantics comes in two flavors:
 \color{red}\((\lambda y. (\lambda x.x)\,y\,\color{blue}(\lambda y.y\,(\lambda x.x))\color{red})\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org52c89db}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:orgd58f2cf}]{Avoiding Name Collisions In Substitution}
 \begin{block}{How do we perform this substitution without capturing free variables?}
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:orga03a125}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org4419479}]{Avoiding Name Collisions In Substitution}
 \begin{block}{How do we perform this substitution without capturing free variables?}
 \end{block}
 \begin{block}{Two Options:}
@@ -192,7 +192,7 @@ Operational Semantics comes in two flavors:
 \end{enumerate}
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org1c606ab}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org2a09926}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Capture Avoiding Substitution}
 \begin{enumerate}
 \item Given the substitution \([\color{red}x  \color{black}\mapsto \color{blue}v_2\color{black}]\color{purple}t_1_2\)
@@ -213,7 +213,7 @@ Examples:
 \end{itemize}
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org868c9c1},fragile]{A haskell implementation}
+\begin{frame}[label={sec:org064a760},fragile]{A haskell implementation}
  \begin{minted}[,linenos=true, fontsize=\scriptsize]{haskell}
 data Term = Var String 
           | Abs String Term 
@@ -231,7 +231,7 @@ multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
 \end{minted}
 \end{frame}
-\begin{frame}[label={sec:org9784847}]{Simply Typed Lambda Calculus}
+\begin{frame}[label={sec:org6df2cc3}]{Simply Typed Lambda Calculus}
 \note{Notes
 this is my note}
 \begin{columns}
@@ -307,7 +307,7 @@ this is my note}
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:org291e267}]{Simply Typed Lambda Calculus}
+\begin{frame}[label={sec:orgadc53c3}]{Simply Typed Lambda Calculus}
 \begin{columns}
 \begin{column}[t]{0.45\columnwidth}
 \begin{block}{Syntax}
@@ -387,7 +387,7 @@ this is my note}
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:org5b3da0f}]{New Typing Rules}
+\begin{frame}[label={sec:orgaae181f}]{New Typing Rules}
 \begin{prooftree}
 \RightLabel{T-NatZ}
 \AxiomC{}
@@ -411,28 +411,30 @@ this is my note}
 \DisplayProof
 \end{prooftree}
 \end{frame}
-\begin{frame}[label={sec:org4f8ee30}]{New Evaluation Rules}
+\begin{frame}[label={sec:orgd7a1a04}]{New Evaluation Rules}
 \begin{prooftree}
-\RightLabel{\textbf{E-Succ}}
+\RightLabel{E-Succ}
 \AxiomC{$ t_1 \to t_1' $}
 \UnaryInfC{$S\,t1'$}
 \DisplayProof
 \end{prooftree}
+
 \begin{prooftree}
-$(Case\,Z\,of$\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow t1$ \textbf{E-CaseZ}
+$(Case\,Z\,of$\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow t1$ E-CaseZ
+\end{prooftree}
+
+\begin{prooftree}
+$(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2$ E-CaseS
 \end{prooftree}
 \begin{prooftree}
-$(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2$ \textbf{E-CaseS}
-\end{prooftree}
-\begin{prooftree}
-\RightLabel{\textbf{E-Case}}
+\RightLabel{E-Case}
 \AxiomC{$ t_0 \to t_0' $}
 \UnaryInfC{$(Case\,t_0\,of\,0 \to t_1\,|\, S\,m \to t_2)$}
 \DisplayProof
  $\longrightarrow(Case\,t_0'\,of\,0 \to t_1\,|\, S\,m \to t_2)$
 \end{prooftree}
 \end{frame}
-\begin{frame}[label={sec:org0391d2e},fragile]{Implementation: Terms and Types}
+\begin{frame}[label={sec:org4c6e35c},fragile]{Implementation: Terms and Types}
  \begin{minted}[,linenos=true, fontsize=\scriptsize]{haskell}
 data Term = Var String
           | Abs String Type Term
@@ -449,7 +451,7 @@ type Context = [(String, Type)]
 data TypeErr = TypeError deriving (Show, Eq)
 \end{minted}
 \end{frame}
-\begin{frame}[label={sec:orgd233899},fragile]{Implementation: Typechecker}
+\begin{frame}[label={sec:org2545144},fragile]{Implementation: Typechecker}
  \begin{minted}[,linenos=true, fontsize=\tiny]{haskell}
 newtype TypecheckM a =
   TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Context) a }
@@ -486,7 +488,7 @@ typecheck = \case
       else throwError TypeError
 \end{minted}
 \end{frame}
-\begin{frame}[label={sec:org759f740},fragile]{Implementation: Evaluator}
+\begin{frame}[label={sec:org44ec3e8},fragile]{Implementation: Evaluator}
  \begin{minted}[,linenos=true, fontsize=\scriptsize]{haskell}
 singleEval :: Term -> Maybe Term
 singleEval = \case
@@ -501,15 +503,15 @@ singleEval = \case
   _ -> Nothing
 \end{minted}
 \end{frame}
-\begin{frame}[label={sec:orgf77070d}]{All Done}
+\begin{frame}[label={sec:org7137535}]{All Done}
 \center
 Thank You!
 \url{https://github.com/ssbothwell/SimplyTypedPresentation/}
 \url{https://github.com/ssbothwell/HowardLang}
 \end{frame}
-\begin{frame}[label={sec:org7f9c783}]{Bonus Round: Godel's System T}
+\begin{frame}[label={sec:org6293cd9}]{Bonus Round: Godel's System T}
 \end{frame}
-\begin{frame}[label={sec:orgf79d65e}]{Syntax}
+\begin{frame}[label={sec:org7777010}]{Syntax}
 \begin{columns}
 \begin{column}[t]{0.5\columnwidth}
 \begin{itemize}
@@ -547,7 +549,7 @@ Thank You!
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:org9d6c131}]{Typing}
+\begin{frame}[label={sec:org3e6776c}]{Typing}
 \begin{columns}
 \begin{column}[t]{0.4\columnwidth}
 \tiny
@@ -622,9 +624,9 @@ Thank You!
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:org79f1beb}]{Evaluation}
+\begin{frame}[label={sec:org38fdf61}]{Evaluation}
 \begin{columns}
-\begin{column}[t]{0.5\columnwidth}
+\begin{column}[t]{0.4\columnwidth}
 \scriptsize
 \begin{prooftree}
 \RightLabel{E-App1}
@@ -650,20 +652,20 @@ Thank You!
 \end{prooftree}
 \end{column}
 
-\begin{column}[t]{0.5\columnwidth}
+\begin{column}[t]{0.6\columnwidth}
 \tiny
 
 \begin{prooftree}
 \RightLabel{E-NatBase}
 \AxiomC{}
-\UnaryInfC{$rec\,base\,step\,0 \to base$}
+\UnaryInfC{$(rec\,base\,step)\,0 \to base$}
 \DisplayProof
 \end{prooftree}
 \begin{prooftree}
 
 \RightLabel{E-NatRec}
 \AxiomC{}
-\UnaryInfC{$rec\,base\,step\,(S\,n) \to rec\,base\,step\,n$}
+\UnaryInfC{$(rec\,base\,step)\,(S\,n) \to step\, n\, ((rec\,base\,step)\,n)$}
 \DisplayProof
 \end{prooftree}
 
