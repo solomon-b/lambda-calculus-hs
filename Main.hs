@@ -4,8 +4,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 module Main where
 
-import Debug.Trace
-
 import Data.List
 import Control.Monad.Reader
 import Control.Monad.Except
@@ -26,7 +24,7 @@ data Type = Type :-> Type | Nat | Bool'
   deriving (Show, Eq)
 
 type Context = [(String, Type)]
-data TypeErr = TypeError | Debug Type deriving (Show, Eq)
+data TypeErr = TypeError deriving (Show, Eq)
 
 
 --------------------
@@ -53,7 +51,7 @@ typecheck = \case
     case ty1 of
       tyA :-> tyB -> do
         ty2 <- typecheck t2
-        if tyA == ty2 then pure ty1 else throwError (Debug ty2)
+        if tyA == ty2 then pure ty1 else throwError TypeError
       _ -> throwError TypeError
   Z -> pure Nat
   S n -> do
@@ -80,7 +78,7 @@ typecheck = \case
     ty1 <- typecheck step
     case ty1 of
       Nat :-> (ty :-> ty') | ty == ty' -> pure (Nat :-> ty)
-      ty -> throwError $ Debug ty1
+      ty -> throwError TypeError
 
 
 ------------------
