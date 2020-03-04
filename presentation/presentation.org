@@ -324,26 +324,6 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
    \BinaryInfC{$ \Gamma \vdash t_1 t_2 : T_1_2 $}
    \DisplayProof
    \end{prooftree}
-* New Evaluation Rules
-\begin{prooftree}
-\RightLabel{\textbf{E-Succ}}
-\AxiomC{$ t_1 \to t_1' $}
-\UnaryInfC{$S\,t1'$}
-\DisplayProof
-\end{prooftree}
-\begin{prooftree}
-$(Case\,Z\,of$\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow t1$ \textbf{E-CaseZ}
-\end{prooftree}
-\begin{prooftree}
-$(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2$ \textbf{E-CaseS}
-\end{prooftree}
-\begin{prooftree}
-\RightLabel{\textbf{E-Case}}
-\AxiomC{$ t_0 \to t_0' $}
-\UnaryInfC{$(Case\,t_0\,of\,0 \to t_1\,|\, S\,m \to t_2)$}
-\DisplayProof
- $\longrightarrow(Case\,t_0'\,of\,0 \to t_1\,|\, S\,m \to t_2)$
-\end{prooftree}
 * New Typing Rules
    \begin{prooftree}
    \RightLabel{T-NatZ}
@@ -367,6 +347,26 @@ $(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2
    \TrinaryInfC{$ \Gamma \vdash (Case\, t_0\, of\,0 \to t_1\,|\,(S\, m) \to t_2) : T_1 $}
    \DisplayProof
    \end{prooftree}
+* New Evaluation Rules
+\begin{prooftree}
+\RightLabel{\textbf{E-Succ}}
+\AxiomC{$ t_1 \to t_1' $}
+\UnaryInfC{$S\,t1'$}
+\DisplayProof
+\end{prooftree}
+\begin{prooftree}
+$(Case\,Z\,of$\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow t1$ \textbf{E-CaseZ}
+\end{prooftree}
+\begin{prooftree}
+$(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2$ \textbf{E-CaseS}
+\end{prooftree}
+\begin{prooftree}
+\RightLabel{\textbf{E-Case}}
+\AxiomC{$ t_0 \to t_0' $}
+\UnaryInfC{$(Case\,t_0\,of\,0 \to t_1\,|\, S\,m \to t_2)$}
+\DisplayProof
+ $\longrightarrow(Case\,t_0'\,of\,0 \to t_1\,|\, S\,m \to t_2)$
+\end{prooftree}
 * Implementation: Terms and Types
 #+ATTR_LATEX: :options linenos=true, fontsize=\scriptsize
 #+BEGIN_SRC haskell
@@ -444,3 +444,195 @@ https://github.com/ssbothwell/HowardLang
 # Local Variables:
 # after-save-hook: (org-beamer-export-to-pdf)
 # End:
+* Bonus Round: Godel's System T
+* Syntax
+** Left                                                               :BMCOL:
+   :PROPERTIES:
+   :BEAMER_col: 0.5
+   :BEAMER_opt: [t]
+   :END:
+   \begin{itemize}
+   \item[$t :=$] $x$
+   \item[] $\lambda x:T.t$
+   \item[] $t_1\,t_2$
+   \item[] $True$
+   \item[] $False$
+   \item[] $if \, t1 \, then \, t2 \, else \, t3$
+   \item[] $Z$
+   \item[] $S\,t$
+   \item[] $rec \, t1 \, t2$
+   \end{itemize}
+   
+** Right                                                              :BMCOL:
+   :PROPERTIES:
+   :BEAMER_col: 0.5
+   :BEAMER_opt: [t]
+   :END:
+   \begin{itemize}
+   \item[$v :=$] $\lambda x:T.t$
+   \item[] $True$
+   \item[] $False$
+   \item[] $Z$
+   \item[] $S\,v$
+   \end{itemize}
+   
+   \begin{itemize}
+   \item[$T :=$] $T \to T$
+   \item[] $Nat$
+   \item[] $Bool$
+   \end{itemize}
+   
+   \begin{itemize}
+   \item[$\Gamma :=$] $\varnothing$
+   \item[] $\Gamma,\,x:T$
+   \end{itemize}
+* Typing
+** Left
+   :PROPERTIES:
+   :BEAMER_col: 0.4
+   :BEAMER_opt: [t]
+   :END:
+   \tiny
+   \begin{prooftree}
+   \RightLabel{T-Var}
+   \AxiomC{$ x : T\,\in\,\Gamma $}
+   \UnaryInfC{$ \Gamma \vdash x : T $}
+   \DisplayProof
+   \end{prooftree}
+
+   \begin{prooftree}
+   \RightLabel{T-Abs}
+   \AxiomC{$ \Gamma,x : T_1\,\vdash\,t_2:T_2 $}
+   \UnaryInfC{$ \Gamma \vdash \lambda x : T_1.t_2 : T_1 \to T_2 $}
+   \DisplayProof
+   \end{prooftree}
+   
+   \begin{prooftree}
+   \RightLabel{T-App}
+   \AxiomC{$ \Gamma \,\vdash\,t_1:T_1_1 \to T_1_2 $}
+   \AxiomC{$ \Gamma \vdash t_2 : T_1_1 $}
+   \BinaryInfC{$ \Gamma \vdash t_1 t_2 : T_1_2 $}
+   \DisplayProof
+   \end{prooftree}
+
+   \begin{prooftree}
+   \RightLabel{T-NatZ}
+   \AxiomC{}
+   \UnaryInfC{$ Z:Nat $}
+   \DisplayProof
+   \end{prooftree}
+   
+   \begin{prooftree}
+   \RightLabel{T-NatS}
+   \AxiomC{$ \Gamma \vdash t_1 : Nat $}
+   \UnaryInfC{$ S\, t_1 : Nat $}
+   \DisplayProof
+   \end{prooftree}
+** Right   
+   :PROPERTIES:
+   :BEAMER_col: 0.6
+   :BEAMER_opt: [t]
+   :END:
+
+   \tiny
+   \begin{prooftree}
+   \RightLabel{T-NatRec}
+   \AxiomC{$\Gamma \vdash base: T$}
+   \AxiomC{$\Gamma \vdash step: Nat \to T \to T$}
+   \BinaryInfC{$(rec\, base\, step) : Nat \to T$}
+   \DisplayProof
+   \end{prooftree}
+
+   \begin{prooftree}
+   \RightLabel{T-BoolF}
+   \AxiomC{}
+   \UnaryInfC{$ False:Bool $}
+   \DisplayProof
+   \end{prooftree}
+   
+   \begin{prooftree}
+   \RightLabel{T-BoolT}
+   \AxiomC{}
+   \UnaryInfC{$ True:Bool $}
+   \DisplayProof
+   \end{prooftree}
+   
+   \begin{prooftree}
+   \RightLabel{T-BoolIf}
+   \AxiomC{$ \Gamma \vdash p_1 : Bool $}
+   \AxiomC{$ \Gamma \vdash t_1 : T $}
+   \AxiomC{$ \Gamma \vdash t_2 : T $}
+   \TrinaryInfC{$ (if\,p_1\,then\,t_1\,else\,t_2) : T $}
+   \DisplayProof
+   \end{prooftree}
+* Evaluation
+** Left
+   :PROPERTIES:
+   :BEAMER_col: 0.5
+   :BEAMER_opt: [t]
+   :END:
+   \scriptsize
+   \begin{prooftree}
+   \RightLabel{E-App1}
+   \AxiomC{$ t_1 \to t_1' $}
+   \UnaryInfC{$ t_1 t_2 \to t_1' t_2 $}
+   \DisplayProof
+   \end{prooftree}
+   
+   \begin{prooftree}
+   \RightLabel{E-App2}
+   \AxiomC{$ t_2 \to t_2' $}
+   \UnaryInfC{$ v_1 t_2 \to v_1 t_2' $}
+   \DisplayProof
+   \end{prooftree}
+   
+   $(\lambda x : T_1_1 . t_1_2)v_2 \to [x  \mapsto v_2]t_1_2$ E-AppAbs
+
+   \begin{prooftree}
+   \RightLabel{E-Succ}
+   \AxiomC{$ t_1 \to t_1' $}
+   \UnaryInfC{$S\,t1'$}
+   \DisplayProof
+   \end{prooftree}
+   
+** Right
+   :PROPERTIES:
+   :BEAMER_col: 0.5
+   :BEAMER_opt: [t]
+   :END:
+   \tiny
+   
+   \begin{prooftree}
+   \RightLabel{E-NatBase}
+   \AxiomC{}
+   \UnaryInfC{$rec\,base\,step\,0 \to base$}
+   \DisplayProof
+   \end{prooftree}
+   \begin{prooftree}
+
+   \RightLabel{E-NatRec}
+   \AxiomC{}
+   \UnaryInfC{$rec\,base\,step\,(S\,n) \to rec\,base\,step\,n$}
+   \DisplayProof
+   \end{prooftree}
+
+   \begin{prooftree}
+   \RightLabel{E-If}
+   \AxiomC{$ t_1 \to t_1' $}
+   \UnaryInfC{$if\, t_1\, then\, t_2\, else\, t_3 \to if\, t_1'\, then\, t_2\, else\, t_3$}
+   \DisplayProof
+   \end{prooftree}
+
+   \begin{prooftree}
+   \RightLabel{E-IfTrue}
+   \AxiomC{}
+   \UnaryInfC{$if\, True\, then\, t_2\, else\, t_3 \to t_2$}
+   \DisplayProof
+   \end{prooftree}
+   
+   \begin{prooftree}
+   \RightLabel{E-IfFalse}
+   \AxiomC{}
+   \UnaryInfC{$if\, False\, then\, t_2\, else\, t_3 \to t_3$}
+   \DisplayProof
+   \end{prooftree}

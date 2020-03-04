@@ -1,4 +1,4 @@
-% Created 2020-03-03 Tue 07:58
+% Created 2020-03-03 Tue 16:20
 % Intended LaTeX compiler: pdflatex
 \documentclass[presentation]{beamer}
 \usepackage[utf8]{inputenc}
@@ -27,31 +27,31 @@
  pdftitle={Interpreting and Typechecking Simply Typed Lambda Calculus},
  pdfkeywords={},
  pdfsubject={},
- pdfcreator={Emacs 26.3 (Org mode 9.3.6)}, 
+ pdfcreator={Emacs 26.3 (Org mode 9.3.3)}, 
  pdflang={English}}
 \begin{document}
 
 \maketitle
 
-\begin{frame}[label={sec:orgc9b5bf0}]{Untyped Lambda Calculus}
+\begin{frame}[label={sec:org5832460}]{Untyped Lambda Calculus}
 A formal system for expressing computation using function abstraction,
 application, and reduction.
 \end{frame}
-\begin{frame}[label={sec:orgf9c20c0}]{Syntax}
+\begin{frame}[label={sec:orgba42568}]{Syntax}
 \begin{itemize}
 \item Variables: \(x\)
 \item Lambda Abstractions: \(\lambda x.x\)
 \item Application: \(t_1 t_2\)
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:orgf4fccda}]{Reduction}
+\begin{frame}[label={sec:org329dfbe}]{Reduction}
 \begin{itemize}
 \item Alpha Conversion (name changes)
 \item Beta Reduction (applying functions to their arguments)
 \item Eta Reduction (reducing abstraction around a function)
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:org6556a8e}]{Example Terms}
+\begin{frame}[label={sec:orga41514e}]{Example Terms}
 \begin{itemize}
 \item \(id := \lambda x.x\)
 \item \(const := \lambda a.\lambda b.a\)
@@ -64,7 +64,7 @@ application, and reduction.
 \item \(Or := \lambda p.\lambda q.p\,p\,q\)
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:org6ca0a78}]{Sample reduction}
+\begin{frame}[label={sec:org0f0e558}]{Sample reduction}
 \center{Not True} \\
 \(\color{red}(\lambda p.p (\lambda p.\lambda q.q) (\lambda p.\lambda q.p))\,\color{blue}(\lambda p.\lambda q.p)\) \\
 \(\color{red}(\lambda p.p (\lambda x.\lambda y.y) (\lambda f.\lambda g.f))\,\color{blue}(\lambda a.\lambda b.a)\) \\
@@ -72,10 +72,10 @@ application, and reduction.
 \(\color{blue}(\lambda b.\color{red}(\lambda x.\lambda y.y)\color{blue})\,\color{red}(\lambda f.\lambda g.f)\) \\
 \(\color{red}\lambda x.\lambda y.y\)
 \end{frame}
-\begin{frame}[label={sec:org6a24cb8}]{How powerful is this?}
+\begin{frame}[label={sec:orgb819082}]{How powerful is this?}
 Very powerful. Fully isomorphic to turing machines. 
 \end{frame}
-\begin{frame}[label={sec:org925ed36}]{Evaluation Semantics}
+\begin{frame}[label={sec:org15305d2}]{Evaluation Semantics}
 \begin{block}{Operational Semantics - Intensional | How}
 Create an abstract state machine consisting of terms as state and reduction
 rules for terms which can be followed in sequence to reach some halting
@@ -85,14 +85,14 @@ state.
 Create a mapping to a mathematical domain that denotes the meanings of terms.
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org5e52625}]{Small Step/Big Step}
+\begin{frame}[label={sec:org0037774}]{Small Step/Big Step}
 Operational Semantics comes in two flavors: 
 \begin{itemize}
 \item Small Step: describe individual steps of computation.
 \item Big Step: describe the overall result of execution.
 \end{itemize}
 \end{frame}
-\begin{frame}[label={sec:orgca2d801}]{Untyped Lambda Calculus}
+\begin{frame}[label={sec:orgb0c8789}]{Untyped Lambda Calculus}
 \begin{columns}
 \begin{column}[t]{0.4\columnwidth}
 \begin{block}{Syntax}
@@ -128,7 +128,7 @@ Operational Semantics comes in two flavors:
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:orgf9f8e42}]{Substitution Rules}
+\begin{frame}[label={sec:org282f11d}]{Substitution Rules}
 \begin{itemize}
 \item \([x \mapsto s]x = s\)
 \item \([x \mapsto s]y = y \hspace{115pt}if\,y \ne x\)
@@ -140,12 +140,12 @@ Operational Semantics comes in two flavors:
 [x -> y z](\w.x w)
 (\w.y z w)}
 \end{frame}
-\begin{frame}[label={sec:org7768d4f}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org6668657}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda.x\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org1ceaeb7}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org0b6c268}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda x.\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
@@ -153,7 +153,7 @@ Operational Semantics comes in two flavors:
 \color{red}\((\lambda x . t_1_2)\color{blue}v_2 \color{black}\to [x  \mapsto v_2]t_1_2\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org280a705}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org8286556}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda x.\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
@@ -164,7 +164,7 @@ Operational Semantics comes in two flavors:
 \([x \mapsto \color{blue}(\lambda y.y\,(\lambda x.x))\color{black}]\color{red}(\lambda y. (\lambda x.x)\,y\,x)\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:orge1a2a0d}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:orgffbb2f6}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Given Expression:}
 \color{red}\((\lambda x.\lambda y. (\lambda x.x)\,y\,x)\, \color{blue}(\lambda y.y\,(\lambda x.x))\)
 \end{block}
@@ -178,11 +178,11 @@ Operational Semantics comes in two flavors:
 \color{red}\((\lambda y. (\lambda x.x)\,y\,\color{blue}(\lambda y.y\,(\lambda x.x))\color{red})\)
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:org64658fc}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org52c89db}]{Avoiding Name Collisions In Substitution}
 \begin{block}{How do we perform this substitution without capturing free variables?}
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:orgc3e6c79}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:orga03a125}]{Avoiding Name Collisions In Substitution}
 \begin{block}{How do we perform this substitution without capturing free variables?}
 \end{block}
 \begin{block}{Two Options:}
@@ -192,7 +192,7 @@ Operational Semantics comes in two flavors:
 \end{enumerate}
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:orgdd13745}]{Avoiding Name Collisions In Substitution}
+\begin{frame}[label={sec:org1c606ab}]{Avoiding Name Collisions In Substitution}
 \begin{block}{Capture Avoiding Substitution}
 \begin{enumerate}
 \item Given the substitution \([\color{red}x  \color{black}\mapsto \color{blue}v_2\color{black}]\color{purple}t_1_2\)
@@ -213,7 +213,7 @@ Examples:
 \end{itemize}
 \end{block}
 \end{frame}
-\begin{frame}[label={sec:orgd512317},fragile]{A haskell implementation}
+\begin{frame}[label={sec:org868c9c1},fragile]{A haskell implementation}
  \begin{minted}[,linenos=true, fontsize=\scriptsize]{haskell}
 data Term = Var String 
           | Abs String Term 
@@ -231,7 +231,7 @@ multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
 \end{minted}
 \end{frame}
-\begin{frame}[label={sec:orga141fc1}]{Simply Typed Lambda Calculus}
+\begin{frame}[label={sec:org9784847}]{Simply Typed Lambda Calculus}
 \note{Notes
 this is my note}
 \begin{columns}
@@ -307,7 +307,7 @@ this is my note}
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:orge5aa04d}]{Simply Typed Lambda Calculus}
+\begin{frame}[label={sec:org291e267}]{Simply Typed Lambda Calculus}
 \begin{columns}
 \begin{column}[t]{0.45\columnwidth}
 \begin{block}{Syntax}
@@ -387,28 +387,7 @@ this is my note}
 \end{column}
 \end{columns}
 \end{frame}
-\begin{frame}[label={sec:orgd79abe9}]{New Evaluation Rules}
-\begin{prooftree}
-\RightLabel{\textbf{E-Succ}}
-\AxiomC{$ t_1 \to t_1' $}
-\UnaryInfC{$S\,t1'$}
-\DisplayProof
-\end{prooftree}
-\begin{prooftree}
-$(Case\,Z\,of$\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow t1$ \textbf{E-CaseZ}
-\end{prooftree}
-\begin{prooftree}
-$(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2$ \textbf{E-CaseS}
-\end{prooftree}
-\begin{prooftree}
-\RightLabel{\textbf{E-Case}}
-\AxiomC{$ t_0 \to t_0' $}
-\UnaryInfC{$(Case\,t_0\,of\,0 \to t_1\,|\, S\,m \to t_2)$}
-\DisplayProof
- $\longrightarrow(Case\,t_0'\,of\,0 \to t_1\,|\, S\,m \to t_2)$
-\end{prooftree}
-\end{frame}
-\begin{frame}[label={sec:org53454ff}]{New Typing Rules}
+\begin{frame}[label={sec:org5b3da0f}]{New Typing Rules}
 \begin{prooftree}
 \RightLabel{T-NatZ}
 \AxiomC{}
@@ -432,7 +411,28 @@ $(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2
 \DisplayProof
 \end{prooftree}
 \end{frame}
-\begin{frame}[label={sec:org1b75b5a},fragile]{Implementation: Terms and Types}
+\begin{frame}[label={sec:org4f8ee30}]{New Evaluation Rules}
+\begin{prooftree}
+\RightLabel{\textbf{E-Succ}}
+\AxiomC{$ t_1 \to t_1' $}
+\UnaryInfC{$S\,t1'$}
+\DisplayProof
+\end{prooftree}
+\begin{prooftree}
+$(Case\,Z\,of$\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow t1$ \textbf{E-CaseZ}
+\end{prooftree}
+\begin{prooftree}
+$(Case\,(S\,n)\,of\,0 \to t_1\,|\,S\,m \to t_2) \longrightarrow [m \mapsto n]t_2$ \textbf{E-CaseS}
+\end{prooftree}
+\begin{prooftree}
+\RightLabel{\textbf{E-Case}}
+\AxiomC{$ t_0 \to t_0' $}
+\UnaryInfC{$(Case\,t_0\,of\,0 \to t_1\,|\, S\,m \to t_2)$}
+\DisplayProof
+ $\longrightarrow(Case\,t_0'\,of\,0 \to t_1\,|\, S\,m \to t_2)$
+\end{prooftree}
+\end{frame}
+\begin{frame}[label={sec:org0391d2e},fragile]{Implementation: Terms and Types}
  \begin{minted}[,linenos=true, fontsize=\scriptsize]{haskell}
 data Term = Var String
           | Abs String Type Term
@@ -449,7 +449,7 @@ type Context = [(String, Type)]
 data TypeErr = TypeError deriving (Show, Eq)
 \end{minted}
 \end{frame}
-\begin{frame}[label={sec:org831cd99},fragile]{Implementation: Typechecker}
+\begin{frame}[label={sec:orgd233899},fragile]{Implementation: Typechecker}
  \begin{minted}[,linenos=true, fontsize=\tiny]{haskell}
 newtype TypecheckM a =
   TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Context) a }
@@ -486,7 +486,7 @@ typecheck = \case
       else throwError TypeError
 \end{minted}
 \end{frame}
-\begin{frame}[label={sec:orgcdec295},fragile]{Implementation: Evaluator}
+\begin{frame}[label={sec:org759f740},fragile]{Implementation: Evaluator}
  \begin{minted}[,linenos=true, fontsize=\scriptsize]{haskell}
 singleEval :: Term -> Maybe Term
 singleEval = \case
@@ -501,10 +501,193 @@ singleEval = \case
   _ -> Nothing
 \end{minted}
 \end{frame}
-\begin{frame}[label={sec:orged9616c}]{All Done}
+\begin{frame}[label={sec:orgf77070d}]{All Done}
 \center
 Thank You!
 \url{https://github.com/ssbothwell/SimplyTypedPresentation/}
 \url{https://github.com/ssbothwell/HowardLang}
+\end{frame}
+\begin{frame}[label={sec:org7f9c783}]{Bonus Round: Godel's System T}
+\end{frame}
+\begin{frame}[label={sec:orgf79d65e}]{Syntax}
+\begin{columns}
+\begin{column}[t]{0.5\columnwidth}
+\begin{itemize}
+\item[$t :=$] $x$
+\item[] $\lambda x:T.t$
+\item[] $t_1\,t_2$
+\item[] $True$
+\item[] $False$
+\item[] $if \, t1 \, then \, t2 \, else \, t3$
+\item[] $Z$
+\item[] $S\,t$
+\item[] $rec \, t1 \, t2$
+\end{itemize}
+\end{column}
+
+\begin{column}[t]{0.5\columnwidth}
+\begin{itemize}
+\item[$v :=$] $\lambda x:T.t$
+\item[] $True$
+\item[] $False$
+\item[] $Z$
+\item[] $S\,v$
+\end{itemize}
+
+\begin{itemize}
+\item[$T :=$] $T \to T$
+\item[] $Nat$
+\item[] $Bool$
+\end{itemize}
+
+\begin{itemize}
+\item[$\Gamma :=$] $\varnothing$
+\item[] $\Gamma,\,x:T$
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}
+\begin{frame}[label={sec:org9d6c131}]{Typing}
+\begin{columns}
+\begin{column}[t]{0.4\columnwidth}
+\tiny
+\begin{prooftree}
+\RightLabel{T-Var}
+\AxiomC{$ x : T\,\in\,\Gamma $}
+\UnaryInfC{$ \Gamma \vdash x : T $}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{T-Abs}
+\AxiomC{$ \Gamma,x : T_1\,\vdash\,t_2:T_2 $}
+\UnaryInfC{$ \Gamma \vdash \lambda x : T_1.t_2 : T_1 \to T_2 $}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{T-App}
+\AxiomC{$ \Gamma \,\vdash\,t_1:T_1_1 \to T_1_2 $}
+\AxiomC{$ \Gamma \vdash t_2 : T_1_1 $}
+\BinaryInfC{$ \Gamma \vdash t_1 t_2 : T_1_2 $}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{T-NatZ}
+\AxiomC{}
+\UnaryInfC{$ Z:Nat $}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{T-NatS}
+\AxiomC{$ \Gamma \vdash t_1 : Nat $}
+\UnaryInfC{$ S\, t_1 : Nat $}
+\DisplayProof
+\end{prooftree}
+\end{column}
+\begin{column}[t]{0.6\columnwidth}
+\tiny
+\begin{prooftree}
+\RightLabel{T-NatRec}
+\AxiomC{$\Gamma \vdash base: T$}
+\AxiomC{$\Gamma \vdash step: Nat \to T \to T$}
+\BinaryInfC{$(rec\, base\, step) : Nat \to T$}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{T-BoolF}
+\AxiomC{}
+\UnaryInfC{$ False:Bool $}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{T-BoolT}
+\AxiomC{}
+\UnaryInfC{$ True:Bool $}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{T-BoolIf}
+\AxiomC{$ \Gamma \vdash p_1 : Bool $}
+\AxiomC{$ \Gamma \vdash t_1 : T $}
+\AxiomC{$ \Gamma \vdash t_2 : T $}
+\TrinaryInfC{$ (if\,p_1\,then\,t_1\,else\,t_2) : T $}
+\DisplayProof
+\end{prooftree}
+\end{column}
+\end{columns}
+\end{frame}
+\begin{frame}[label={sec:org79f1beb}]{Evaluation}
+\begin{columns}
+\begin{column}[t]{0.5\columnwidth}
+\scriptsize
+\begin{prooftree}
+\RightLabel{E-App1}
+\AxiomC{$ t_1 \to t_1' $}
+\UnaryInfC{$ t_1 t_2 \to t_1' t_2 $}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{E-App2}
+\AxiomC{$ t_2 \to t_2' $}
+\UnaryInfC{$ v_1 t_2 \to v_1 t_2' $}
+\DisplayProof
+\end{prooftree}
+
+\((\lambda x : T_1_1 . t_1_2)v_2 \to [x  \mapsto v_2]t_1_2\) E-AppAbs
+
+\begin{prooftree}
+\RightLabel{E-Succ}
+\AxiomC{$ t_1 \to t_1' $}
+\UnaryInfC{$S\,t1'$}
+\DisplayProof
+\end{prooftree}
+\end{column}
+
+\begin{column}[t]{0.5\columnwidth}
+\tiny
+
+\begin{prooftree}
+\RightLabel{E-NatBase}
+\AxiomC{}
+\UnaryInfC{$rec\,base\,step\,0 \to base$}
+\DisplayProof
+\end{prooftree}
+\begin{prooftree}
+
+\RightLabel{E-NatRec}
+\AxiomC{}
+\UnaryInfC{$rec\,base\,step\,(S\,n) \to rec\,base\,step\,n$}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{E-If}
+\AxiomC{$ t_1 \to t_1' $}
+\UnaryInfC{$if\, t_1\, then\, t_2\, else\, t_3 \to if\, t_1'\, then\, t_2\, else\, t_3$}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{E-IfTrue}
+\AxiomC{}
+\UnaryInfC{$if\, True\, then\, t_2\, else\, t_3 \to t_2$}
+\DisplayProof
+\end{prooftree}
+
+\begin{prooftree}
+\RightLabel{E-IfFalse}
+\AxiomC{}
+\UnaryInfC{$if\, False\, then\, t_2\, else\, t_3 \to t_3$}
+\DisplayProof
+\end{prooftree}
+\end{column}
+\end{columns}
 \end{frame}
 \end{document}
