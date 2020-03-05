@@ -110,5 +110,4 @@ notT = Abs "p" (App (App (Var "p") falseT) trueT)
 main :: IO ()
 main = do
   let term = alphaconvert (App notT trueT)
-  print term
   print (multiStepEval term)
