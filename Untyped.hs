@@ -1,10 +1,10 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE FlexibleContexts #-}
 module Main where
 
+import Data.Map (Map)
+import qualified Data.Map.Strict as M
 import Data.List ((\\))
+import Control.Monad.State
 
 -------------
 --- Terms ---
@@ -15,13 +15,46 @@ data Term = Var String
           | App Term Term
   deriving Show
 
-------------------
---- Evaluation ---
-------------------
+------------------------
+--- Alpha Conversion ---
+------------------------
 
-isVal :: Term -> Bool
-isVal Abs{} = True
-isVal _ = False
+data Stream a = Stream a (Stream a)
+
+data AlphaContext = AlphaContext { _names :: Stream String, _register :: Map String String }
+
+names :: [String]
+names = (pure <$> ['a'..'z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['a' .. 'z'])
+
+stream :: [String] -> Stream String
+stream (x:xs) = Stream x (stream xs)
+
+alpha :: Term -> State AlphaContext Term
+alpha (Var x) = do
+  mx <- gets (M.lookup x . _register)
+  case mx of
+    Just x' -> pure $ Var x'
+    Nothing -> error "Something impossible happened"
+alpha (App t1 t2) = do
+  t1' <- alpha t1
+  t2' <- alpha t2
+  pure $ App t1' t2'
+alpha t@(Abs bndr term) = do
+  (Stream fresh rest) <- gets _names
+  registry <- gets _register
+  put $ AlphaContext rest (M.insert bndr fresh registry)
+  term' <- alpha term
+  pure $ Abs fresh term'
+
+emptyContext :: AlphaContext
+emptyContext = AlphaContext (stream names) (M.empty)
+
+alphaconvert :: Term -> Term
+alphaconvert term = evalState (alpha term) emptyContext
+
+--------------------
+--- Substitution ---
+--------------------
 
 subst :: String -> Term -> Term -> Term
 subst x s (Var x') | x == x' = s
@@ -34,6 +67,14 @@ freevars :: Term -> [String]
 freevars (Var x) = [x]
 freevars (Abs x t) = freevars t \\ [x]
 freevars (App t1 t2) = freevars t1 ++ freevars t2
+
+------------------
+--- Evaluation ---
+------------------
+
+isVal :: Term -> Bool
+isVal Abs{} = True
+isVal _ = False
 
 singleEval :: Term -> Maybe Term
 singleEval = \case
@@ -54,7 +95,7 @@ idenT :: Term
 idenT = Abs "x" (Var "x")
 
 trueT :: Term
-trueT = Abs "p" (Abs "q" (Var "p"))
+trueT = Abs "p" (Abs "a" (Var "p"))
 
 falseT :: Term
 falseT = Abs "p "(Abs "q" (Var "q"))
@@ -63,6 +104,7 @@ notT :: Term
 notT = Abs "p" (App (App (Var "p") falseT) trueT)
 
 main :: IO ()
-main =
-  let term = (App notT trueT)
-  in print (multiStepEval term)
+main = do
+  let term = alphaconvert (App notT trueT)
+  print term
+  print (multiStepEval term)
