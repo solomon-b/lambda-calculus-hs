@@ -90,7 +90,6 @@ singleEval = \case
 multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
 
-
 ------------
 --- Main ---
 ------------
