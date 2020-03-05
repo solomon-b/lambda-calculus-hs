@@ -30,21 +30,22 @@ stream :: [String] -> Stream String
 stream (x:xs) = Stream x (stream xs)
 
 alpha :: Term -> State AlphaContext Term
-alpha (Var x) = do
-  mx <- gets (M.lookup x . _register)
-  case mx of
-    Just x' -> pure $ Var x'
-    Nothing -> error "Something impossible happened"
-alpha (App t1 t2) = do
-  t1' <- alpha t1
-  t2' <- alpha t2
-  pure $ App t1' t2'
-alpha t@(Abs bndr term) = do
-  (Stream fresh rest) <- gets _names
-  registry <- gets _register
-  put $ AlphaContext rest (M.insert bndr fresh registry)
-  term' <- alpha term
-  pure $ Abs fresh term'
+alpha = \case
+  (Var x) -> do
+    mx <- gets (M.lookup x . _register)
+    case mx of
+      Just x' -> pure $ Var x'
+      Nothing -> error "Something impossible happened"
+  (App t1 t2) -> do
+    t1' <- alpha t1
+    t2' <- alpha t2
+    pure $ App t1' t2'
+  t@(Abs bndr term) -> do
+    (Stream fresh rest) <- gets _names
+    registry <- gets _register
+    put $ AlphaContext rest (M.insert bndr fresh registry)
+    term' <- alpha term
+    pure $ Abs fresh term'
 
 emptyContext :: AlphaContext
 emptyContext = AlphaContext (stream names) (M.empty)
@@ -57,24 +58,27 @@ alphaconvert term = evalState (alpha term) emptyContext
 --------------------
 
 subst :: String -> Term -> Term -> Term
-subst x s (Var x') | x == x' = s
-subst x s (Var y) = Var y
-subst x s (Abs y t1) | x /= y && y `notElem` freevars s = Abs y (subst x s t1)
-                     | otherwise = error "oops name collision"
-subst x s (App t1 t2) = App (subst x s t1) (subst x s t2)
+subst x s = \case
+  (Var x') | x == x' -> s
+  (Var y) -> Var y
+  (Abs y t1) | x /= y && y `notElem` freevars s -> Abs y (subst x s t1)
+             | otherwise -> error "oops name collision"
+  (App t1 t2) -> App (subst x s t1) (subst x s t2)
 
 freevars :: Term -> [String]
-freevars (Var x) = [x]
-freevars (Abs x t) = freevars t \\ [x]
-freevars (App t1 t2) = freevars t1 ++ freevars t2
+freevars = \case
+  (Var x) -> [x]
+  (Abs x t) -> freevars t \\ [x]
+  (App t1 t2) -> freevars t1 ++ freevars t2
 
 ------------------
 --- Evaluation ---
 ------------------
 
 isVal :: Term -> Bool
-isVal Abs{} = True
-isVal _ = False
+isVal = \case
+  Abs{} -> True
+  _     -> False
 
 singleEval :: Term -> Maybe Term
 singleEval = \case
@@ -98,7 +102,7 @@ trueT :: Term
 trueT = Abs "p" (Abs "a" (Var "p"))
 
 falseT :: Term
-falseT = Abs "p "(Abs "q" (Var "q"))
+falseT = Abs "p" (Abs "q" (Var "q"))
 
 notT :: Term
 notT = Abs "p" (App (App (Var "p") falseT) trueT)

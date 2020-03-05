@@ -22,12 +22,12 @@ executable Untyped
   build-depends:       base >=4.12 && <4.13, mtl, containers
   default-language:    Haskell2010
 
---executable SimplyTyped
---  main-is:             SimplyTyped.hs
---  build-depends:       base >=4.12 && <4.13, mtl
---  default-language:    Haskell2010
+executable SimplyTyped
+  main-is:             SimplyTyped.hs
+  build-depends:       base >=4.12 && <4.13, mtl, containers
+  default-language:    Haskell2010
 
 executable SystemT
-  main-is:             Main.hs
-  build-depends:       base >=4.12 && <4.13, mtl
+  main-is:             SystemT.hs
+  build-depends:       base >=4.12 && <4.13, mtl, containers
   default-language:    Haskell2010
