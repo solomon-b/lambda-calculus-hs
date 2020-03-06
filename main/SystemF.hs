@@ -54,11 +54,11 @@ stream (x:xs) = Stream x (stream xs)
 
 alphaT :: Type -> State AlphaContext Type
 alphaT = \case
-  TVar x -> do
+  TVar x ->
     use (register . at x) >>= \case
       Just x' -> pure $ TVar x'
       Nothing -> error "Something impossible happened"
-  Forall x ty -> do
+  Forall x ty ->
     use (register . at x) >>= \case
       Just x' -> Forall x' <$> alphaT ty
       Nothing -> error "Something impossible happened"
@@ -70,7 +70,7 @@ alphaT = \case
 
 alpha :: Term -> State AlphaContext Term
 alpha = \case
-  Var x -> do
+  Var x ->
     use (register . at x) >>= \case
       Just x' -> pure $ Var x'
       Nothing -> error "Something impossible happened"
@@ -223,14 +223,23 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
 ------------
 
 idenT :: Term
-idenT = TAbs "X" (Abs "t" (TVar "X") (Var "t"))
+idenT = TAbs "A" (Abs "a" (TVar "A") (Var "a"))
+
+idenT' :: Term
+idenT' = TAbs "B" (Abs "b" (TVar "B") (Var "b"))
+
+rank2 :: Term -- (forall a. a -> a) -> (forall b. b -> b)
+rank2 = Abs "f" (Forall "A" (TVar "A" :-> TVar "A")) idenT'
+
+rank2Applied :: Term --(forall a. a -> a) -> (forall b. b -> b)
+rank2Applied = App rank2 idenT
 
 notT :: Term
 notT = Abs "p" BoolT (If (Var "p") F T)
 
 main :: IO ()
 main =
-  let term = alphaconvert (App (TApp idenT BoolT) T)
+  let term = rank2 --alphaconvert (App (TApp idenT BoolT) T)
   in case runTypecheckM $ typecheck term of
     Left e -> print e
     Right ty -> do
