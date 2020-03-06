@@ -133,14 +133,15 @@ typecheck = \case
     pure $ ty1 :-> ty2
   App t1 t2 ->
     typecheck t1 >>= \case
-      ty1@(tyA :-> tyB) -> do
+      tyA :-> tyB -> do
         ty2 <- typecheck t2
-        if tyA == ty2 then pure ty1 else throwError TypeError
+        if tyA == ty2 then pure tyB else throwError TypeError
       _ -> throwError TypeError
   TAbs x t2 -> Forall x <$> typecheck t2
   TApp t1 ty2 ->
     typecheck t1 >>= \case
       Forall x ty12 -> pure $ substT x ty2 ty12 -- [x -> ty2]ty12
+      _ -> throwError TypeError
   Unit -> pure UnitT
   T -> pure BoolT
   F -> pure BoolT
@@ -229,7 +230,7 @@ notT = Abs "p" BoolT (If (Var "p") F T)
 
 main :: IO ()
 main =
-  let term = alphaconvert (TApp idenT BoolT)
+  let term = alphaconvert (App (TApp idenT BoolT) T)
   in case runTypecheckM $ typecheck term of
     Left e -> print e
     Right ty -> do
