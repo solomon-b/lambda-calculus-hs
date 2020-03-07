@@ -29,6 +29,7 @@ data Term = Var String
           | If Term Term Term
   deriving Show
 
+infixr 0 :->
 data Type = Type :-> Type | TVar String | Forall String Type | UnitT | BoolT
   deriving (Show, Eq)
 
@@ -36,6 +37,34 @@ data Gamma = Gamma { _context :: Map String Type, _contextT :: [String] }
 makeLenses ''Gamma
 
 data TypeErr = TypeError deriving (Show, Eq)
+
+----------------------
+--- Pretty Printer ---
+----------------------
+
+class Show a => Pretty a where
+  pretty :: a -> String
+  pretty = show
+
+instance Pretty Term where
+  pretty = \case
+    Var x -> x
+    Abs bndr ty t0 -> "(λ" ++ bndr ++ " : " ++ pretty ty ++ ". " ++ pretty t0 ++ ")"
+    App t1 t2 -> pretty t1 ++ " " ++ pretty t2
+    TAbs bndr t0 -> "Λ" ++ bndr ++ ". " ++ pretty t0
+    TApp t0 ty -> pretty t0 ++ " " ++ "[" ++ pretty ty ++ "]"
+    Unit -> "Unit"
+    T -> "True"
+    F -> "False"
+    If t0 t1 t2 -> "If " ++ pretty t0 ++ " then " ++ pretty t1 ++ " else " ++ pretty t2
+
+instance Pretty Type where
+  pretty = \case
+    UnitT -> "Unit"
+    BoolT -> "Bool"
+    Forall x ty -> "∀" ++ x ++ "." ++ pretty ty
+    TVar x -> x
+    ty0 :-> ty1 -> pretty ty0 ++ " -> " ++ pretty ty1
 
 ------------------------
 --- Alpha Conversion ---
@@ -54,10 +83,10 @@ stream (x:xs) = Stream x (stream xs)
 
 alphaT :: Type -> State AlphaContext Type
 alphaT = \case
-  TVar x ->
-    use (register . at x) >>= \case
-      Just x' -> pure $ TVar x'
-      Nothing -> error "Something impossible happened"
+  --TVar x ->
+  --  use (register . at x) >>= \case
+  --    Just x' -> pure $ TVar x'
+  --    Nothing -> error "Something impossible happened"
   Forall x ty ->
     use (register . at x) >>= \case
       Just x' -> Forall x' <$> alphaT ty
@@ -84,18 +113,18 @@ alpha = \case
     names .= rest
     register %= M.insert bndr fresh
     term' <- alpha term
-    ty' <- alphaT ty
-    pure $ Abs fresh ty' term'
+    -- ty' <- alphaT ty
+    pure $ Abs fresh ty term'
   TApp t x -> do
     t' <- alpha t
     x' <- alphaT x
     pure $ TApp t' x'
   TAbs tyBndr term -> do
-    Stream fresh rest <- use names
-    names .= rest
-    register %= M.insert tyBndr fresh
+    --Stream fresh rest <- use names
+    --names .= rest
+    --register %= M.insert tyBndr fresh
     term' <- alpha term
-    pure $ TAbs fresh term'
+    pure $ TAbs tyBndr term'
   If t1 t2 t3 -> do
     t1' <- alpha t1
     t2' <- alpha t2
@@ -180,9 +209,9 @@ subst x s = \case
             | otherwise -> error "oops name collision"
   App t1 t2 -> App (subst x s t1) (subst x s t2)
   If t0 t1 t2 -> If (subst x s t0) (subst x s t1) (subst x s t2)
-  T -> T
-  F -> F
-  Unit -> Unit
+  TApp t0 ty -> TApp (subst x s t0) ty
+  TAbs bndr t0 -> TAbs bndr (subst x s t0)
+  t -> t
 
 freevars :: Term -> [String]
 freevars = \case
@@ -190,6 +219,9 @@ freevars = \case
   Abs x ty t  -> freevars t \\ [x]
   App t1 t2   -> freevars t1 ++ freevars t2
   If t0 t1 t2 -> freevars t0 ++ freevars t1 ++ freevars t2
+  TAbs x t0   -> freevars t0
+  TApp t0 ty  -> freevars t0
+  _ -> []
 
 ------------------
 --- Evaluation ---
@@ -222,26 +254,39 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
 --- Main ---
 ------------
 
-idenT :: Term
-idenT = TAbs "A" (Abs "a" (TVar "A") (Var "a"))
+identB :: Term
+identB = TAbs "B" (Abs "b" (TVar "B") (Var "b"))
 
-idenT' :: Term
-idenT' = TAbs "B" (Abs "b" (TVar "B") (Var "b"))
+identA :: Term
+identA = TAbs "A" (Abs "a" (TVar "A") (Var "a"))
 
 rank2 :: Term -- (forall a. a -> a) -> (forall b. b -> b)
-rank2 = Abs "f" (Forall "A" (TVar "A" :-> TVar "A")) idenT'
+rank2 = Abs "f" (Forall "A" (TVar "A" :-> TVar "A")) identB
 
-rank2Applied :: Term --(forall a. a -> a) -> (forall b. b -> b)
-rank2Applied = App rank2 idenT
+rank2Applied :: Term
+rank2Applied = App rank2 identA
 
 notT :: Term
 notT = Abs "p" BoolT (If (Var "p") F T)
 
+cbool :: Type
+cbool = Forall "X" $ TVar "X" :-> TVar "X" :-> TVar "X"
+
+truC :: Term
+truC = TAbs "X" . Abs "t" (TVar "X") . Abs "f" (TVar "X") $ Var "t"
+
+flsC :: Term
+flsC = TAbs "X" . Abs "t" (TVar "X") . Abs "f" (TVar "X") $ Var "f"
+
+notC :: Term
+notC = Abs "b" cbool . TAbs "X" . Abs "t" (TVar "X") . Abs "f" (TVar "X") $
+  App (App (TApp (Var "b") (TVar "X")) (Var "f")) (Var "t")
+
 main :: IO ()
 main =
-  let term = rank2 --alphaconvert (App (TApp idenT BoolT) T)
+  let term = alphaconvert (App (TApp (App notC truC) BoolT) T) --alphaconvert (App (TApp idenT BoolT) T)
   in case runTypecheckM $ typecheck term of
     Left e -> print e
     Right ty -> do
-      print term
-      putStrLn $ show (multiStepEval term) ++ " : " ++ show ty
+      putStrLn $ pretty term
+      putStrLn $ pretty (multiStepEval term) ++ " as " ++ pretty ty
