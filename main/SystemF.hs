@@ -284,7 +284,7 @@ notC = Abs "b" cbool . TAbs "X" . Abs "t" (TVar "X") . Abs "f" (TVar "X") $
 
 main :: IO ()
 main =
-  let term = alphaconvert (App (TApp (App notC truC) BoolT) T) --alphaconvert (App (TApp idenT BoolT) T)
+  let term = alphaconvert (App (App (TApp (App notC truC) BoolT) T) F) --alphaconvert (App (TApp idenT BoolT) T)
   in case runTypecheckM $ typecheck term of
     Left e -> print e
     Right ty -> do
