@@ -45,7 +45,7 @@ data Gamma =
         }
 makeLenses ''Gamma
 
-data TypeErr = TypeError deriving (Show, Eq)
+data TypeErr = TypeError | KindError deriving (Show, Eq)
 
 ------------------------
 --- Alpha Conversion ---
@@ -91,25 +91,31 @@ emptyContext = AlphaContext (stream names) (M.empty)
 alphaconvert :: Term -> Term
 alphaconvert term = evalState (alpha term) emptyContext
 
+--------------------
+--- Kindchecking ---
+--------------------
+
+kindcheck :: Type -> TypecheckM Kind
+kindcheck (TVar bndr) = do --M.lookup bndr gamma
+    k1 <- view (contextT . at bndr)
+    maybe (throwError KindError) pure k1
+kindcheck (TyAbs bndr k1 ty) = do
+  k2 <- local (contextT %~ M.insert bndr k1) (kindcheck ty)
+  pure $ k1 :=> k2
+kindcheck (TyApp ty1 ty2) =
+  kindcheck ty1 >>= \case
+    k11 :=> k12 ->
+      kindcheck ty2 >>= \k2 ->
+        if k2 == k11 then pure k12 else throwError KindError
+    _ -> throwError KindError
+kindcheck (ty1 :-> ty2) = do
+  k1 <- kindcheck ty1
+  k2 <- kindcheck ty2
+  if (k1, k2) == (Star, Star) then pure Star else throwError KindError
+
 ------------------------
 --- Type Equivalence ---
 ------------------------
-
-kindcheck :: Map String Kind -> Type -> Maybe Kind
-kindcheck gamma (TVar bndr) = M.lookup bndr gamma
-kindcheck gamma (TyAbs bndr k1 ty) = do
-  k2 <- kindcheck (M.insert bndr k1 gamma) ty
-  pure $ k1 :=> k2
-kindcheck gamma (TyApp ty1 ty2) =
-  kindcheck gamma ty1 >>= \case
-    k11 :=> k12 ->
-      kindcheck gamma ty2 >>= \k2 ->
-        if k2 == k11 then Just k12 else Nothing
-    _ -> Nothing
-kindcheck gamma (ty1 :-> ty2) = do
-  k1 <- kindcheck gamma ty1
-  k2 <- kindcheck gamma ty2
-  if (k1, k2) == (Star, Star) then Just Star else Nothing
 
 --------------------
 --- Typechecking ---
@@ -130,9 +136,12 @@ typecheck = \case
   Var x -> do
     ty <- view (context . at x)
     maybe (throwError TypeError) pure ty
-  Abs bndr ty1 trm -> do
-    ty2 <- local (context %~ M.insert bndr ty1) (typecheck trm)
-    pure $ ty1 :-> ty2
+  Abs bndr ty1 trm ->
+    kindcheck ty1 >>= \case
+      Star -> do
+        ty2 <- local (context %~ M.insert bndr ty1) (typecheck trm)
+        pure $ ty1 :-> ty2
+      _ -> throwError KindError
   App t1 t2 -> do
     ty1 <- typecheck t1
     case ty1 of
