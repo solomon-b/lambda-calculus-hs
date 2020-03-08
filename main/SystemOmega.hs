@@ -117,6 +117,16 @@ kindcheck (ty1 :-> ty2) = do
 --- Type Equivalence ---
 ------------------------
 
+tyeq :: Type -> Type -> Bool
+tyeq (s1 :-> s2) (t1 :-> t2) = tyeq s1 t1 && tyeq s2 t2
+tyeq (TyAbs b1 k1 s2) (TyAbs b2 k2 t2) = k1 == k2 && s2 == t2
+tyeq (TyApp (TyAbs b1 k11 s12) s2) t1 =
+  tyeq (substT b1 t1 s12) t1
+tyeq s1 (TyApp (TyAbs b2 k11 t12) s2) =
+  tyeq s1 (substT b2 s1 t12)
+tyeq (TyApp s1 s2) (TyApp t1 t2) = s1 == t1 && s2 == t2
+tyeq s1 t1 = s1 == t1
+
 --------------------
 --- Typechecking ---
 --------------------
@@ -164,12 +174,22 @@ typecheck = \case
 --- Substitution ---
 --------------------
 
+substT :: String -> Type -> Type -> Type
+substT x s = \case
+  TVar x' | x == x' -> s
+  TVar y ->  TVar y
+  TyAbs y k ty | x /= y -> TyAbs y k (substT x s ty)
+  TyAbs y k ty -> error "substT: oops name collision"
+  TyApp ty1 ty2 -> TyApp (substT x s ty1) (substT x s ty2)
+  ty1 :-> ty2 -> substT x s ty1 :-> substT x s ty2
+  ty -> ty
+
 subst :: String -> Term -> Term -> Term
 subst x s = \case
   (Var x') | x == x' -> s
   (Var y) -> Var y
   (Abs y ty t1) | x /= y && y `notElem` freevars s -> Abs y ty (subst x s t1)
-             | otherwise -> error "oops name collision"
+             | otherwise -> error "subst: oops name collision"
   (App t1 t2) -> App (subst x s t1) (subst x s t2)
   (If t0 t1 t2) -> If (subst x s t0) (subst x s t1) (subst x s t2)
   T -> T
