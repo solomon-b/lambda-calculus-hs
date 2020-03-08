@@ -96,7 +96,7 @@ alphaconvert term = evalState (alpha term) emptyContext
 --------------------
 
 kindcheck :: Type -> TypecheckM Kind
-kindcheck (TVar bndr) = do --M.lookup bndr gamma
+kindcheck (TVar bndr) = do
     k1 <- view (contextT . at bndr)
     maybe (throwError KindError) pure k1
 kindcheck (TyAbs bndr k1 ty) = do
