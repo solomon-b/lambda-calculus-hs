@@ -51,7 +51,7 @@ instance Pretty Term where
     Var x -> x
     Abs bndr ty t0 -> "(λ" ++ bndr ++ " : " ++ pretty ty ++ ". " ++ pretty t0 ++ ")"
     App t1 t2 -> pretty t1 ++ " " ++ pretty t2
-    TAbs bndr t0 -> "Λ" ++ bndr ++ ". " ++ pretty t0
+    TAbs bndr t0 -> "(Λ" ++ bndr ++ ". " ++ pretty t0 ++ ")"
     TApp t0 ty -> pretty t0 ++ " " ++ "[" ++ pretty ty ++ "]"
     Unit -> "Unit"
     T -> "True"
@@ -117,8 +117,8 @@ alpha = \case
     pure $ Abs fresh ty term'
   TApp t x -> do
     t' <- alpha t
-    x' <- alphaT x
-    pure $ TApp t' x'
+    --x' <- alphaT x
+    pure $ TApp t' x
   TAbs tyBndr term -> do
     --Stream fresh rest <- use names
     --names .= rest
@@ -164,7 +164,7 @@ typecheck = \case
     typecheck t1 >>= \case
       tyA :-> tyB -> do
         ty2 <- typecheck t2
-        if tyA == ty2 then pure tyB else throwError TypeError
+        if unify [] tyA ty2 then pure tyB else throwError TypeError
       _ -> throwError TypeError
   TAbs x t2 -> Forall x <$> typecheck t2
   TApp t1 ty2 ->
@@ -181,6 +181,13 @@ typecheck = \case
     if ty0 == BoolT && ty1 == ty2
       then pure ty1
       else throwError TypeError
+
+unify :: [(String, String)] -> Type -> Type -> Bool
+unify [] (TVar a) (TVar b) = a == b
+unify names (TVar a) (TVar b) = (a, b) `elem` names
+unify names (Forall x tyA) (Forall y tyB) = unify ((x, y):names) tyA tyB
+unify names (tyA :-> tyB) (tyA' :-> tyB') = unify names tyA tyA' && unify names tyB tyB'
+unify names tyA tyB = tyA == tyB
 
 --------------------
 --- Substitution ---
@@ -254,26 +261,17 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
 --- Main ---
 ------------
 
-identB :: Term
-identB = TAbs "B" (Abs "b" (TVar "B") (Var "b"))
-
 identA :: Term
 identA = TAbs "A" (Abs "a" (TVar "A") (Var "a"))
 
-rank2 :: Term -- (forall a. a -> a) -> (forall b. b -> b)
-rank2 = Abs "f" (Forall "A" (TVar "A" :-> TVar "A")) identB
-
-rank2Applied :: Term
-rank2Applied = App rank2 identA
-
-notT :: Term
-notT = Abs "p" BoolT (If (Var "p") F T)
-
 cbool :: Type
-cbool = Forall "X" $ TVar "X" :-> TVar "X" :-> TVar "X"
+cbool = Forall "A" $ TVar "A" :-> TVar "A" :-> TVar "A"
+
+cbool' :: Type
+cbool' = Forall "B" $ TVar "B" :-> TVar "B" :-> TVar "B"
 
 truC :: Term
-truC = TAbs "X" . Abs "t" (TVar "X") . Abs "f" (TVar "X") $ Var "t"
+truC = TAbs "A" . Abs "t" (TVar "A") . Abs "f" (TVar "A") $ Var "t"
 
 flsC :: Term
 flsC = TAbs "X" . Abs "t" (TVar "X") . Abs "f" (TVar "X") $ Var "f"
@@ -284,9 +282,11 @@ notC = Abs "b" cbool . TAbs "X" . Abs "t" (TVar "X") . Abs "f" (TVar "X") $
 
 main :: IO ()
 main =
-  let term = alphaconvert (App (App (TApp (App notC truC) BoolT) T) F) --alphaconvert (App (TApp idenT BoolT) T)
+  let term = alphaconvert (App (App (TApp (App notC truC) BoolT) T) F) -- (App (TApp identA cbool) flsC)
   in case runTypecheckM $ typecheck term of
-    Left e -> print e
+    Left e -> do
+      putStrLn $ pretty term
+      print e
     Right ty -> do
       putStrLn $ pretty term
       putStrLn $ pretty (multiStepEval term) ++ " as " ++ pretty ty
