@@ -117,6 +117,8 @@ kindcheck (ty1 :-> ty2) = do
 --- Type Equivalence ---
 ------------------------
 
+-- NOTE: This comes into play in the T-Eq typing rule
+-- NOTE: I think I need a unification function similar to SystemF for TVars
 tyeq :: Type -> Type -> Bool
 tyeq (s1 :-> s2) (t1 :-> t2) = tyeq s1 t1 && tyeq s2 t2
 tyeq (TyAbs b1 k1 s2) (TyAbs b2 k2 t2) = k1 == k2 && s2 == t2
@@ -141,6 +143,10 @@ emptyGamma = Gamma mempty mempty
 runTypecheckM :: TypecheckM Type -> Either TypeErr Type
 runTypecheckM = flip runReader emptyGamma . runExceptT . unTypecheckM
 
+-- NOTE: Where does the T-Eq Typing rule come into play?
+-- Gamma |- t : S   S === T   Gamma |- T : *
+-- ----------------------------------------- T-Eq
+--               Gamma |- t : T
 typecheck :: Term -> TypecheckM Type
 typecheck = \case
   Var x -> do
