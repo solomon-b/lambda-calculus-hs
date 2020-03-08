@@ -76,8 +76,8 @@ instance Pretty Type where
 
 instance Pretty Kind where
   pretty = \case
-    Star -> "*"
-    k1 :=> k2 -> pretty k1 ++ " -> " ++ pretty k2
+    Star -> "*"-- "★"
+    k1 :=> k2 -> "(" ++ pretty k1 ++ " -> " ++ pretty k2 ++ ")"
 
 ------------------------
 --- Alpha Conversion ---
