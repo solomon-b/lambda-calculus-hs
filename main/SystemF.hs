@@ -197,8 +197,10 @@ typecheck = \case
       else throwError TypeError
 
 unify :: [(String, String)] -> Type -> Type -> Bool
-unify [] (TVar a) (TVar b) = a == b
-unify names (TVar a) (TVar b) = (a, b) `elem` names
+unify names (TVar a) (TVar b) =
+  if a `elem` (fmap fst names) || b `elem` (fmap snd names)
+    then (a, b) `elem` names
+    else a == b
 unify names (Forall x tyA) (Forall y tyB) = unify ((x, y):names) tyA tyB
 unify names (tyA :-> tyB) (tyA' :-> tyB') = unify names tyA tyA' && unify names tyB tyB'
 unify names tyA tyB = tyA == tyB

@@ -40,3 +40,9 @@ executable SystemF
   hs-source-dirs:      main
   build-depends:       base >=4.12 && <4.13, mtl, containers, lens
   default-language:    Haskell2010
+
+executable SystemOmega
+  main-is:             SystemOmega.hs
+  hs-source-dirs:      main
+  build-depends:       base >=4.12 && <4.13, mtl, containers, lens
+  default-language:    Haskell2010
