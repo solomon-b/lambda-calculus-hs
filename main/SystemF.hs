@@ -72,25 +72,38 @@ instance Pretty Type where
 
 data Stream a = Stream a (Stream a)
 
-data AlphaContext = AlphaContext { _names :: Stream String, _register :: Map String String, _registerT :: Map String String}
+data AlphaContext =
+  AlphaContext { _names :: Stream String
+               , _namesT :: Stream String
+               , _register :: Map String String
+               }
 makeLenses ''AlphaContext
 
 namesStream :: [String]
 namesStream = (pure <$> ['a'..'z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['a' .. 'z'])
+
+typeNamesStream :: [String]
+typeNamesStream = (pure <$> ['A'..'Z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['A' .. 'Z'])
 
 stream :: [String] -> Stream String
 stream (x:xs) = Stream x (stream xs)
 
 alphaT :: Type -> State AlphaContext Type
 alphaT = \case
-  --TVar x ->
-  --  use (register . at x) >>= \case
-  --    Just x' -> pure $ TVar x'
-  --    Nothing -> error "Something impossible happened"
-  Forall x ty ->
-    use (register . at x) >>= \case
-      Just x' -> Forall x' <$> alphaT ty
+  TVar bndr ->
+    use (register . at bndr) >>= \case
+      Just bndr' -> pure $ TVar bndr'
       Nothing -> error "Something impossible happened"
+  Forall bndr ty -> do
+    use (register . at bndr) >>= \case
+      Just bndr' -> Forall bndr' <$> alphaT ty
+      Nothing -> do
+        Stream fresh rest <- use namesT
+        regstry <- use register
+        namesT .= rest
+        register %= M.insert bndr fresh
+        ty' <- alphaT ty
+        pure $ Forall fresh ty'
   ty1 :-> ty2 -> do
     ty1' <- alphaT ty1
     ty2' <- alphaT ty2
@@ -113,18 +126,19 @@ alpha = \case
     names .= rest
     register %= M.insert bndr fresh
     term' <- alpha term
-    -- ty' <- alphaT ty
-    pure $ Abs fresh ty term'
-  TApp t x -> do
+    ty' <- alphaT ty
+    pure $ Abs fresh ty' term'
+  TApp t tyBndr -> do
     t' <- alpha t
-    --x' <- alphaT x
-    pure $ TApp t' x
+    tyBndr' <- alphaT tyBndr
+    pure $ TApp t' tyBndr'
   TAbs tyBndr term -> do
-    --Stream fresh rest <- use names
-    --names .= rest
-    --register %= M.insert tyBndr fresh
+    Stream fresh' rest' <- use namesT
+    regstry <- use register
+    namesT .= rest'
+    register %= M.insert tyBndr fresh'
     term' <- alpha term
-    pure $ TAbs tyBndr term'
+    pure $ TAbs fresh' term'
   If t1 t2 t3 -> do
     t1' <- alpha t1
     t2' <- alpha t2
@@ -133,7 +147,7 @@ alpha = \case
   t -> pure t
 
 emptyAlphaContext :: AlphaContext
-emptyAlphaContext = AlphaContext (stream namesStream) M.empty M.empty
+emptyAlphaContext = AlphaContext (stream namesStream) (stream typeNamesStream) M.empty
 
 alphaconvert :: Term -> Term
 alphaconvert term = evalState (alpha term) emptyAlphaContext
@@ -282,7 +296,7 @@ notC = Abs "b" cbool . TAbs "X" . Abs "t" (TVar "X") . Abs "f" (TVar "X") $
 
 main :: IO ()
 main =
-  let term = alphaconvert (App (App (TApp (App notC truC) BoolT) T) F) -- (App (TApp identA cbool) flsC)
+  let term = alphaconvert  ((App (TApp (App notC truC) BoolT) T))
   in case runTypecheckM $ typecheck term of
     Left e -> do
       putStrLn $ pretty term
