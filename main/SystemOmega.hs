@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Main where
 
 import Data.Map (Map)
@@ -10,6 +11,7 @@ import Data.List ((\\))
 import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad.Except
+import Control.Lens
 
 -------------
 --- Terms ---
@@ -24,10 +26,24 @@ data Term = Var String
           | If Term Term Term
   deriving Show
 
-data Type = Type :-> Type | UnitT | BoolT
+infixr 0 :->
+data Type = Type :-> Type
+          | TVar String
+          | TyAbs String Kind Type
+          | TyApp Type Type
+          | UnitT
+          | BoolT
   deriving (Show, Eq)
 
-type Gamma = [(String, Type)]
+infixr 0 :=>
+data Kind = Star | Kind :=> Kind
+  deriving (Show, Eq)
+
+data Gamma =
+  Gamma { _context :: Map String Type
+        , _contextT :: Map String Kind
+        }
+makeLenses ''Gamma
 
 data TypeErr = TypeError deriving (Show, Eq)
 
@@ -75,6 +91,26 @@ emptyContext = AlphaContext (stream names) (M.empty)
 alphaconvert :: Term -> Term
 alphaconvert term = evalState (alpha term) emptyContext
 
+------------------------
+--- Type Equivalence ---
+------------------------
+
+kindcheck :: Map String Kind -> Type -> Maybe Kind
+kindcheck gamma (TVar bndr) = M.lookup bndr gamma
+kindcheck gamma (TyAbs bndr k1 ty) = do
+  k2 <- kindcheck (M.insert bndr k1 gamma) ty
+  pure $ k1 :=> k2
+kindcheck gamma (TyApp ty1 ty2) =
+  kindcheck gamma ty1 >>= \case
+    k11 :=> k12 ->
+      kindcheck gamma ty2 >>= \k2 ->
+        if k2 == k11 then Just k12 else Nothing
+    _ -> Nothing
+kindcheck gamma (ty1 :-> ty2) = do
+  k1 <- kindcheck gamma ty1
+  k2 <- kindcheck gamma ty2
+  if (k1, k2) == (Star, Star) then Just Star else Nothing
+
 --------------------
 --- Typechecking ---
 --------------------
@@ -83,16 +119,19 @@ newtype TypecheckM a =
   TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Gamma) a }
   deriving (Functor, Applicative, Monad, MonadReader Gamma, MonadError TypeErr)
 
+emptyGamma :: Gamma
+emptyGamma = Gamma mempty mempty
+
 runTypecheckM :: TypecheckM Type -> Either TypeErr Type
-runTypecheckM = flip runReader [] . runExceptT . unTypecheckM
+runTypecheckM = flip runReader emptyGamma . runExceptT . unTypecheckM
 
 typecheck :: Term -> TypecheckM Type
 typecheck = \case
   Var x -> do
-    ty <- asks $ lookup x
+    ty <- view (context . at x)
     maybe (throwError TypeError) pure ty
   Abs bndr ty1 trm -> do
-    ty2 <- local ((:) (bndr, ty1)) (typecheck trm)
+    ty2 <- local (context %~ M.insert bndr ty1) (typecheck trm)
     pure $ ty1 :-> ty2
   App t1 t2 -> do
     ty1 <- typecheck t1
@@ -158,6 +197,7 @@ singleEval = \case
 
 multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
+
 
 ------------
 --- Main ---
