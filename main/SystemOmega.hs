@@ -112,6 +112,7 @@ kindcheck (ty1 :-> ty2) = do
   k1 <- kindcheck ty1
   k2 <- kindcheck ty2
   if (k1, k2) == (Star, Star) then pure Star else throwError KindError
+kindcheck ty = pure Star
 
 ------------------------
 --- Type Equivalence ---
@@ -121,13 +122,23 @@ kindcheck (ty1 :-> ty2) = do
 -- NOTE: I think I need a unification function similar to SystemF for TVars
 tyeq :: Type -> Type -> Bool
 tyeq (s1 :-> s2) (t1 :-> t2) = tyeq s1 t1 && tyeq s2 t2
-tyeq (TyAbs b1 k1 s2) (TyAbs b2 k2 t2) = k1 == k2 && s2 == t2
+tyeq (TyAbs b1 k1 s2) (TyAbs b2 k2 t2) = k1 == k2 && tyeq s2 t2
 tyeq (TyApp (TyAbs b1 k11 s12) s2) t1 =
-  tyeq (substT b1 t1 s12) t1
-tyeq s1 (TyApp (TyAbs b2 k11 t12) s2) =
-  tyeq s1 (substT b2 s1 t12)
+  tyeq (substT b1 s2 s12) t1
+tyeq s1 (TyApp (TyAbs b2 k11 t12) t2) =
+  tyeq s1 (substT b2 t2 t12)
 tyeq (TyApp s1 s2) (TyApp t1 t2) = s1 == t1 && s2 == t2
 tyeq s1 t1 = s1 == t1
+
+unify :: [(String, String)] -> Type -> Type -> Bool
+unify names (TVar a) (TVar b) =
+  if a `elem` (fmap fst names) || b `elem` (fmap snd names)
+    then (a, b) `elem` names
+    else tyeq (TVar a) (TVar b)
+unify names (TyAbs b1 k1 tyA) (TyAbs b2 k2 tyB) = unify ((b1, b2):names) tyA tyB
+unify names (TyApp s1 s2) (TyApp t1 t2) = unify names s1 t1 && unify names s2 t2
+unify names (tyA :-> tyB) (tyA' :-> tyB') = unify names tyA tyA' && unify names tyB tyB'
+unify names tyA tyB = tyeq tyA tyB
 
 --------------------
 --- Typechecking ---
@@ -140,13 +151,9 @@ newtype TypecheckM a =
 emptyGamma :: Gamma
 emptyGamma = Gamma mempty mempty
 
-runTypecheckM :: TypecheckM Type -> Either TypeErr Type
+runTypecheckM :: TypecheckM a -> Either TypeErr a
 runTypecheckM = flip runReader emptyGamma . runExceptT . unTypecheckM
 
--- NOTE: Where does the T-Eq Typing rule come into play?
--- Gamma |- t : S   S === T   Gamma |- T : *
--- ----------------------------------------- T-Eq
---               Gamma |- t : T
 typecheck :: Term -> TypecheckM Type
 typecheck = \case
   Var x -> do
@@ -163,7 +170,7 @@ typecheck = \case
     case ty1 of
       tyA :-> tyB -> do
         ty2 <- typecheck t2
-        if tyA == ty2 then pure ty1 else throwError TypeError
+        if unify [] tyA ty2 then pure ty1 else throwError TypeError
       _ -> throwError TypeError
   Unit -> pure UnitT
   T -> pure BoolT
@@ -237,6 +244,12 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
 ------------
 --- Main ---
 ------------
+
+idT :: Type
+idT = TyAbs "X" Star (TVar "X")
+
+idT' :: Type
+idT' = TyAbs "Y" Star (TVar "Y")
 
 notT :: Term
 notT = Abs "p" BoolT (If (Var "p") F T)
