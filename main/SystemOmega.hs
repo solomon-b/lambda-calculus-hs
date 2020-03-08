@@ -47,6 +47,38 @@ makeLenses ''Gamma
 
 data TypeErr = TypeError | KindError deriving (Show, Eq)
 
+----------------------
+--- Pretty Printer ---
+----------------------
+
+class Show a => Pretty a where
+  pretty :: a -> String
+  pretty = show
+
+instance Pretty Term where
+  pretty = \case
+    Var x -> x
+    Abs bndr ty t0 -> "(λ" ++ bndr ++ " : " ++ pretty ty ++ " . " ++ pretty t0 ++ ")"
+    App t1 t2 -> pretty t1 ++ " " ++ pretty t2
+    Unit -> "Unit"
+    T -> "True"
+    F -> "False"
+    If t0 t1 t2 -> "If " ++ pretty t0 ++ " then " ++ pretty t1 ++ " else " ++ pretty t2
+
+instance Pretty Type where
+  pretty = \case
+    TVar x -> x
+    TyAbs b k ty -> "(" ++ b ++ " :: " ++ pretty k ++ " . " ++ pretty ty ++ ")"
+    TyApp ty1 ty2 -> pretty ty1 ++ " " ++ pretty ty2
+    ty0 :-> ty1 -> pretty ty0 ++ " -> " ++ pretty ty1
+    UnitT -> "Unit"
+    BoolT -> "Bool"
+
+instance Pretty Kind where
+  pretty = \case
+    Star -> "*"
+    k1 :=> k2 -> pretty k1 ++ " -> " ++ pretty k2
+
 ------------------------
 --- Alpha Conversion ---
 ------------------------
