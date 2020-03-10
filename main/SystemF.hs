@@ -61,7 +61,7 @@ instance Pretty Type where
   pretty = \case
     UnitT -> "Unit"
     BoolT -> "Bool"
-    Forall x ty -> "∀" ++ x ++ "." ++ pretty ty
+    Forall x ty -> "∀" ++ x ++ " . " ++ pretty ty
     TVar x -> x
     ty0 :-> ty1 -> pretty ty0 ++ " -> " ++ pretty ty1
 

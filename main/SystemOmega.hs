@@ -95,22 +95,21 @@ stream (x:xs) = Stream x (stream xs)
 
 alpha :: Term -> State AlphaContext Term
 alpha = \case
-  (Var x) -> do
-    mx <- gets (M.lookup x . _register)
-    case mx of
-      Just x' -> pure $ Var x'
+  Var bndr -> do
+    use (register . at bndr) >>= \case
+      Just bndr' -> pure $ Var bndr'
       Nothing -> error "Something impossible happened"
-  (App t1 t2) -> do
+  App t1 t2) -> do
     t1' <- alpha t1
     t2' <- alpha t2
     pure $ App t1' t2'
-  t@(Abs bndr ty term) -> do
-    (Stream fresh rest) <- gets _names
-    registry <- gets _register
-    put $ AlphaContext rest (M.insert bndr fresh registry)
+  Abs bndr ty term -> do
+    Stream fresh rest <- use names
+    names .= rest
+    register %= M.insert bndr fresh registry
     term' <- alpha term
     pure $ Abs fresh ty term'
-  (If t1 t2 t3) -> do
+  If t1 t2 t3 -> do
     t1' <- alpha t1
     t2' <- alpha t2
     t3' <- alpha t3
