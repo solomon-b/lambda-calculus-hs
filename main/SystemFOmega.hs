@@ -352,18 +352,16 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
 pairT :: Type
 pairT = TyAbs "A" Star $ TyAbs "B" Star $ Forall "X" Star $ TVar "A" :-> TVar "B" :-> TVar "X"
 
-idT :: Type
-idT = TyAbs "X" Star (TVar "X")
+church :: Type
+church = Forall "A" Star $ (TVar "A" :-> TVar "A") :-> TVar "A" :-> TVar "A"
 
-idT' :: Type
-idT' = TyAbs "Y" Star (TVar "Y")
-
-notT :: Term
-notT = Abs "p" BoolT (If (Var "p") F T)
+zeroT :: Term
+zeroT =  TAbs "F" Star $ Abs "f" (TVar "F") $ TAbs "X" Star $ 
+  Abs "x" (TVar "x") $ App (TApp (Var "f") (TVar "X")) (App (Var "f") (Var "x"))
 
 main :: IO ()
 main =
-  let term = alphaconvert (App notT T)
+  let term = alphaconvert zeroT -- (App notT T)
   in case runTypecheckM $ typecheck term of
     Left e -> print e
     Right _ -> print (multiStepEval term)
