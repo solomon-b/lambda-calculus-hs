@@ -349,6 +349,9 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
 --- Main ---
 ------------
 
+pairT :: Type
+pairT = TyAbs "A" Star $ TyAbs "B" Star $ Forall "X" Star $ TVar "A" :-> TVar "B" :-> TVar "X"
+
 idT :: Type
 idT = TyAbs "X" Star (TVar "X")
 
