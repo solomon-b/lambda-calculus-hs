@@ -359,7 +359,7 @@ constT :: Type
 constT = TyAbs "A" Star $ TyAbs "B" Star $ Forall "Const" Star $ TVar "A" :-> TVar "X"
 
 pairT :: Type
-pairT = TyAbs "A" Star $ TyAbs "B" Star $ Forall "X" Star $ (TVar "A" :-> TVar "B" :-> TVar "X") :-> TVar "X"
+pairT = TyAbs "A" Star $ TyAbs "B" Star $ Forall "C" Star $ (TVar "A" :-> TVar "B" :-> TVar "C") :-> TVar "C"
 
 churchT :: Type
 churchT = Forall "A" Star $ (TVar "A" :-> TVar "A") :-> TVar "A" :-> TVar "A"
@@ -375,13 +375,18 @@ pair = TAbs "A" Star $ TAbs "B" Star $
            Abs "k" (TVar "A" :-> TVar "B" :-> TVar "C") $
              App (App (Var "k") (Var "x")) (Var "y")
 
+-- fst = ΛA::*.ΛB::*.λp:Pair A B.p [A] (λx:A.λy:B.x);
+fst' = TAbs "A" Star $ TAbs "B" Star $
+         Abs "p" (TyApp (TyApp pairT (TVar "A")) (TVar "B")) $
+           App (TApp (Var "p") (TVar "A")) (Abs "x" (TVar "A") $ Abs "y" (TVar "B") (Var "x"))
+
 zeroT :: Term
 zeroT =  TAbs "F" Star $ Abs "f" (TVar "F") $ TAbs "X" Star $
   Abs "x" (TVar "X") $ App (TApp (Var "f") (TVar "X")) (App (Var "f") (Var "x"))
 
 main :: IO ()
 main =
-  let term = alphaconvert pair-- (App notT T)
+  let term = alphaconvert $ (TApp (App pair T) BoolT)-- (App notT T)
   in case runTypecheckM $ typecheck term of
     Left e -> print e
     Right _ -> print (multiStepEval term)
