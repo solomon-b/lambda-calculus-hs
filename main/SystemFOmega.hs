@@ -20,6 +20,8 @@ import Control.Lens
 data Term = Var String
           | Abs String Type Term
           | App Term Term
+          | TAbs String Kind Term
+          | TApp Term Type
           | Unit
           | T
           | F
@@ -29,6 +31,7 @@ data Term = Var String
 infixr 0 :->
 data Type = Type :-> Type
           | TVar String
+          | Forall String Kind Type
           | TyAbs String Kind Type
           | TyApp Type Type
           | UnitT
@@ -60,6 +63,8 @@ instance Pretty Term where
     Var x -> x
     Abs bndr ty t0 -> "(λ" ++ bndr ++ " : " ++ pretty ty ++ " . " ++ pretty t0 ++ ")"
     App t1 t2 -> pretty t1 ++ " " ++ pretty t2
+    TAbs bndr k t0 -> "(Λ" ++ bndr ++ " :: " ++ pretty k ++ " . " ++ pretty t0 ++ ")"
+    TApp t0 ty -> pretty t0 ++ " " ++ "[" ++ pretty ty ++ "]"
     Unit -> "Unit"
     T -> "True"
     F -> "False"
@@ -71,6 +76,7 @@ instance Pretty Type where
     TyAbs b k ty -> "(" ++ b ++ " :: " ++ pretty k ++ " . " ++ pretty ty ++ ")"
     TyApp ty1 ty2 -> pretty ty1 ++ " " ++ pretty ty2
     ty0 :-> ty1 -> pretty ty0 ++ " -> " ++ pretty ty1
+    Forall x k ty -> "∀" ++ x ++ " :: " ++ pretty k ++ " . " ++ pretty ty
     UnitT -> "Unit"
     BoolT -> "Bool"
 
@@ -85,43 +91,88 @@ instance Pretty Kind where
 
 data Stream a = Stream a (Stream a)
 
-data AlphaContext = AlphaContext { _names :: Stream String, _register :: Map String String }
+data AlphaContext =
+  AlphaContext { _names :: Stream String
+               , _namesT :: Stream String
+               , _register :: Map String String
+               }
+makeLenses ''AlphaContext
 
-names :: [String]
-names = (pure <$> ['a'..'z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['a' .. 'z'])
+namesStream :: [String]
+namesStream = (pure <$> ['a'..'z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['a' .. 'z'])
+
+typeNamesStream :: [String]
+typeNamesStream = (pure <$> ['A'..'Z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['A' .. 'Z'])
 
 stream :: [String] -> Stream String
 stream (x:xs) = Stream x (stream xs)
 
+alphaT :: Type -> State AlphaContext Type
+alphaT = \case
+  TVar bndr ->
+    use (register . at bndr) >>= \case
+      Just bndr' -> pure $ TVar bndr'
+      Nothing -> error "Something impossible happened"
+  Forall bndr k ty -> do
+    use (register . at bndr) >>= \case
+      Just bndr' -> Forall bndr' k <$> alphaT ty
+      Nothing -> do
+        Stream fresh rest <- use namesT
+        namesT .= rest
+        register %= M.insert bndr fresh
+        ty' <- alphaT ty
+        pure $ Forall fresh k ty'
+  ty1 :-> ty2 -> do
+    ty1' <- alphaT ty1
+    ty2' <- alphaT ty2
+    pure $ ty1' :-> ty2'
+  --TyAbs bndr k ty -> do
+  --TyApp ty1 ty2 -> do
+  --  ty1' <- alphaT ty1
+  --  ty2' <- alphaT ty2
+  --  pure $ TyApp ty1' ty2'
+  t -> pure t
+
 alpha :: Term -> State AlphaContext Term
 alpha = \case
-  (Var x) -> do
+  Var x -> do
     mx <- gets (M.lookup x . _register)
     case mx of
       Just x' -> pure $ Var x'
       Nothing -> error "Something impossible happened"
-  (App t1 t2) -> do
+  App t1 t2 -> do
     t1' <- alpha t1
     t2' <- alpha t2
     pure $ App t1' t2'
-  t@(Abs bndr ty term) -> do
+  Abs bndr ty term -> do
     (Stream fresh rest) <- gets _names
-    registry <- gets _register
-    put $ AlphaContext rest (M.insert bndr fresh registry)
+    names .= rest
+    register %= M.insert bndr fresh
     term' <- alpha term
     pure $ Abs fresh ty term'
-  (If t1 t2 t3) -> do
+  TApp t tyBndr -> do
+    t' <- alpha t
+    tyBndr' <- alphaT tyBndr
+    pure $ TApp t' tyBndr'
+  TAbs tyBndr k term -> do
+    Stream fresh' rest' <- use namesT
+    regstry <- use register
+    namesT .= rest'
+    register %= M.insert tyBndr fresh'
+    term' <- alpha term
+    pure $ TAbs fresh' k term'
+  If t1 t2 t3 -> do
     t1' <- alpha t1
     t2' <- alpha t2
     t3' <- alpha t3
     pure (If t1' t2' t3')
   t -> pure t
 
-emptyContext :: AlphaContext
-emptyContext = AlphaContext (stream names) (M.empty)
+emptyAlphaContext :: AlphaContext
+emptyAlphaContext = AlphaContext (stream namesStream) (stream typeNamesStream) M.empty
 
 alphaconvert :: Term -> Term
-alphaconvert term = evalState (alpha term) emptyContext
+alphaconvert term = evalState (alpha term) emptyAlphaContext
 
 --------------------
 --- Kindchecking ---
@@ -158,6 +209,7 @@ tyeq (TyApp (TyAbs b1 k11 s12) s2) t1 =
 tyeq s1 (TyApp (TyAbs b2 k11 t12) t2) =
   tyeq s1 (substT b2 t2 t12)
 tyeq (TyApp s1 s2) (TyApp t1 t2) = s1 == t1 && s2 == t2
+tyeq (Forall b1 k1 ty1) (Forall b2 k2 ty2) = k1 == k2 && tyeq ty1 ty2
 tyeq s1 t1 = s1 == t1
 
 unify :: [(String, String)] -> Type -> Type -> Bool
@@ -202,6 +254,13 @@ typecheck = \case
         ty2 <- typecheck t2
         if unify [] tyA ty2 then pure ty1 else throwError TypeError
       _ -> throwError TypeError
+  TAbs x k t2 -> Forall x k <$> typecheck t2
+  TApp t1 ty2 ->
+    typecheck t1 >>= \case
+      Forall x k1 ty12 ->
+        kindcheck ty2 >>= \k2 ->
+          if k1 == k2 then (pure $ substT x ty2 ty12) else throwError TypeError
+      _ -> throwError TypeError
   Unit -> pure UnitT
   T -> pure BoolT
   F -> pure BoolT
@@ -217,6 +276,13 @@ typecheck = \case
 --- Substitution ---
 --------------------
 
+substTyTm :: String -> Type -> Term -> Term
+substTyTm x s = \case
+  Abs y ty t1 -> Abs y (substT x s ty) t1
+  App t1 t2 -> App (substTyTm x s t1) (substTyTm x s t2)
+  If t0 t1 t2 -> If (substTyTm x s t0) (substTyTm x s t1) (substTyTm x s t2)
+  t -> t
+
 substT :: String -> Type -> Type -> Type
 substT x s = \case
   TVar x' | x == x' -> s
@@ -224,27 +290,33 @@ substT x s = \case
   TyAbs y k ty | x /= y -> TyAbs y k (substT x s ty)
   TyAbs y k ty -> error "substT: oops name collision"
   TyApp ty1 ty2 -> TyApp (substT x s ty1) (substT x s ty2)
+  Forall y k ty | x /= y -> Forall y k (substT x s ty)
   ty1 :-> ty2 -> substT x s ty1 :-> substT x s ty2
   ty -> ty
 
 subst :: String -> Term -> Term -> Term
 subst x s = \case
-  (Var x') | x == x' -> s
-  (Var y) -> Var y
-  (Abs y ty t1) | x /= y && y `notElem` freevars s -> Abs y ty (subst x s t1)
-             | otherwise -> error "subst: oops name collision"
-  (App t1 t2) -> App (subst x s t1) (subst x s t2)
-  (If t0 t1 t2) -> If (subst x s t0) (subst x s t1) (subst x s t2)
+  Var x' | x == x' -> s
+  Var y -> Var y
+  Abs y ty t1 | x /= y && y `notElem` freevars s -> Abs y ty (subst x s t1)
+            | otherwise -> error "subst: oops name collision"
+  App t1 t2 -> App (subst x s t1) (subst x s t2)
+  TApp t0 ty -> TApp (subst x s t0) ty
+  TAbs bndr k t0 -> TAbs bndr k (subst x s t0)
+  If t0 t1 t2 -> If (subst x s t0) (subst x s t1) (subst x s t2)
   T -> T
   F -> F
   Unit -> Unit
 
 freevars :: Term -> [String]
 freevars = \case
-  (Var x)       -> [x]
-  (Abs x ty t)  -> freevars t \\ [x]
-  (App t1 t2)   -> freevars t1 ++ freevars t2
-  (If t0 t1 t2) -> freevars t0 ++ freevars t1 ++ freevars t2
+  Var x       -> [x]
+  Abs x ty t  -> freevars t \\ [x]
+  App t1 t2   -> freevars t1 ++ freevars t2
+  If t0 t1 t2 -> freevars t0 ++ freevars t1 ++ freevars t2
+  TAbs x k t0 -> freevars t0
+  TApp t0 ty  -> freevars t0
+  _ -> []
 
 ------------------
 --- Evaluation ---
@@ -252,19 +324,22 @@ freevars = \case
 
 isVal :: Term -> Bool
 isVal = \case
-  Abs{} -> True
-  T     -> True
-  F     -> True
-  Unit  -> True
-  _     -> False
+  Abs{}  -> True
+  TAbs{} -> True
+  T      -> True
+  F      -> True
+  Unit   -> True
+  _      -> False
 
 singleEval :: Term -> Maybe Term
 singleEval = \case
-  (App (Abs x ty t12) v2) | isVal v2 -> Just $ subst x v2 t12
-  (App v1@Abs{} t2) -> App v1 <$> singleEval t2
-  (App t1 t2) -> flip App t2 <$> singleEval t1
-  (If T t2 t3) -> pure t2
-  (If F t2 t3) -> pure t3
+  App (Abs x ty t12) v2 | isVal v2 -> Just $ subst x v2 t12
+  App v1@Abs{} t2 -> App v1 <$> singleEval t2
+  App t1 t2 -> flip App t2 <$> singleEval t1
+  TApp (TAbs x k t12) ty2 -> Just (substTyTm x ty2 t12)
+  TApp t1 ty2 -> flip TApp ty2 <$> singleEval t1
+  If T t2 t3 -> pure t2
+  If F t2 t3 -> pure t3
   _ -> Nothing
 
 multiStepEval :: Term -> Term
