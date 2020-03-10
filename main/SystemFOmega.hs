@@ -181,7 +181,7 @@ alphaconvert term = evalState (alpha term) emptyAlphaContext
 kindcheck :: Type -> TypecheckM Kind
 kindcheck (TVar bndr) = do
     k1 <- view (contextT . at bndr)
-    maybe (throwError KindError) pure k1
+    maybe (error $ "Missing bndr " ++ bndr ++ ": " ++ show k1) pure k1
 kindcheck (TyAbs bndr k1 ty) = do
   k2 <- local (contextT %~ M.insert bndr k1) (kindcheck ty)
   pure $ k1 :=> k2
@@ -252,9 +252,11 @@ typecheck = \case
     case ty1 of
       tyA :-> tyB -> do
         ty2 <- typecheck t2
-        if unify [] tyA ty2 then pure ty1 else throwError TypeError
+        if unify [] tyA ty2 then pure tyB else throwError TypeError
       _ -> throwError TypeError
-  TAbs x k t2 -> Forall x k <$> typecheck t2
+  TAbs x k t2 -> do
+    ty2 <- local (contextT %~ M.insert x k) (typecheck t2)
+    pure $ Forall x k ty2
   TApp t1 ty2 ->
     typecheck t1 >>= \case
       Forall x k1 ty12 ->
@@ -349,19 +351,37 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
 --- Main ---
 ------------
 
-pairT :: Type
-pairT = TyAbs "A" Star $ TyAbs "B" Star $ Forall "X" Star $ TVar "A" :-> TVar "B" :-> TVar "X"
+-- Type Operators
+idT :: Type
+idT = TyAbs "A" Star $ Forall "Id" Star $ TVar "A" :-> TVar "X"
 
-church :: Type
-church = Forall "A" Star $ (TVar "A" :-> TVar "A") :-> TVar "A" :-> TVar "A"
+constT :: Type
+constT = TyAbs "A" Star $ TyAbs "B" Star $ Forall "Const" Star $ TVar "A" :-> TVar "X"
+
+pairT :: Type
+pairT = TyAbs "A" Star $ TyAbs "B" Star $ Forall "X" Star $ (TVar "A" :-> TVar "B" :-> TVar "X") :-> TVar "X"
+
+churchT :: Type
+churchT = Forall "A" Star $ (TVar "A" :-> TVar "A") :-> TVar "A" :-> TVar "A"
+
+-- Terms
+--mkId :: Term
+--mkId = TAbs "A" Star $ Abs "a" k
+
+--pair = ΛA::*.ΛB::*.λx:A.λy:B.ΛC::*.λk:(A -> B -> C).k x y;
+pair :: Term
+pair = TAbs "A" Star $ TAbs "B" Star $
+         Abs "x" (TVar "A") $ Abs "y" (TVar "B") $ TAbs "C" Star $
+           Abs "k" (TVar "A" :-> TVar "B" :-> TVar "C") $
+             App (App (Var "k") (Var "x")) (Var "y")
 
 zeroT :: Term
-zeroT =  TAbs "F" Star $ Abs "f" (TVar "F") $ TAbs "X" Star $ 
-  Abs "x" (TVar "x") $ App (TApp (Var "f") (TVar "X")) (App (Var "f") (Var "x"))
+zeroT =  TAbs "F" Star $ Abs "f" (TVar "F") $ TAbs "X" Star $
+  Abs "x" (TVar "X") $ App (TApp (Var "f") (TVar "X")) (App (Var "f") (Var "x"))
 
 main :: IO ()
 main =
-  let term = alphaconvert zeroT -- (App notT T)
+  let term = alphaconvert pair-- (App notT T)
   in case runTypecheckM $ typecheck term of
     Left e -> print e
     Right _ -> print (multiStepEval term)
