@@ -113,7 +113,7 @@ alphaT = \case
     use (register . at bndr) >>= \case
       Just bndr' -> pure $ TVar bndr'
       Nothing -> error "Something impossible happened"
-  Forall bndr k ty -> do
+  Forall bndr k ty ->
     use (register . at bndr) >>= \case
       Just bndr' -> Forall bndr' k <$> alphaT ty
       Nothing -> do
@@ -214,7 +214,7 @@ tyeq s1 t1 = s1 == t1
 
 unify :: [(String, String)] -> Type -> Type -> Bool
 unify names (TVar a) (TVar b) =
-  if a `elem` (fmap fst names) || b `elem` (fmap snd names)
+  if a `elem` fmap fst names || b `elem` fmap snd names
     then (a, b) `elem` names
     else tyeq (TVar a) (TVar b)
 unify names (TyAbs b1 k1 tyA) (TyAbs b2 k2 tyB) = unify ((b1, b2):names) tyA tyB
