@@ -181,7 +181,7 @@ alphaconvert term = evalState (alpha term) emptyAlphaContext
 kindcheck :: Type -> TypecheckM Kind
 kindcheck (TVar bndr) = do
     k1 <- view (contextT . at bndr)
-    maybe (error $ "Missing bndr " ++ bndr ++ ": " ++ show k1) pure k1
+    maybe (throwError KindError) pure k1
 kindcheck (TyAbs bndr k1 ty) = do
   k2 <- local (contextT %~ M.insert bndr k1) (kindcheck ty)
   pure $ k1 :=> k2
@@ -235,6 +235,9 @@ emptyGamma = Gamma mempty mempty
 
 runTypecheckM :: TypecheckM a -> Either TypeErr a
 runTypecheckM = flip runReader emptyGamma . runExceptT . unTypecheckM
+
+testTypecheckM :: Gamma -> TypecheckM a -> Either TypeErr a
+testTypecheckM gamma = flip runReader gamma . runExceptT . unTypecheckM
 
 typecheck :: Term -> TypecheckM Type
 typecheck = \case
@@ -386,7 +389,7 @@ zeroT =  TAbs "F" Star $ Abs "f" (TVar "F") $ TAbs "X" Star $
 
 main :: IO ()
 main =
-  let term = alphaconvert $ (TApp (App pair T) BoolT)-- (App notT T)
+  let term = fst' -- alphaconvert $ (TApp (App pair T) BoolT)-- (App notT T)
   in case runTypecheckM $ typecheck term of
     Left e -> print e
     Right _ -> print (multiStepEval term)
