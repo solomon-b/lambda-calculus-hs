@@ -1,2 +1,4 @@
 /dist-newstyle/
 /presentation/_minted-presentation/
+/.envrc
+/.direnv/
