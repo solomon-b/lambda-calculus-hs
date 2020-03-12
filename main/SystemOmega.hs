@@ -86,27 +86,28 @@ instance Pretty Kind where
 data Stream a = Stream a (Stream a)
 
 data AlphaContext = AlphaContext { _names :: Stream String, _register :: Map String String }
+makeLenses ''AlphaContext
 
-names :: [String]
-names = (pure <$> ['a'..'z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['a' .. 'z'])
+namesStream :: [String]
+namesStream = (pure <$> ['a'..'z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['a' .. 'z'])
 
 stream :: [String] -> Stream String
 stream (x:xs) = Stream x (stream xs)
 
 alpha :: Term -> State AlphaContext Term
 alpha = \case
-  Var bndr -> do
+  Var bndr ->
     use (register . at bndr) >>= \case
       Just bndr' -> pure $ Var bndr'
       Nothing -> error "Something impossible happened"
-  App t1 t2) -> do
+  App t1 t2 -> do
     t1' <- alpha t1
     t2' <- alpha t2
     pure $ App t1' t2'
   Abs bndr ty term -> do
     Stream fresh rest <- use names
     names .= rest
-    register %= M.insert bndr fresh registry
+    register %= M.insert bndr fresh
     term' <- alpha term
     pure $ Abs fresh ty term'
   If t1 t2 t3 -> do
@@ -117,7 +118,7 @@ alpha = \case
   t -> pure t
 
 emptyContext :: AlphaContext
-emptyContext = AlphaContext (stream names) (M.empty)
+emptyContext = AlphaContext (stream namesStream) M.empty
 
 alphaconvert :: Term -> Term
 alphaconvert term = evalState (alpha term) emptyContext
@@ -161,7 +162,7 @@ tyeq s1 t1 = s1 == t1
 
 unify :: [(String, String)] -> Type -> Type -> Bool
 unify names (TVar a) (TVar b) =
-  if a `elem` (fmap fst names) || b `elem` (fmap snd names)
+  if a `elem` fmap fst names || b `elem` fmap snd names
     then (a, b) `elem` names
     else tyeq (TVar a) (TVar b)
 unify names (TyAbs b1 k1 tyA) (TyAbs b2 k2 tyB) = unify ((b1, b2):names) tyA tyB
