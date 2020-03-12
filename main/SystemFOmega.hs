@@ -261,7 +261,7 @@ typecheck = \case
     typecheck t1 >>= \case
       Forall x k1 ty12 ->
         kindcheck ty2 >>= \k2 ->
-          if k1 == k2 then (pure $ substT x ty2 ty12) else throwError TypeError
+          if k1 == k2 then pure $ substT x ty2 ty12 else throwError TypeError
       _ -> throwError TypeError
   Unit -> pure UnitT
   T -> pure BoolT
