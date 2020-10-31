@@ -96,14 +96,14 @@ inferType :: Term -> InferM Term
 inferType = \case
   Var x -> asks (lookup x) >>= maybe (throwError TypeError) pure
   App t1 t2 ->
-    inferType t1 >>= \case
+    inferType t1 >>= normalize >>= \case
       Pi bndr ty1 ty2 -> do
           ty1' <- inferType t2
-          isEqual <- equal (traceShowId ty1) (traceShowId ty1')
+          isEqual <- equal ty1 ty1'
           if isEqual
              then pure $ subst bndr t2 ty2
              else throwError TypeError
-      _ -> undefined -- throwError TypeError
+      _ -> throwError TypeError
   Abs bndr ty t -> do
     inferUniverse ty
     t' <- local ((bndr, ty) :) (inferType t)
@@ -141,13 +141,13 @@ equal e1 e2 =
 ---------------------
 
 normalize :: Term -> InferM Term
-normalize = \case
-  Var x -> asks (lookup x) >>= maybe (throwError TypeError) normalize
+normalize t = case t of
+  Var x -> asks (lookup x) >>= maybe (pure t) normalize
   App t1 t2 -> do
     t2' <- normalize t2
     normalize t1 >>= \case
-      Abs bndr _ t1' -> normalize (subst bndr t2' t1')
-      t1' -> pure $ App t1 t2'
+      Abs bndr _ t -> normalize (subst bndr t2' t)
+      t1' -> pure $ App t1' t2'
   Abs bndr ty t -> do
     ty' <- normalize ty
     t' <- local ((bndr, ty') :) (normalize t)
@@ -155,7 +155,7 @@ normalize = \case
   Pi bndr t1 t2 -> do
     t1' <- normalize t1
     t2' <- local ((bndr, t1') :) (normalize t2)
-    pure $ Pi bndr t2' t2'
+    pure $ Pi bndr t1' t2'
   t -> pure t
 
 --------------------
@@ -169,7 +169,7 @@ subst x s = \case
   App t1 t2 -> App (subst x s t1) (subst x s t2)
   Abs y ty t1 | x /= y && y `notElem` freevars s -> Abs y (subst x s ty) (subst x s t1)
               | otherwise -> error "oops name collision"
-  Pi y t1 t2 | x /= y && y `notElem` freevars s -> Abs y (subst x s t1) (subst x s t2)
+  Pi y t1 t2 | x /= y && y `notElem` freevars s -> Pi y (subst x s t1) (subst x s t2)
               | otherwise -> error "oops name collision"
   Universe k -> Universe k
 
@@ -185,20 +185,19 @@ freevars = \case
 --- Sample Terms ---
 --------------------
 
-identity :: Term
-identity = Abs "A" (Universe 0) (Abs "x" (Var "A") (Var "x"))
+identity :: Int -> Term
+identity n = Abs "A" (Universe n) (Abs "x" (Var "A") (Var "x"))
 
-identity1 :: Term
-identity1 = Abs "A" (Universe 1) (Abs "x" (Var "A") (Var "x"))
+identityType :: Int -> Term
+identityType n = (Pi "B" (Universe n) (Pi "y" (Var "B") (Var "B")))
+
+appTest :: Term
+appTest = App (App (identity 1) (identityType 0)) (identity 0)
 
 constant :: Term
 constant =
   Abs "A" (Universe 0) $ Abs "B" (Universe 0) $
     Abs "x" (Var "A") $ Abs "y" (Var "B") (Var "x")
-
-appTest :: Term
-appTest =
-    App (App identity1 (Pi "A" (Universe 0) (Pi "x" (Var "A") (Var "x")))) identity
 
 ------------
 --- Main ---
