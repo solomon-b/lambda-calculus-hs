@@ -25,6 +25,7 @@ data Term
   | Pi Name Term Term
   | Abs Name Term Term
   | App Term Term
+  | Sigma Name Term Term
   deriving (Show, Eq)
 
 type Gamma = [(String, (Term, Maybe Term))]
@@ -37,6 +38,22 @@ lookupType name gamma = fst <$> lookup name gamma
 
 lookupValue :: Name -> Gamma -> Maybe Term
 lookupValue name gamma = snd =<< lookup name gamma
+
+----------------------
+--- Pretty Printer ---
+----------------------
+
+class Show a => Pretty a where
+  pretty :: a -> String
+  pretty = show
+
+instance Pretty Term where
+  pretty = \case
+    Var x -> x
+    App t1 t2 -> pretty t1 ++ " " ++ pretty t2
+    Abs bndr ty t0 -> "(λ" ++ bndr ++ " : " ++ pretty ty ++ ". " ++ pretty t0 ++ ")"
+    Pi bndr t1 t2 -> "(Π" ++ bndr ++ " : " ++ pretty t1 ++ ". " ++ pretty t2 ++ ")"
+    Universe k -> "Type" ++ show k
 
 ------------------------
 --- Alpha Conversion ---
@@ -80,6 +97,13 @@ alpha = \case
     put $ AlphaContext rest (M.insert bndr fresh registry)
     ty2' <- alpha ty2
     pure $ Pi fresh ty1' ty2'
+  t@(Sigma bndr ty1 ty2) -> do
+    Stream fresh rest <- gets _names
+    registry <- gets _register
+    ty1' <- alpha ty1
+    put $ AlphaContext rest (M.insert bndr fresh registry)
+    ty2' <- alpha ty2
+    pure $ Sigma fresh ty1' ty2'
   t -> pure t
 
 emptyContext :: AlphaContext
@@ -121,6 +145,10 @@ infer = \case
     k1 <- inferUniverse t1
     k2 <- local (extend bndr (t1, Nothing)) (inferUniverse t2)
     pure $ Universe (max k1 k2)
+  Sigma bndr t1 t2 -> do
+    k1 <- inferUniverse t1
+    k2 <- inferUniverse t2
+    pure $ Universe (max k1 k2)
   Universe k -> pure $ Universe (k + 1)
 
 inferUniverse :: Term -> InferM Int
@@ -142,6 +170,10 @@ equal e1 e2 =
     (Abs bndr ty t, Abs bndr' ty' t') ->
       if ty == ty'
          then equal t (subst bndr' (Var bndr) t')
+         else pure False
+    (Sigma bndr t1 t2, Sigma bndr' t1' t2') ->
+      if t1 == t1'
+         then equal t2 (subst bndr' (Var bndr) t2')
          else pure False
     _ -> pure False
 
@@ -165,6 +197,10 @@ normalize t = case t of
     t1' <- normalize t1
     t2' <- local (extend bndr (t1, Nothing)) (normalize t2)
     pure $ Pi bndr t1' t2'
+  Sigma bndr t1 t2 -> do
+    t1' <- normalize t1
+    t2' <- local (extend bndr (t1, Nothing)) (normalize t2)
+    pure $ Sigma bndr t1' t2'
   t -> pure t
 
 --------------------
@@ -212,8 +248,11 @@ constant =
 --- Main ---
 ------------
 
+check :: Term -> Either TypeErr String
+check = runInferM . fmap pretty . infer
+
 main :: IO ()
 main = do
   let t = alphaconvert appTest
   print t
-  print $ runInferM $ infer t
+  mapM_ putStrLn (check t)
