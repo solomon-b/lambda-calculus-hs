@@ -27,7 +27,16 @@ data Term
   | App Term Term
   deriving (Show, Eq)
 
-type Gamma = [(String, Term)]
+type Gamma = [(String, (Term, Maybe Term))]
+
+extend :: Name -> (Term, Maybe Term) -> Gamma -> Gamma
+extend bndr t gamma = (bndr, t) : gamma
+
+lookupType :: Name -> Gamma -> Maybe Term
+lookupType name gamma = fst <$> lookup name gamma
+
+lookupValue :: Name -> Gamma -> Maybe Term
+lookupValue name gamma = snd =<< lookup name gamma
 
 ------------------------
 --- Alpha Conversion ---
@@ -89,16 +98,16 @@ newtype InferM a =
   InferM { unInferM :: ExceptT TypeErr (Reader Gamma) a }
   deriving (Functor, Applicative, Monad, MonadReader Gamma, MonadError TypeErr)
 
-runInferM :: InferM Term -> Either TypeErr Term
+runInferM :: InferM a -> Either TypeErr a
 runInferM = flip runReader [] . runExceptT . unInferM
 
-inferType :: Term -> InferM Term
-inferType = \case
-  Var x -> asks (lookup x) >>= maybe (throwError TypeError) pure
+infer :: Term -> InferM Term
+infer = \case
+  Var x -> asks (lookupType x) >>= maybe (throwError TypeError) pure
   App t1 t2 ->
-    inferType t1 >>= normalize >>= \case
+    infer t1 >>= normalize >>= \case
       Pi bndr ty1 ty2 -> do
-          ty1' <- inferType t2
+          ty1' <- infer t2
           isEqual <- equal ty1 ty1'
           if isEqual
              then pure $ subst bndr t2 ty2
@@ -106,17 +115,17 @@ inferType = \case
       _ -> throwError TypeError
   Abs bndr ty t -> do
     inferUniverse ty
-    t' <- local ((bndr, ty) :) (inferType t)
+    t' <- local (extend bndr (ty, Nothing)) (infer t)
     pure $ Pi bndr ty t'
   Pi bndr t1 t2 -> do
     k1 <- inferUniverse t1
-    k2 <- local ((bndr, t1) :) (inferUniverse t2)
+    k2 <- local (extend bndr (t1, Nothing)) (inferUniverse t2)
     pure $ Universe (max k1 k2)
   Universe k -> pure $ Universe (k + 1)
 
 inferUniverse :: Term -> InferM Int
 inferUniverse t =
-  inferType t >>= normalize >>= \case
+  infer t >>= normalize >>= \case
     Universe k -> pure k
     _ -> throwError TypeError
 
@@ -142,7 +151,7 @@ equal e1 e2 =
 
 normalize :: Term -> InferM Term
 normalize t = case t of
-  Var x -> asks (lookup x) >>= maybe (pure t) normalize
+  Var x -> asks (lookupValue x) >>= maybe (pure t) normalize
   App t1 t2 -> do
     t2' <- normalize t2
     normalize t1 >>= \case
@@ -150,11 +159,11 @@ normalize t = case t of
       t1' -> pure $ App t1' t2'
   Abs bndr ty t -> do
     ty' <- normalize ty
-    t' <- local ((bndr, ty') :) (normalize t)
+    t' <- local (extend bndr (ty, Nothing)) (normalize t)
     pure $ Abs bndr ty' t'
   Pi bndr t1 t2 -> do
     t1' <- normalize t1
-    t2' <- local ((bndr, t1') :) (normalize t2)
+    t2' <- local (extend bndr (t1, Nothing)) (normalize t2)
     pure $ Pi bndr t1' t2'
   t -> pure t
 
@@ -207,4 +216,4 @@ main :: IO ()
 main = do
   let t = alphaconvert appTest
   print t
-  print $ runInferM $ inferType t
+  print $ runInferM $ infer t
