@@ -25,6 +25,18 @@ executable SimplyTyped
   build-depends:       base >=4.12 && <4.13, mtl, containers
   default-language:    Haskell2010
 
+executable SimplyTypedModules
+  main-is:             SimplyTypedModules.hs
+  hs-source-dirs:      main
+  build-depends:       base >=4.12 && <4.13, mtl, containers
+  default-language:    Haskell2010
+
+executable SimplyTypedPatterns
+  main-is:             SimplyTypedPatterns.hs
+  hs-source-dirs:      main
+  build-depends:       base >=4.12 && <4.13, mtl, containers
+  default-language:    Haskell2010
+
 executable SystemT
   main-is:             SystemT.hs
   hs-source-dirs:      main
