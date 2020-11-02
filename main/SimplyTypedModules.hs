@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 module Main where
 
+import Data.List (foldl')
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
 import Data.List ((\\))
@@ -28,6 +29,7 @@ data Term = Var String
 data Type = Type :-> Type | UnitT | BoolT
   deriving (Show, Eq)
 
+-- We store transient types and declarations in tuple now:
 type Gamma = [(String, (Type, Maybe Term))]
 
 data TypeErr = TypeError deriving (Show, Eq)
@@ -52,7 +54,7 @@ alpha = \case
     mx <- gets (M.lookup x . _register)
     case mx of
       Just x' -> pure $ Var x'
-      Nothing -> error "Something impossible happened"
+      Nothing -> pure $ Var x
   (App t1 t2) -> do
     t1' <- alpha t1
     t2' <- alpha t2
@@ -199,8 +201,30 @@ checkModule' (Module xs) = forM_ xs $ \x -> do
 runCheckModule :: Module -> Either TypeErr ()
 runCheckModule mod = runTypecheckM $ evalStateT (checkModule' mod) []
 
+inlineTerms :: [(String, Term)] -> Term -> Term
+inlineTerms xs term =
+  let f term (x, t) = case term of
+        Var x' | x == x' -> t
+        Abs bndr ty t1 -> Abs bndr ty (f t1 (x, t))
+        App t1 t2 -> App (f t1 (x, t)) (f t2 (x, t))
+        If t1 t2 t3 -> If (f t1 (x, t)) (f t2 (x, t)) (f t3 (x, t))
+        t -> t
+  in foldl' f term xs
+
+data Zipper a = Z [a] a [a]
+  deriving Show
+
 inlineModule :: Module -> Term
-inlineModule (Module decls) = undefined
+inlineModule (Module [x]) = snd x
+inlineModule (Module (x:xs)) =
+  let f (Z left curr []) = inlineTerms left (snd curr)
+      f (Z left curr (r:ight)) = f $ Z ((inlineTerms left <$> curr) : left) r ight
+  in f $ Z [] x xs
+
+execModule :: Module -> Either TypeErr Term
+execModule m@(Module decls) =
+  let main = inlineModule (Module decls )-- (fmap alphaconvert <$> decls))
+  in runCheckModule m >> pure (multiStepEval main)
 
 ------------
 --- Main ---
@@ -212,12 +236,12 @@ notT = Abs "p" BoolT (If (Var "p") F T)
 testModule :: Module
 testModule = Module [("tru", T), ("not", notT), ("main", (App (Var "not") (Var "tru")))]
 
+-- A module that should not pass typechecking:
 testModule' :: Module
 testModule' = Module [("tru", T), ("not", notT), ("main", (App (Var "not") Unit))]
 
 main :: IO ()
 main =
-  let term = alphaconvert (App notT T)
-  in case runTypecheckM $ typecheck term of
+  case execModule testModule of
     Left e -> print e
-    Right _ -> print (multiStepEval term)
+    Right t -> print t
