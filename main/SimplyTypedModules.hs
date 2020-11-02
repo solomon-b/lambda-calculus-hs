@@ -28,9 +28,6 @@ data Term = Var String
 data Type = Type :-> Type | UnitT | BoolT
   deriving (Show, Eq)
 
-data Module = Module { declarations :: [(String, Term)] }
-  deriving Show
-
 type Gamma = [(String, (Type, Maybe Term))]
 
 data TypeErr = TypeError deriving (Show, Eq)
@@ -128,26 +125,6 @@ typecheck = \case
       then pure ty1
       else throwError TypeError
 
-checkDecl :: (String, Term) -> TypecheckM (String, (Type, Maybe Term))
-checkDecl (bndr, term) = do
-  ty <- typecheck term
-  pure (bndr, (ty, Just term))
-
-checkModule :: Module -> TypecheckM ()
-checkModule (Module []) = pure ()
-checkModule (Module (x:xs)) = do
-  (bndr, (ty, term)) <- checkDecl x
-  local (extendTerm bndr ty term) $ checkModule (Module xs)
-
-checkModule' :: Module -> StateT Gamma TypecheckM ()
-checkModule' (Module xs) = forM_ xs $ \x -> do
-    gamma <- get
-    (bndr, (ty, term)) <- lift $ local (const gamma) (checkDecl x)
-    modify (extendTerm bndr ty term)
-
-runCheckModule :: Module -> Either TypeErr ()
-runCheckModule mod = runTypecheckM $ evalStateT (checkModule' mod) []
-
 --------------------
 --- Substitution ---
 --------------------
@@ -194,6 +171,36 @@ singleEval = \case
 
 multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
+
+---------------
+--- Modules ---
+---------------
+
+data Module = Module { declarations :: [(String, Term)] }
+  deriving Show
+
+checkDecl :: (String, Term) -> TypecheckM (String, (Type, Maybe Term))
+checkDecl (bndr, term) = do
+  ty <- typecheck term
+  pure (bndr, (ty, Just term))
+
+checkModule :: Module -> TypecheckM ()
+checkModule (Module []) = pure ()
+checkModule (Module (x:xs)) = do
+  (bndr, (ty, term)) <- checkDecl x
+  local (extendTerm bndr ty term) $ checkModule (Module xs)
+
+checkModule' :: Module -> StateT Gamma TypecheckM ()
+checkModule' (Module xs) = forM_ xs $ \x -> do
+    gamma <- get
+    (bndr, (ty, term)) <- lift $ local (const gamma) (checkDecl x)
+    modify (extendTerm bndr ty term)
+
+runCheckModule :: Module -> Either TypeErr ()
+runCheckModule mod = runTypecheckM $ evalStateT (checkModule' mod) []
+
+inlineModule :: Module -> Term
+inlineModule (Module decls) = undefined
 
 ------------
 --- Main ---
