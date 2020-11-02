@@ -4,9 +4,11 @@
 {-# LANGUAGE FlexibleContexts #-}
 module Main where
 
+import Data.List (foldl')
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
 import Data.List ((\\))
+import Control.Monad
 import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad.Except
@@ -38,7 +40,7 @@ data DataConstructors = DataConstructors
   , dataConstructors    :: [(String, Type)]
   } deriving Show
 
-type Gamma = [(String, Type)]
+type Gamma = [(String, (Type, Maybe Term))]
 
 data TypeErr = TypeError deriving (Show, Eq)
 
@@ -62,7 +64,7 @@ alpha = \case
     mx <- gets (M.lookup x . _register)
     case mx of
       Just x' -> pure $ Var x'
-      Nothing -> error "Something impossible happened"
+      Nothing -> pure $ Var x
   App t1 t2 -> do
     t1' <- alpha t1
     t2' <- alpha t2
@@ -98,16 +100,28 @@ newtype TypecheckM a =
   TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Gamma) a }
   deriving (Functor, Applicative, Monad, MonadReader Gamma, MonadError TypeErr)
 
-runTypecheckM :: TypecheckM Type -> Either TypeErr Type
+extendTypecheckM :: Gamma -> TypecheckM a -> Either TypeErr a
+extendTypecheckM gamma = flip runReader gamma . runExceptT . unTypecheckM
+
+runTypecheckM :: TypecheckM a -> Either TypeErr a
 runTypecheckM = flip runReader [] . runExceptT . unTypecheckM
+
+extendType :: String -> Type -> Gamma -> Gamma
+extendType bndr t gamma = (bndr, (t, Nothing)) : gamma
+
+extendTerm :: String -> Type -> Maybe Term -> Gamma -> Gamma
+extendTerm bndr ty t gamma = (bndr, (ty, t)) : gamma
+
+lookupType :: String -> Gamma -> Maybe Type
+lookupType s gamma = fst <$> lookup s gamma
 
 typecheck :: Term -> TypecheckM Type
 typecheck = \case
   Var x -> do
-    ty <- asks $ lookup x
+    ty <- asks $ lookupType x
     maybe (throwError TypeError) pure ty
   Abs bndr ty1 trm -> do
-    ty2 <- local ((:) (bndr, ty1)) (typecheck trm)
+    ty2 <- local (extendType bndr ty1) (typecheck trm)
     pure $ ty1 :-> ty2
   App t1 t2 -> do
     ty1 <- typecheck t1
@@ -144,7 +158,7 @@ subst x s = \case
   (Var x') | x == x' -> s
   (Var y) -> Var y
   (Abs y ty t1) | x /= y && y `notElem` freevars s -> Abs y ty (subst x s t1)
-             | otherwise -> error "oops name collision"
+                | otherwise -> error "oops name collision"
   (App t1 t2) -> App (subst x s t1) (subst x s t2)
   (If t0 t1 t2) -> If (subst x s t0) (subst x s t1) (subst x s t2)
   T -> T
@@ -182,6 +196,52 @@ singleEval = \case
 multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
 
+---------------
+--- Modules ---
+---------------
+
+data Module = Module { declarations :: [(String, Term)] }
+  deriving Show
+
+checkDecl :: (String, Term) -> TypecheckM (String, (Type, Maybe Term))
+checkDecl (bndr, term) = do
+  ty <- typecheck term
+  pure (bndr, (ty, Just term))
+
+checkModule :: Module -> StateT Gamma TypecheckM ()
+checkModule (Module xs) = forM_ xs $ \x -> do
+    gamma <- get
+    (bndr, (ty, term)) <- lift $ local (const gamma) (checkDecl x)
+    modify (extendTerm bndr ty term)
+
+runCheckModule :: Module -> Either TypeErr ()
+runCheckModule mod = runTypecheckM $ evalStateT (checkModule mod) []
+
+inlineTerms :: [(String, Term)] -> Term -> Term
+inlineTerms xs term =
+  let f term (x, t) = case term of
+        Var x' | x == x' -> t
+        Abs bndr ty t1 -> Abs bndr ty (f t1 (x, t))
+        App t1 t2 -> App (f t1 (x, t)) (f t2 (x, t))
+        If t1 t2 t3 -> If (f t1 (x, t)) (f t2 (x, t)) (f t3 (x, t))
+        t -> t
+  in foldl' f term xs
+
+data Zipper a = Z [a] a [a]
+  deriving Show
+
+inlineModule :: Module -> Term
+inlineModule (Module [x]) = snd x
+inlineModule (Module (x:xs)) =
+  let f (Z left curr []) = inlineTerms left (snd curr)
+      f (Z left curr (r:ight)) = f $ Z ((inlineTerms left <$> curr) : left) r ight
+  in f $ Z [] x xs
+
+execModule :: Module -> Either TypeErr Term
+execModule m@(Module decls) =
+  let main = inlineModule (Module (fmap alphaconvert <$> decls))
+  in runCheckModule m >> pure (multiStepEval main)
+
 ------------
 --- Main ---
 ------------
@@ -189,9 +249,11 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
 notT :: Term
 notT = Abs "p" BoolT (If (Var "p") F T)
 
+testModule :: Module
+testModule = Module [("tru", T), ("not", notT), ("main", (App (Var "not") (Var "tru")))]
+
 main :: IO ()
 main =
-  let term = alphaconvert (App notT T)
-  in case runTypecheckM $ typecheck term of
+  case execModule testModule of
     Left e -> print e
-    Right _ -> print (multiStepEval term)
+    Right t -> print t

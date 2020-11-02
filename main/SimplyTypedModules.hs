@@ -223,7 +223,7 @@ inlineModule (Module (x:xs)) =
 
 execModule :: Module -> Either TypeErr Term
 execModule m@(Module decls) =
-  let main = inlineModule (Module decls )-- (fmap alphaconvert <$> decls))
+  let main = inlineModule (Module (fmap alphaconvert <$> decls))
   in runCheckModule m >> pure (multiStepEval main)
 
 ------------
