@@ -2,12 +2,17 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Main where
 
-import Data.List (foldl')
+import Data.Foldable
+import qualified Data.List.NonEmpty as NEL
+import Data.List.NonEmpty (NonEmpty(..))
+import Data.List (foldl', foldl1')
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
-import Data.List ((\\))
+import Data.List ((\\), sort)
+import Control.Lens hiding (Context)
 import Control.Monad
 import Control.Monad.State
 import Control.Monad.Reader
@@ -17,30 +22,36 @@ import Control.Monad.Except
 --- Terms ---
 -------------
 
-data Term = Var String
-          | Abs String Type Term
-          | App Term Term
-          | Unit
-          | T
-          | F
-          | If Term Term Term
-          | Case Term [(String, Term)]
+data Term =
+    Var String
+  | Abs String Type Term
+  | App Term Term
+  | Unit
+  | T
+  | F
+  | If Term Term Term
+  | Constructor String
+  | Case Term [(NonEmpty String, Term)]
   deriving Show
 
-data Type = Type :-> Type | UnitT | BoolT
+data Type = Type :-> Type | UnitT | BoolT | TypeConstructor String
   deriving (Show, Eq)
 
-data Declaration =
-    DataDeclaration DataConstructors
-  | TermDeclaration Term
-  deriving Show
-
-data DataConstructors = DataConstructors
-  { typeConstructorName :: String
-  , dataConstructors    :: [(String, Type)]
+data DataConstructor = DataConstructor
+  { _typeConstructorName :: String
+  , _dataConstructors    :: [(String, [Type])]
   } deriving Show
+makeLenses ''DataConstructor
 
-type Gamma = [(String, (Type, Maybe Term))]
+data Context = Context
+  { _gamma :: Map String Type
+  , _dataDeclarations :: Map String DataConstructor
+  , _valueDeclarations :: Map String Term
+  } deriving Show
+makeLenses ''Context
+
+emptyContext :: Context
+emptyContext = Context M.empty M.empty M.empty
 
 data TypeErr = TypeError deriving (Show, Eq)
 
@@ -86,42 +97,42 @@ alpha = \case
     pure $ Case t1' patterns'
   t -> pure t
 
-emptyContext :: AlphaContext
-emptyContext = AlphaContext (stream names) (M.empty)
+emptyAlphaContext :: AlphaContext
+emptyAlphaContext = AlphaContext (stream names) (M.empty)
 
 alphaconvert :: Term -> Term
-alphaconvert term = evalState (alpha term) emptyContext
+alphaconvert term = evalState (alpha term) emptyAlphaContext
 
 --------------------
 --- Typechecking ---
 --------------------
 
 newtype TypecheckM a =
-  TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Gamma) a }
-  deriving (Functor, Applicative, Monad, MonadReader Gamma, MonadError TypeErr)
+  TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Context) a }
+  deriving (Functor, Applicative, Monad, MonadReader Context, MonadError TypeErr)
 
-extendTypecheckM :: Gamma -> TypecheckM a -> Either TypeErr a
-extendTypecheckM gamma = flip runReader gamma . runExceptT . unTypecheckM
+extendTypecheckM :: Context -> TypecheckM a -> Either TypeErr a
+extendTypecheckM gamma = flip runReader emptyContext . runExceptT . unTypecheckM
 
 runTypecheckM :: TypecheckM a -> Either TypeErr a
-runTypecheckM = flip runReader [] . runExceptT . unTypecheckM
+runTypecheckM = flip runReader emptyContext . runExceptT . unTypecheckM
 
-extendType :: String -> Type -> Gamma -> Gamma
-extendType bndr t gamma = (bndr, (t, Nothing)) : gamma
+--extendTerm :: String -> Type -> Maybe Term -> Gamma -> Gamma
+--extendTerm bndr ty t gamma = M.insert bndr (ty, TermDeclaration <$> t)  gamma
 
-extendTerm :: String -> Type -> Maybe Term -> Gamma -> Gamma
-extendTerm bndr ty t gamma = (bndr, (ty, t)) : gamma
+--extendDecl :: String -> Type -> Declaration -> Gamma -> Gamma
+--extendDecl bndr ty d gamma = M.insert bndr (ty, Just d) gamma
 
-lookupType :: String -> Gamma -> Maybe Type
-lookupType s gamma = fst <$> lookup s gamma
+--lookupDecl :: String -> Gamma -> Maybe Declaration
+--lookupDecl cnstr gamma = join $ snd <$> M.lookup cnstr gamma
 
 typecheck :: Term -> TypecheckM Type
 typecheck = \case
   Var x -> do
-    ty <- asks $ lookupType x
+    ty <- view (gamma . at x)
     maybe (throwError TypeError) pure ty
   Abs bndr ty1 trm -> do
-    ty2 <- local (extendType bndr ty1) (typecheck trm)
+    ty2 <- local (gamma %~ M.insert bndr ty1) (typecheck trm)
     pure $ ty1 :-> ty2
   App t1 t2 -> do
     ty1 <- typecheck t1
@@ -140,14 +151,43 @@ typecheck = \case
     if ty0 == BoolT && ty1 == ty2
       then pure ty1
       else throwError TypeError
-  Case t1 patterns -> do
-    ty1 <- typecheck t1
-    undefined
+  Constructor cnstr ->
+      view (gamma . at cnstr) >>= maybe (throwError TypeError) pure
+  Case t1 patterns ->
+    typecheck t1 >>= \case
+      TypeConstructor tycon -> do
+        view (dataDeclarations . at tycon) >>= \case
+          Just decl -> do
+            let consTags = sort $ decl ^.. dataConstructors . folded . _1
+                pattTags = sort $ NEL.head <$> patterns ^.. folded . _1
+            if consTags == pattTags
+               then checkPatterns decl patterns
+               else throwError TypeError
+          Nothing -> throwError TypeError
+      _ -> throwError TypeError
 
-checker :: Declaration -> TypecheckM Type
-checker = \case
-  DataDeclaration (DataConstructors tyCnstr tCnstrs) -> undefined
-  TermDeclaration t1 -> typecheck t1
+checkPattern :: DataConstructor -> (NonEmpty String, Term) -> TypecheckM Type
+checkPattern decl (cnstr :| xs, term) = do
+  let cnstrs = decl ^. dataConstructors
+  case lookup cnstr cnstrs of
+    Just ys ->
+      if length xs == length ys
+         then local (gamma %~ (`M.union` M.fromList (zip xs ys))) (typecheck term)
+         else throwError TypeError
+    Nothing -> throwError TypeError
+
+checkPatterns :: DataConstructor -> [(NonEmpty String, Term)] -> TypecheckM Type
+checkPatterns decl patterns = do
+  traverse (checkPattern decl) patterns >>= \case
+    [] -> throwError TypeError
+    (x:xs) -> if all (== x) xs
+                 then pure x
+                 else throwError TypeError
+
+--checker :: Declaration -> TypecheckM Type
+--checker = \case
+--  DataDeclaration (DataConstructor tyCnstr tCnstrs) -> undefined
+--  TermDeclaration t1 -> typecheck t1
 
 --------------------
 --- Substitution ---
@@ -208,14 +248,14 @@ checkDecl (bndr, term) = do
   ty <- typecheck term
   pure (bndr, (ty, Just term))
 
-checkModule :: Module -> StateT Gamma TypecheckM ()
-checkModule (Module xs) = forM_ xs $ \x -> do
-    gamma <- get
-    (bndr, (ty, term)) <- lift $ local (const gamma) (checkDecl x)
-    modify (extendTerm bndr ty term)
+--checkModule :: Module -> StateT Gamma TypecheckM ()
+--checkModule (Module xs) = forM_ xs $ \x -> do
+--    gamma <- get
+--    (bndr, (ty, term)) <- lift $ local (const gamma) (checkDecl x)
+--    modify (extendTerm bndr ty term)
 
-runCheckModule :: Module -> Either TypeErr ()
-runCheckModule mod = runTypecheckM $ evalStateT (checkModule mod) []
+--runCheckModule :: Module -> Either TypeErr ()
+--runCheckModule mod = runTypecheckM $ evalStateT (checkModule mod) M.empty
 
 inlineTerms :: [(String, Term)] -> Term -> Term
 inlineTerms xs term =
@@ -240,7 +280,7 @@ inlineModule (Module (x:xs)) =
 execModule :: Module -> Either TypeErr Term
 execModule m@(Module decls) =
   let main = inlineModule (Module (fmap alphaconvert <$> decls))
-  in runCheckModule m >> pure (multiStepEval main)
+  in undefined -- runCheckModule m >> pure (multiStepEval main)
 
 ------------
 --- Main ---
@@ -248,6 +288,18 @@ execModule m@(Module decls) =
 
 notT :: Term
 notT = Abs "p" BoolT (If (Var "p") F T)
+
+boolDec :: DataConstructor
+boolDec = DataConstructor
+  { _typeConstructorName = "Boolean"
+  , _dataConstructors    = [("True", []) , ("False", [])]
+  }
+
+idBoolDec :: DataConstructor
+idBoolDec = DataConstructor
+  { _typeConstructorName = "IdBool"
+  , _dataConstructors = [("IdBool", [TypeConstructor "Boolean"])]
+  }
 
 testModule :: Module
 testModule = Module [("tru", T), ("not", notT), ("main", (App (Var "not") (Var "tru")))]
