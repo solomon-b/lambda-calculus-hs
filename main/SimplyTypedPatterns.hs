@@ -117,15 +117,6 @@ extendTypecheckM gamma = flip runReader emptyContext . runExceptT . unTypecheckM
 runTypecheckM :: TypecheckM a -> Either TypeErr a
 runTypecheckM = flip runReader emptyContext . runExceptT . unTypecheckM
 
---extendTerm :: String -> Type -> Maybe Term -> Gamma -> Gamma
---extendTerm bndr ty t gamma = M.insert bndr (ty, TermDeclaration <$> t)  gamma
-
---extendDecl :: String -> Type -> Declaration -> Gamma -> Gamma
---extendDecl bndr ty d gamma = M.insert bndr (ty, Just d) gamma
-
---lookupDecl :: String -> Gamma -> Maybe Declaration
---lookupDecl cnstr gamma = join $ snd <$> M.lookup cnstr gamma
-
 typecheck :: Term -> TypecheckM Type
 typecheck = \case
   Var x -> do
@@ -183,11 +174,6 @@ checkPatterns decl patterns = do
     (x:xs) -> if all (== x) xs
                  then pure x
                  else throwError TypeError
-
---checker :: Declaration -> TypecheckM Type
---checker = \case
---  DataDeclaration (DataConstructor tyCnstr tCnstrs) -> undefined
---  TermDeclaration t1 -> typecheck t1
 
 --------------------
 --- Substitution ---
