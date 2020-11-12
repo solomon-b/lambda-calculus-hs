@@ -222,12 +222,20 @@ isVal = \case
 
 singleEval :: Term -> Maybe Term
 singleEval = \case
-  (App (Abs x ty t12) v2) | isVal v2 -> Just $ subst x v2 t12
-  (App v1@Abs{} t2) -> App v1 <$> singleEval t2
-  (App t1 t2) -> flip App t2 <$> singleEval t1
-  (If T t2 t3) -> pure t2
-  (If F t2 t3) -> pure t3
+  App (Abs x ty t12) v2 | isVal v2 -> Just $ subst x v2 t12
+  App v1@Abs{} t2 -> App v1 <$> singleEval t2
+  App t1 t2 -> flip App t2 <$> singleEval t1
+  If T t2 t3 -> pure t2
+  If F t2 t3 -> pure t3
+  Case v1 pattrns | isVal v1 -> match v1 pattrns
+  Case t1 pattrns -> flip Case pattrns <$> singleEval t1
   _ -> Nothing
+
+match :: Term -> [(NonEmpty String, Term)] -> Maybe Term
+match (Constructor cnstr) pattrns =
+  let xs = map (\(x:|xs, y) -> (x, y)) pattrns
+  in lookup cnstr xs
+match _ pattrns = Nothing
 
 multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
@@ -319,7 +327,7 @@ caseTest =
     Case (Var "x") [("Id" :| ["y"], Var "y")]
 
 main :: IO ()
-main =
-  case extendTypecheckM testContext (typecheck (App notT (Constructor "True"))) of
-    Left e -> print e
-    Right t -> print t
+main = do
+  let term = App notT (Constructor "True")
+  print $ extendTypecheckM testContext (typecheck term)
+  print $ multiStepEval term
