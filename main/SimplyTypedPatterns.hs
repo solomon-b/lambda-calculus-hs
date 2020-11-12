@@ -22,9 +22,12 @@ import Control.Monad.Except
 --- Terms ---
 -------------
 
+type Tycon = String
+type Binding = String
+
 data Term =
-    Var String
-  | Abs String Type Term
+    Var Binding
+  | Abs Binding Type Term
   | App Term Term
   | Unit
   | T
@@ -44,9 +47,9 @@ data DataConstructor = DataConstructor
 makeLenses ''DataConstructor
 
 data Context = Context
-  { _gamma :: Map String Type
-  , _dataDeclarations :: Map String DataConstructor
-  , _valueDeclarations :: Map String Term
+  { _gamma :: Map Binding Type
+  , _dataDeclarations :: Map Tycon DataConstructor
+  , _valueDeclarations :: Map Binding Term
   } deriving Show
 makeLenses ''Context
 
@@ -112,7 +115,7 @@ newtype TypecheckM a =
   deriving (Functor, Applicative, Monad, MonadReader Context, MonadError TypeErr)
 
 extendTypecheckM :: Context -> TypecheckM a -> Either TypeErr a
-extendTypecheckM gamma = flip runReader emptyContext . runExceptT . unTypecheckM
+extendTypecheckM gamma = flip runReader gamma . runExceptT . unTypecheckM
 
 runTypecheckM :: TypecheckM a -> Either TypeErr a
 runTypecheckM = flip runReader emptyContext . runExceptT . unTypecheckM
@@ -130,7 +133,7 @@ typecheck = \case
     case ty1 of
       tyA :-> tyB -> do
         ty2 <- typecheck t2
-        if tyA == ty2 then pure ty1 else throwError TypeError
+        if tyA == ty2 then pure tyB else throwError TypeError
       _ -> throwError TypeError
   Unit -> pure UnitT
   T -> pure BoolT
@@ -142,8 +145,10 @@ typecheck = \case
     if ty0 == BoolT && ty1 == ty2
       then pure ty1
       else throwError TypeError
-  Constructor cnstr ->
-      view (gamma . at cnstr) >>= maybe (throwError TypeError) pure
+  Constructor cnstr -> do
+    tycon <- view (gamma . at cnstr)
+    g <- view gamma
+    maybe (throwError TypeError) pure tycon
   Case t1 patterns ->
     typecheck t1 >>= \case
       TypeConstructor tycon -> do
@@ -190,13 +195,17 @@ subst x s = \case
   T -> T
   F -> F
   Unit -> Unit
+  Constructor cstr -> Constructor cstr
+  Case t1 pattrns -> Case (subst x s t1) (fmap (subst x s) <$> pattrns)
 
 freevars :: Term -> [String]
 freevars = \case
-  (Var x)       -> [x]
-  (Abs x ty t)  -> freevars t \\ [x]
-  (App t1 t2)   -> freevars t1 ++ freevars t2
-  (If t0 t1 t2) -> freevars t0 ++ freevars t1 ++ freevars t2
+  Var x       -> [x]
+  Abs x ty t  -> freevars t \\ [x]
+  App t1 t2   -> freevars t1 ++ freevars t2
+  If t0 t1 t2 -> freevars t0 ++ freevars t1 ++ freevars t2
+  Constructor x -> [x]
+  Case t1 pattrns -> freevars t1 ++ concatMapOf (folded . _2) freevars pattrns
 
 ------------------
 --- Evaluation ---
@@ -208,6 +217,7 @@ isVal = \case
   T     -> True
   F     -> True
   Unit  -> True
+  Constructor x -> True
   _     -> False
 
 singleEval :: Term -> Maybe Term
@@ -273,7 +283,11 @@ execModule m@(Module decls) =
 ------------
 
 notT :: Term
-notT = Abs "p" BoolT (If (Var "p") F T)
+notT =
+  Abs "p" (TypeConstructor "Boolean") $
+    Case (Var "p") [ ("True" :| [], Constructor "False")
+                   , ("False" :| [], Constructor "True")
+                   ]
 
 boolDec :: DataConstructor
 boolDec = DataConstructor
@@ -283,15 +297,29 @@ boolDec = DataConstructor
 
 idBoolDec :: DataConstructor
 idBoolDec = DataConstructor
-  { _typeConstructorName = "IdBool"
-  , _dataConstructors = [("IdBool", [TypeConstructor "Boolean"])]
+  { _typeConstructorName = "IdT"
+  , _dataConstructors = [("Id", [TypeConstructor "Boolean"])]
   }
 
-testModule :: Module
-testModule = Module [("tru", T), ("not", notT), ("main", (App (Var "not") (Var "tru")))]
+testContext :: Context
+testContext = Context g d f
+  where
+    g = M.fromList [ ("Id", (TypeConstructor "Boolean" :-> TypeConstructor "IdT"))
+                   , ("True", TypeConstructor "Boolean")
+                   , ("False", TypeConstructor "Boolean")
+                   ]
+    d = M.fromList [ ("Boolean", (DataConstructor "Boolean" [("True", []), ("False", [])]))
+                   , ("IdT", (DataConstructor "IdT" [("Id", [TypeConstructor "Boolean"])]))
+                   ]
+    f = M.empty
+
+caseTest :: Term
+caseTest =
+  Abs "x" (TypeConstructor "IdT") $
+    Case (Var "x") [("Id" :| ["y"], Var "y")]
 
 main :: IO ()
 main =
-  case execModule testModule of
+  case extendTypecheckM testContext (typecheck (App notT (Constructor "True"))) of
     Left e -> print e
     Right t -> print t
