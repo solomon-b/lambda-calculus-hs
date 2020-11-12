@@ -45,12 +45,11 @@ makeLenses ''DataConstructor
 data Context = Context
   { _gamma :: Map Binding Type
   , _dataDeclarations :: Map Tycon DataConstructor
-  , _valueDeclarations :: Map Binding Term
   } deriving Show
 makeLenses ''Context
 
 emptyContext :: Context
-emptyContext = Context M.empty M.empty M.empty
+emptyContext = Context M.empty M.empty
 
 data TypeErr = TypeError deriving (Show, Eq)
 
@@ -211,76 +210,12 @@ match _ pattrns = Nothing
 multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
 
----------------
---- Modules ---
----------------
-
-data Module = Module { declarations :: [(String, Term)] }
-  deriving Show
-
-checkDecl :: (String, Term) -> TypecheckM (String, (Type, Maybe Term))
-checkDecl (bndr, term) = do
-  ty <- typecheck term
-  pure (bndr, (ty, Just term))
-
---checkModule :: Module -> StateT Gamma TypecheckM ()
---checkModule (Module xs) = forM_ xs $ \x -> do
---    gamma <- get
---    (bndr, (ty, term)) <- lift $ local (const gamma) (checkDecl x)
---    modify (extendTerm bndr ty term)
-
---runCheckModule :: Module -> Either TypeErr ()
---runCheckModule mod = runTypecheckM $ evalStateT (checkModule mod) M.empty
-
-inlineTerms :: [(String, Term)] -> Term -> Term
-inlineTerms xs term =
-  let f term (x, t) = case term of
-        Var x' | x == x' -> t
-        Abs bndr ty t1 -> Abs bndr ty (f t1 (x, t))
-        App t1 t2 -> App (f t1 (x, t)) (f t2 (x, t))
-        t -> t
-  in foldl' f term xs
-
-data Zipper a = Z [a] a [a]
-  deriving Show
-
-inlineModule :: Module -> Term
-inlineModule (Module [x]) = snd x
-inlineModule (Module (x:xs)) =
-  let f (Z left curr []) = inlineTerms left (snd curr)
-      f (Z left curr (r:ight)) = f $ Z ((inlineTerms left <$> curr) : left) r ight
-  in f $ Z [] x xs
-
-execModule :: Module -> Either TypeErr Term
-execModule m@(Module decls) =
-  let main = inlineModule (Module (fmap alphaconvert <$> decls))
-  in undefined -- runCheckModule m >> pure (multiStepEval main)
-
 ------------
 --- Main ---
 ------------
 
-notT :: Term
-notT =
-  Abs "p" (TypeConstructor "Boolean") $
-    Case (Var "p") [ ("True" :| [], Constructor "False")
-                   , ("False" :| [], Constructor "True")
-                   ]
-
-boolDec :: DataConstructor
-boolDec = DataConstructor
-  { _typeConstructorName = "Boolean"
-  , _dataConstructors    = [("True", []) , ("False", [])]
-  }
-
-idBoolDec :: DataConstructor
-idBoolDec = DataConstructor
-  { _typeConstructorName = "IdT"
-  , _dataConstructors = [("Id", [TypeConstructor "Boolean"])]
-  }
-
 testContext :: Context
-testContext = Context g d f
+testContext = Context g d
   where
     g = M.fromList [ ("Id", (TypeConstructor "Boolean" :-> TypeConstructor "IdT"))
                    , ("True", TypeConstructor "Boolean")
@@ -289,7 +224,13 @@ testContext = Context g d f
     d = M.fromList [ ("Boolean", (DataConstructor "Boolean" [("True", []), ("False", [])]))
                    , ("IdT", (DataConstructor "IdT" [("Id", [TypeConstructor "Boolean"])]))
                    ]
-    f = M.empty
+
+notT :: Term
+notT =
+  Abs "p" (TypeConstructor "Boolean") $
+    Case (Var "p") [ ("True" :| [], Constructor "False")
+                   , ("False" :| [], Constructor "True")
+                   ]
 
 caseTest :: Term
 caseTest =
