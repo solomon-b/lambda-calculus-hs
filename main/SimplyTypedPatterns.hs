@@ -29,15 +29,11 @@ data Term =
     Var Binding
   | Abs Binding Type Term
   | App Term Term
-  | Unit
-  | T
-  | F
-  | If Term Term Term
   | Constructor String
   | Case Term [(NonEmpty String, Term)]
   deriving Show
 
-data Type = Type :-> Type | UnitT | BoolT | TypeConstructor String
+data Type = Type :-> Type | TypeConstructor String
   deriving (Show, Eq)
 
 data DataConstructor = DataConstructor
@@ -89,11 +85,6 @@ alpha = \case
     put $ AlphaContext rest (M.insert bndr fresh registry)
     term' <- alpha term
     pure $ Abs fresh ty term'
-  If t1 t2 t3 -> do
-    t1' <- alpha t1
-    t2' <- alpha t2
-    t3' <- alpha t3
-    pure $ If t1' t2' t3'
   Case t1 patterns -> do
     t1' <- alpha t1
     patterns' <- (traverse . traverse) alpha patterns
@@ -135,16 +126,6 @@ typecheck = \case
         ty2 <- typecheck t2
         if tyA == ty2 then pure tyB else throwError TypeError
       _ -> throwError TypeError
-  Unit -> pure UnitT
-  T -> pure BoolT
-  F -> pure BoolT
-  If t0 t1 t2 -> do
-    ty0 <- typecheck t0
-    ty1 <- typecheck t1
-    ty2 <- typecheck t2
-    if ty0 == BoolT && ty1 == ty2
-      then pure ty1
-      else throwError TypeError
   Constructor cnstr -> do
     tycon <- view (gamma . at cnstr)
     g <- view gamma
@@ -191,10 +172,6 @@ subst x s = \case
   (Abs y ty t1) | x /= y && y `notElem` freevars s -> Abs y ty (subst x s t1)
                 | otherwise -> error "oops name collision"
   (App t1 t2) -> App (subst x s t1) (subst x s t2)
-  (If t0 t1 t2) -> If (subst x s t0) (subst x s t1) (subst x s t2)
-  T -> T
-  F -> F
-  Unit -> Unit
   Constructor cstr -> Constructor cstr
   Case t1 pattrns -> Case (subst x s t1) (fmap (subst x s) <$> pattrns)
 
@@ -203,7 +180,6 @@ freevars = \case
   Var x       -> [x]
   Abs x ty t  -> freevars t \\ [x]
   App t1 t2   -> freevars t1 ++ freevars t2
-  If t0 t1 t2 -> freevars t0 ++ freevars t1 ++ freevars t2
   Constructor x -> [x]
   Case t1 pattrns -> freevars t1 ++ concatMapOf (folded . _2) freevars pattrns
 
@@ -214,9 +190,6 @@ freevars = \case
 isVal :: Term -> Bool
 isVal = \case
   Abs{} -> True
-  T     -> True
-  F     -> True
-  Unit  -> True
   Constructor x -> True
   _     -> False
 
@@ -225,8 +198,6 @@ singleEval = \case
   App (Abs x ty t12) v2 | isVal v2 -> Just $ subst x v2 t12
   App v1@Abs{} t2 -> App v1 <$> singleEval t2
   App t1 t2 -> flip App t2 <$> singleEval t1
-  If T t2 t3 -> pure t2
-  If F t2 t3 -> pure t3
   Case v1 pattrns | isVal v1 -> match v1 pattrns
   Case t1 pattrns -> flip Case pattrns <$> singleEval t1
   _ -> Nothing
@@ -267,7 +238,6 @@ inlineTerms xs term =
         Var x' | x == x' -> t
         Abs bndr ty t1 -> Abs bndr ty (f t1 (x, t))
         App t1 t2 -> App (f t1 (x, t)) (f t2 (x, t))
-        If t1 t2 t3 -> If (f t1 (x, t)) (f t2 (x, t)) (f t3 (x, t))
         t -> t
   in foldl' f term xs
 
