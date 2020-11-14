@@ -254,5 +254,6 @@ check = runInferM . fmap pretty . infer
 main :: IO ()
 main = do
   let t = alphaconvert appTest
-  print t
+  putStrLn (pretty t)
   mapM_ putStrLn (check t)
+  mapM_ putStrLn $ runInferM $ fmap pretty $ normalize t
