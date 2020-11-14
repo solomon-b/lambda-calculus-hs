@@ -6,13 +6,11 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Main where
 
-import Data.Foldable
 import qualified Data.List.NonEmpty as NEL
 import Data.List.NonEmpty (NonEmpty(..))
-import Data.List (foldl', foldl1')
+import Data.List ((\\), sort, foldl')
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
-import Data.List ((\\), sort)
 import Control.Lens hiding (Context)
 import Control.Monad
 import Control.Monad.State
