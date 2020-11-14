@@ -1,3 +1,4 @@
+{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveFunctor #-}
@@ -18,6 +19,8 @@ import Control.Monad.State
 import Control.Monad.Reader
 import Control.Monad.Except
 
+import Debug.Trace
+
 -------------
 --- Terms ---
 -------------
@@ -33,6 +36,7 @@ data Term =
   | Case Term [(NonEmpty String, Term)]
   deriving Show
 
+infixr 0 :->
 data Type = Type :-> Type | TypeConstructor String
   deriving (Show, Eq)
 
@@ -129,7 +133,7 @@ typecheck = \case
     tycon <- view (gamma . at cnstr)
     g <- view gamma
     maybe (throwError TypeError) pure tycon
-  Case t1 patterns ->
+  Case t1 patterns -> do
     typecheck t1 >>= \case
       TypeConstructor tycon -> do
         view (dataDeclarations . at tycon) >>= \case
@@ -148,7 +152,7 @@ checkPattern decl (cnstr :| xs, term) = do
   case lookup cnstr cnstrs of
     Just ys ->
       if length xs == length ys
-         then local (gamma %~ (`M.union` M.fromList (zip xs ys))) (typecheck term)
+         then local (gamma <>~ (M.fromList (zip xs ys))) (typecheck term)
          else throwError TypeError
     Nothing -> throwError TypeError
 
@@ -173,6 +177,11 @@ subst x s = \case
   (App t1 t2) -> App (subst x s t1) (subst x s t2)
   Constructor cstr -> Constructor cstr
   Case t1 pattrns -> Case (subst x s t1) (fmap (subst x s) <$> pattrns)
+
+substs :: [String] -> [Term] -> Term -> Term
+substs bndrs ts t =
+  let fs = zipWith subst bndrs ts
+  in foldl' (&) t fs
 
 freevars :: Term -> [String]
 freevars = \case
@@ -210,27 +219,81 @@ match _ pattrns = Nothing
 multiStepEval :: Term -> Term
 multiStepEval t = maybe t multiStepEval (singleEval t)
 
+
+eval :: Term -> Term
+eval = \case
+  App t1 t2 ->
+    let v2  = eval t2
+    in case eval t1 of
+      Abs x _ t12 -> eval (subst x v2 t12)
+      v1 -> App v1 v2
+  Case t1 pattrns ->
+    let v1 = eval t1
+    in case normalizePats v1 pattrns of
+      Just t -> t
+      Nothing -> undefined
+  t -> t
+
+unpackCnstr :: Term -> Maybe (String, [Term])
+unpackCnstr (App t1 t2) = do
+  (x, ts) <- unpackCnstr t1
+  pure (x, ts <> [t2])
+unpackCnstr (Constructor x) = Just (x, [])
+unpackCnstr _ = Nothing
+
+normalizePats :: Term -> [(NonEmpty String, Term)] -> Maybe Term
+normalizePats t pattrns = do
+  (cnstr, ts) <- unpackCnstr t
+  (_ :| bndrs, t') <- find ((== cnstr) . NEL.head . fst) pattrns
+  pure $ substs bndrs ts  t'
+
 ------------
 --- Main ---
 ------------
 
+boolT :: Type
+boolT = TypeConstructor "Boolean"
+
+tru :: Term
+tru = Constructor "True"
+
+fls :: Term
+fls = Constructor "False"
+
+pairT :: Type
+pairT = TypeConstructor "PairT"
+
+pair :: Term
+pair = App (App (Constructor "Pair") tru) fls
+
 testContext :: Context
 testContext = Context g d
   where
-    g = M.fromList [ ("Id", (TypeConstructor "Boolean" :-> TypeConstructor "IdT"))
-                   , ("True", TypeConstructor "Boolean")
-                   , ("False", TypeConstructor "Boolean")
+    g = M.fromList [ ("Id", (boolT :-> TypeConstructor "IdT"))
+                   , ("True", boolT)
+                   , ("False", boolT)
+                   , ("Pair", (boolT :-> boolT :-> TypeConstructor "PairT"))
+                   , ("Left", (boolT :-> TypeConstructor "EitherT"))
+                   , ("Right", (boolT :-> TypeConstructor "EitherT"))
                    ]
     d = M.fromList [ ("Boolean", (DataConstructor "Boolean" [("True", []), ("False", [])]))
-                   , ("IdT", (DataConstructor "IdT" [("Id", [TypeConstructor "Boolean"])]))
+                   , ("IdT", (DataConstructor "IdT" [("Id", [boolT])]))
+                   , ("PairT", (DataConstructor "PairT" [("Pair", [boolT, boolT])]))
+                   , ("EitherT", (DataConstructor "EitherT" [("Left", [boolT])
+                                                            , ("Right", [boolT])]))
                    ]
 
 notT :: Term
 notT =
-  Abs "p" (TypeConstructor "Boolean") $
-    Case (Var "p") [ ("True" :| [], Constructor "False")
-                   , ("False" :| [], Constructor "True")
+  Abs "p" boolT $
+    Case (Var "p") [ ("True" :| [], fls)
+                   , ("False" :| [], tru)
                    ]
+
+first :: Term
+first =
+  Abs "p" pairT $
+    Case (Var "p") [("Pair" :| ["x", "y"], Var "x")]
 
 caseTest :: Term
 caseTest =
@@ -239,6 +302,6 @@ caseTest =
 
 main :: IO ()
 main = do
-  let term = App notT (Constructor "True")
+  let term = App first pair
   print $ extendTypecheckM testContext (typecheck term)
-  print $ multiStepEval term
+  print $ eval term
