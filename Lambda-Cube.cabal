@@ -16,53 +16,53 @@ extra-source-files:  CHANGELOG.md
 executable Untyped
   main-is:             Untyped.hs
   hs-source-dirs:      main
-  build-depends:       base >=4.12 && <4.13, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, containers
   default-language:    Haskell2010
 
 executable SimplyTyped
   main-is:             SimplyTyped.hs
   hs-source-dirs:      main
-  build-depends:       base >=4.12 && <4.13, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, containers
   default-language:    Haskell2010
 
 executable SimplyTypedModules
   main-is:             SimplyTypedModules.hs
   hs-source-dirs:      main
-  build-depends:       base >=4.12 && <4.13, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, containers
   default-language:    Haskell2010
 
 executable SimplyTypedPatterns
   main-is:             SimplyTypedPatterns.hs
   hs-source-dirs:      main
-  build-depends:       base >=4.12 && <4.13, mtl, containers, lens
+  build-depends:       base >= 2 && <5, mtl, containers, lens
   default-language:    Haskell2010
 
 executable SystemT
   main-is:             SystemT.hs
   hs-source-dirs:      main
-  build-depends:       base >=4.12 && <4.13, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, containers
   default-language:    Haskell2010
 
 executable SystemF
   main-is:             SystemF.hs
   hs-source-dirs:      main
-  build-depends:       base >=4.12 && <4.13, mtl, containers, lens
+  build-depends:       base >= 2 && <5, mtl, containers, lens
   default-language:    Haskell2010
 
 executable SystemOmega
   main-is:             SystemOmega.hs
   hs-source-dirs:      main
-  build-depends:       base >=4.12 && <4.13, mtl, containers, lens
+  build-depends:       base >= 2 && <5, mtl, containers, lens
   default-language:    Haskell2010
 
 executable SystemFOmega
   main-is:             SystemFOmega.hs
   hs-source-dirs:      main
-  build-depends:       base >=4.12 && <4.13, mtl, containers, lens
+  build-depends:       base >= 2 && <5, mtl, containers, lens
   default-language:    Haskell2010
 
 executable LambdaPi
   main-is:             LambdaPi.hs
   hs-source-dirs:      main
-  build-depends:       base >=4.12 && <4.13, mtl, containers, lens
+  build-depends:       base >= 2 && <5, mtl, containers, lens
   default-language:    Haskell2010

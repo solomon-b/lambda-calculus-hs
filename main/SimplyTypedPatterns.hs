@@ -8,7 +8,7 @@ module Main where
 
 import qualified Data.List.NonEmpty as NEL
 import Data.List.NonEmpty (NonEmpty(..))
-import Data.List ((\\), sort, foldl')
+import Data.List ((\\), find, sort, foldl')
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
 import Control.Lens hiding (Context)
@@ -91,7 +91,7 @@ alpha = \case
   t -> pure t
 
 emptyAlphaContext :: AlphaContext
-emptyAlphaContext = AlphaContext (stream names) (M.empty)
+emptyAlphaContext = AlphaContext (stream names) M.empty
 
 alphaconvert :: Term -> Term
 alphaconvert term = evalState (alpha term) emptyAlphaContext
