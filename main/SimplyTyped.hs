@@ -22,6 +22,7 @@ data Term = Var String
           | T
           | F
           | If Term Term Term
+          | Anno Term Type
   deriving Show
 
 data Type = Type :-> Type | UnitT | BoolT
@@ -99,7 +100,7 @@ typecheck = \case
     case ty1 of
       tyA :-> tyB -> do
         ty2 <- typecheck t2
-        if tyA == ty2 then pure ty1 else throwError TypeError
+        if tyA == ty2 then pure tyB else throwError TypeError
       _ -> throwError TypeError
   Unit -> pure UnitT
   T -> pure BoolT
@@ -111,6 +112,11 @@ typecheck = \case
     if ty0 == BoolT && ty1 == ty2
       then pure ty1
       else throwError TypeError
+  Anno trm ty -> do
+    ty' <- typecheck trm
+    if ty == ty'
+       then pure ty
+       else throwError TypeError
 
 --------------------
 --- Substitution ---
