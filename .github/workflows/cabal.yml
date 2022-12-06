@@ -1,0 +1,78 @@
+# NOTE: This should be a good reference for github actions w.r.t haskell
+# https://markkarpov.com/post/github-actions-for-haskell-ci.html
+
+name: cabal:build
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+
+jobs:
+  check-format:
+    if: "!contains(github.event.pull_request.labels.*.name, 'ignore-server-format-checks')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Check format
+        run: |
+          ORMOLU_VERSION="0.5.0.0"
+          ORMOLU_URL="https://github.com/tweag/ormolu/releases/download/${ORMOLU_VERSION}/ormolu-Linux.zip"
+          echo "Downloading from ${ORMOLU_URL}"
+          curl --fail --location --output ormolu.zip "${ORMOLU_URL}"
+          unzip ormolu.zip
+          ./ormolu --mode check $(git ls-files '*.hs')
+
+  build-test:
+    runs-on: ubuntu-latest
+    
+#   NOTE: once the library is ready to be released into the wild
+#   we could use this code block to run the tests and build the exe.
+#   on multiple GHC versions and perhaps even multiple cabal versions
+    strategy:
+      matrix:
+        cabal: ["3.4"]
+        ghc: ["8.10.7", "9.0.2", "9.2.4"]
+
+    env:
+      CONFIG: "--project-file=cabal.project"
+
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v2
+
+      - name: "Setup"
+        uses: haskell/actions/setup@v1.2
+        id: setup-haskell-cabal
+        with:
+          ghc-version: "8.10.7"
+          cabal-version: "3.4"
+
+      - name: "Cache"
+        uses: actions/cache@v2
+        env:
+          cache-name: cache-cabal
+        with:
+          path: |
+            ${{ steps.setup-haskell-cabal.outputs.cabal-store }}
+            dist-newstyle
+          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/*.cabal') }}-${{ hashFiles('**/cabal.project') }}
+          restore-keys: |
+            ${{ runner.os }}-build-${{ env.cache-name }}-
+            ${{ runner.os }}-build-
+            ${{ runner.os }}-
+      
+      - name: "Build"
+        run: cabal build $CONFIG
+
+# NOTE: keeping these here for future versions
+#      - name: "Test"
+#        run: cabal test $CONFIG
+#
+#      - run: cabal haddock $CONFIG
+#      - run: cabal sdist
