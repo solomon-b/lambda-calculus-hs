@@ -37,6 +37,12 @@ executable SimplyTypedPatterns
   build-depends:       base >= 2 && <5, mtl, containers, lens
   default-language:    Haskell2010
 
+executable SimplyTypedHindleyMilner
+  main-is:             SimplyTypedHindleyMilner.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
+  default-language:    Haskell2010
+
 executable SystemT
   main-is:             SystemT.hs
   hs-source-dirs:      main
