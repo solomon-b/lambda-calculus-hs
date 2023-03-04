@@ -72,3 +72,9 @@ executable UntypedNBE
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
   default-language:    Haskell2010
+
+executable SimplyTypedNBE
+  main-is:             SimplyTypedNBE.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, containers
+  default-language:    Haskell2010
