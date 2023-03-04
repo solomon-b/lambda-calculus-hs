@@ -1,6 +1,10 @@
+{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE StrictData #-}
 
 module Main where
 
@@ -13,58 +17,22 @@ import Data.Map (Map)
 import qualified Data.Map.Strict as M
 
 --------------------------------------------------------------------------------
--- Terms
+-- Utils
 
-data Term
-  = Var Name
-  | Abs Name Term
-  | App Term Term
-  | Unit
-  | T
-  | F
-  | If Term Term Term
-  | Anno Term Type
-  deriving (Show)
+data SnocList a
+  = Snoc (SnocList a) a
+  | Nil
+  deriving (Show, Eq, Ord, Functor, Foldable)
 
-data Type = Type :-> Type | UnitT | BoolT
-  deriving (Show, Eq)
-
-type Gamma = Env Type
-
-initCtx :: Gamma
-initCtx = initEnv
-
-data Value
-  = VTrue
-  | VFalse
-  | VUnit
-  | VClosure (Env Value) Name Term
-  | VNeutral Type Neutral
-  deriving (Show)
-
-data Neutral
-  = NVar Name
-  | NApp Neutral Normal
-  | NIff Neutral Normal Normal
-  deriving (Show)
-
-data Normal = Normal {normalType :: Type, normalValue :: Value}
-  deriving (Show)
-
-data Name = Name String Int
-  deriving stock (Show, Eq, Ord)
-
-newtype Env val = Env [val]
-  deriving stock (Show, Functor)
-
-initEnv :: Env val
-initEnv = Env []
-
-data Error = NotFound Name | TypeError String
-  deriving (Show)
-
-lookupVar :: Env val -> Name -> Either Error val
-lookupVar (Env env) n@(Name bndr i) = maybe (Left $ NotFound n) Right $ env !? i
+nth :: SnocList a -> Int -> Maybe a
+nth xs i
+  | i < 0 = Nothing
+  | otherwise =
+      let go = \case
+            (Nil, _) -> Nothing
+            (Snoc _ x, 0) -> Just x
+            (Snoc xs _, i) -> go (xs, i - 1)
+       in go (xs, i)
 
 (!?) :: [a] -> Int -> Maybe a
 xs !? n
@@ -79,44 +47,103 @@ xs !? n
         xs
         n
 
-extend :: Env val -> val -> Env val
-extend (Env env) val = Env (val : env)
-
 --------------------------------------------------------------------------------
--- Debrujin Indices
+-- Syntaxs
 
-shift :: Int -> Int -> Term -> Term
-shift d c = \case
-  Var (Name bndr k) | k < c -> Var (Name bndr k)
-  Var (Name bndr k) -> Var (Name bndr (k + d))
-  Abs bndr t1 -> Abs bndr (shift d (c + 1) t1)
-  App t1 t2 -> App (shift d c t1) (shift d c t2)
-  If t1 t2 t3 -> If (shift d c t1) (shift d c t2) (shift d c t3)
-  Anno t1 ty -> Anno (shift d c t1) ty
-  t -> t
+data Type = Type :-> Type | UnitT | BoolT
+  deriving stock (Show, Eq, Ord)
 
-subst :: Int -> Term -> Term -> Term
-subst j s = \case
-  Var (Name bndr k) | k == j -> s
-  Abs bndr t1 -> Abs bndr (subst (j + 1) (shift 1 0 s) t1)
-  App t1 t2 -> App (subst j s t1) (subst j t1 t2)
-  If t1 t2 t3 -> If (subst j s t1) (subst j s t2) (subst j s t3)
-  Anno t1 ty -> Anno (subst j s t1) ty
-  t -> t
+newtype Env val
+  = Env (SnocList val)
+  deriving stock (Show, Eq, Ord, Functor)
 
-substTop :: Term -> Term -> Term
-substTop s t = shift (-1) 0 (subst 0 (shift 1 0 s) t)
+initEnv :: Env val
+initEnv = Env Nil
+
+type Gamma = Env Type
+
+initCtx :: Gamma
+initCtx = initEnv
+
+data Syntax
+  = Var Ix
+  | Abs Name Syntax
+  | App Syntax Syntax
+  | Unit
+  | T
+  | F
+  | If Syntax Syntax Syntax
+  | Anno Syntax Type
+  deriving stock (Show, Eq, Ord)
+
+data Value
+  = VNeutral Type Neutral
+  | VLam Name Closure
+  | VTrue
+  | VFalse
+  | VUnit
+  deriving stock (Show, Eq, Ord)
+
+data Neutral = Neutral {head :: Head, spine :: SnocList Frame}
+  deriving stock (Show, Eq, Ord)
+
+newtype Head
+  = VVar Lvl
+  deriving (Show, Eq, Ord)
+
+data Frame = VApp {ty :: Type, arg :: Value}
+  deriving stock (Show, Eq, Ord)
+
+pushFrame :: Neutral -> Frame -> Neutral
+pushFrame Neutral {..} frame = Neutral {head = head, spine = Snoc spine frame}
+
+data Closure = Closure {env :: Env Value, body :: Syntax}
+  deriving stock (Show, Eq, Ord)
+
+-- | Debruijn Indices
+--
+-- λ.λ.λ.2
+-- ^-----^
+newtype Ix
+  = Ix Int
+  deriving newtype (Show, Eq, Ord)
+
+-- | Debruijn Levels
+--
+-- λ.λ.λ.0
+-- ^-----^
+newtype Lvl
+  = Lvl Int
+  deriving newtype (Show, Eq, Ord)
+
+incLevel :: Lvl -> Lvl
+incLevel (Lvl n) = Lvl (1 + n)
+
+newtype Name
+  = Name String
+  deriving newtype (Show, Eq, Ord)
+
+data Error
+  = NotFound
+  | TypeError String
+  deriving (Show)
+
+lookupVar :: Env val -> Ix -> Either Error val
+lookupVar (Env env) (Ix i) = maybe (Left NotFound) Right $ env `nth` i
+
+extend :: Env val -> val -> Env val
+extend (Env env) val = Env (Snoc env val)
 
 --------------------------------------------------------------------------------
 -- Typechecking
 
-synth :: Gamma -> Term -> Either Error Type
+synth :: Gamma -> Syntax -> Either Error Type
 synth ctx = \case
-  Var x -> lookupVar ctx x
+  Var ix -> lookupVar ctx ix
   App t1 t2 ->
     synth ctx t1 >>= \case
       tyA :-> tyB -> do
-        check ctx (substTop t1 t2) tyA
+        check ctx t2 tyA
         pure tyB
       ty -> Left (TypeError $ "Not a function type: " ++ show ty)
   T -> pure BoolT
@@ -132,8 +159,8 @@ synth ctx = \case
   Anno t1 ty -> check ctx t1 ty $> ty
   _ -> Left $ TypeError "cannot synthesize type."
 
-check :: Gamma -> Term -> Type -> Either Error ()
-check ctx (Abs bndr body) ty =
+check :: Gamma -> Syntax -> Type -> Either Error ()
+check ctx (Abs _bndr body) ty =
   case ty of
     tyA :-> tyB -> check (extend ctx tyA) body tyB
     ty' -> Left $ TypeError $ "Abs requires a function type, but got a: " <> show ty'
@@ -146,10 +173,10 @@ check ctx t1 ty = do
 --------------------------------------------------------------------------------
 -- Evaluation
 
-eval :: Env Value -> Term -> Value
+eval :: Env Value -> Syntax -> Value
 eval env = \case
-  Var x -> either (error "internal error") id $ lookupVar env x
-  Abs x body -> VClosure env x body
+  Var ix -> either (error "internal error") id $ lookupVar env ix
+  Abs bndr body -> VLam bndr (Closure env body)
   App t1 t2 ->
     let fun = eval env t1
         arg = eval env t2
@@ -161,63 +188,96 @@ eval env = \case
   Anno t1 ty -> eval env t1
 
 doApply :: Value -> Value -> Value
-doApply (VClosure env x body) arg =
-  eval (extend env arg) body
+doApply (VLam _ clo) arg =
+  instantiateClosure clo arg
 doApply (VNeutral (ty1 :-> ty2) neu) arg =
-  VNeutral ty2 (NApp neu (Normal ty1 arg))
+  VNeutral ty2 (pushFrame neu (VApp ty1 arg))
+
+instantiateClosure :: Closure -> Value -> Value
+instantiateClosure (Closure env body) v = eval (extend env v) body
 
 doIf :: Value -> Value -> Value -> Value
 doIf VTrue t2 t3 = t2
 doIf VFalse t2 t3 = t3
 
-quote :: [Name] -> Type -> Value -> Term
-quote used UnitT VUnit = Unit
-quote used BoolT VTrue = T
-quote used BoolT VFalse = F
-quote used (tyA :-> tyB) fun@(VClosure _ x _) =
-  let xVal = VNeutral tyA (NVar x)
-   in Abs x (quote used tyB (doApply fun xVal))
-quote used ty1 (VNeutral ty2 neu) =
+quote :: Lvl -> Type -> Value -> Syntax
+quote _ UnitT _ = Unit
+quote _ BoolT VTrue = T
+quote _ BoolT VFalse = F
+quote l ty@(tyA :-> tyB) (VLam bndr clo@(Closure env body)) =
+  let body = bindVar tyA l $ \v l' ->
+        quote l' tyB $ instantiateClosure clo v
+   in Abs bndr body
+quote l ty@(tyA :-> tyB) f =
+  let body = bindVar tyA l $ \v l' ->
+        quote l' tyB (doApply f v)
+   in Abs (Name "_") body
+quote l ty1 (VNeutral ty2 neu) =
   if ty1 == ty2
-    then quoteNeutral used neu
+    then quoteNeutral l neu
     else error "Internal error while quoting"
 
-quoteNormal :: [Name] -> Normal -> Term
-quoteNormal used (Normal t v) = quote used t v
+bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
+bindVar ty lvl f =
+  let v = VNeutral ty $ Neutral (VVar lvl) Nil
+   in f v $ incLevel lvl
 
-quoteNeutral :: [Name] -> Neutral -> Term
-quoteNeutral used (NVar x) = Var x
-quoteNeutral used (NApp f a) = App (quoteNeutral used f) (quoteNormal used a)
-quoteNeutral used (NIff p a b) = If (quoteNeutral used p) (quoteNormal used a) (quoteNormal used b)
+quoteLevel :: Lvl -> Lvl -> Ix
+quoteLevel env@(Lvl l) (Lvl x) = Ix (l - (x + 1))
 
-normalize :: Term -> Term
+quoteNeutral :: Lvl -> Neutral -> Syntax
+quoteNeutral l Neutral {..} = foldl (quoteFrame l) (quoteHead l head) spine
+
+quoteHead :: Lvl -> Head -> Syntax
+quoteHead l (VVar x) = Var (quoteLevel l x)
+
+quoteFrame :: Lvl -> Syntax -> Frame -> Syntax
+quoteFrame l t1 VApp {..} = App t1 (quote l ty arg)
+
+normalize :: Syntax -> Syntax
 normalize term =
   case synth initEnv term of
     Right ty ->
       let val = eval initEnv term
-       in quote [] ty val
+       in quote (Lvl 0) ty val
     Left err -> error $ show err
 
 --------------------------------------------------------------------------------
 -- main
 
 -- λx. x
-idenT :: Term
-idenT = Anno (Abs (Name "x" 0) (Var (Name "x" 0))) (UnitT :-> UnitT)
+idenT :: Syntax
+idenT = Anno (Abs (Name "x") (Var (Ix 0))) (UnitT :-> UnitT)
+
+-- λf. f
+identT' :: Syntax
+identT' =
+  Anno
+    (Abs (Name "f") (Var (Ix 0)))
+    ((BoolT :-> BoolT) :-> (BoolT :-> BoolT))
 
 -- λx. λy. x
-constT :: Term
-constT = Anno (Abs (Name "x" 1) (Abs (Name "_" 0) (Var (Name "x" 1)))) (BoolT :-> (UnitT :-> BoolT))
+constT :: Syntax
+constT = Anno (Abs (Name "x") (Abs (Name "_") (Var (Ix 1)))) (BoolT :-> (UnitT :-> BoolT))
 
-notT :: Term
+-- λf. λx. f x
+applyT :: Syntax
+applyT =
+  Anno
+    (Abs (Name "f") (Abs (Name "x") (App (Var (Ix 1)) (Var (Ix 0)))))
+    ((BoolT :-> BoolT) :-> (BoolT :-> BoolT))
+
+notT :: Syntax
 notT =
   Anno
-    (Abs (Name "p" 0) (If (Var (Name "p" 0)) T F))
+    (Abs (Name "p") (If (Var (Ix 0)) T F))
     (BoolT :-> BoolT)
 
 main :: IO ()
 main = do
   let term = App (App constT T) Unit
-  print $ synth initCtx term
-  print term
-  print (normalize term)
+  case synth initCtx term of
+    Left err -> print err
+    Right ty -> do
+      print ty
+      print (normalize term)
