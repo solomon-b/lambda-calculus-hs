@@ -1,29 +1,31 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
+
 module Main where
 
+import Control.Monad.Except
+import Control.Monad.Reader
+import Control.Monad.State
+import Data.List ((\\))
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
-import Data.List ((\\))
-import Control.Monad.State
-import Control.Monad.Reader
-import Control.Monad.Except
 
 -------------
 --- Terms ---
 -------------
 
-data Term = Var String
-          | Abs String Type Term
-          | App Term Term
-          | Unit
-          | T
-          | F
-          | If Term Term Term
-          | Anno Term Type
-  deriving Show
+data Term
+  = Var String
+  | Abs String Type Term
+  | App Term Term
+  | Unit
+  | T
+  | F
+  | If Term Term Term
+  | Anno Term Type
+  deriving (Show)
 
 data Type = Type :-> Type | UnitT | BoolT
   deriving (Show, Eq)
@@ -38,13 +40,13 @@ data TypeErr = TypeError deriving (Show, Eq)
 
 data Stream a = Stream a (Stream a)
 
-data AlphaContext = AlphaContext { _names :: Stream String, _register :: Map String String }
+data AlphaContext = AlphaContext {_names :: Stream String, _register :: Map String String}
 
 names :: [String]
-names = (pure <$> ['a'..'z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['a' .. 'z'])
+names = (pure <$> ['a' .. 'z']) ++ (flip (:) <$> (show <$> [1 ..]) <*> ['a' .. 'z'])
 
 stream :: [String] -> Stream String
-stream (x:xs) = Stream x (stream xs)
+stream (x : xs) = Stream x (stream xs)
 
 alpha :: Term -> State AlphaContext Term
 alpha = \case
@@ -80,8 +82,7 @@ alphaconvert term = evalState (alpha term) emptyContext
 --- Typechecking ---
 --------------------
 
-newtype TypecheckM a =
-  TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Gamma) a }
+newtype TypecheckM a = TypecheckM {unTypecheckM :: ExceptT TypeErr (Reader Gamma) a}
   deriving (Functor, Applicative, Monad, MonadReader Gamma, MonadError TypeErr)
 
 runTypecheckM :: TypecheckM Type -> Either TypeErr Type
@@ -115,8 +116,8 @@ typecheck = \case
   Anno trm ty -> do
     ty' <- typecheck trm
     if ty == ty'
-       then pure ty
-       else throwError TypeError
+      then pure ty
+      else throwError TypeError
 
 --------------------
 --- Substitution ---
@@ -126,8 +127,9 @@ subst :: String -> Term -> Term -> Term
 subst x s = \case
   (Var x') | x == x' -> s
   (Var y) -> Var y
-  (Abs y ty t1) | x /= y && y `notElem` freevars s -> Abs y ty (subst x s t1)
-             | otherwise -> error "oops name collision"
+  (Abs y ty t1)
+    | x /= y && y `notElem` freevars s -> Abs y ty (subst x s t1)
+    | otherwise -> error "oops name collision"
   (App t1 t2) -> App (subst x s t1) (subst x s t2)
   (If t0 t1 t2) -> If (subst x s t0) (subst x s t1) (subst x s t2)
   T -> T
@@ -136,9 +138,9 @@ subst x s = \case
 
 freevars :: Term -> [String]
 freevars = \case
-  (Var x)       -> [x]
-  (Abs x ty t)  -> freevars t \\ [x]
-  (App t1 t2)   -> freevars t1 ++ freevars t2
+  (Var x) -> [x]
+  (Abs x ty t) -> freevars t \\ [x]
+  (App t1 t2) -> freevars t1 ++ freevars t2
   (If t0 t1 t2) -> freevars t0 ++ freevars t1 ++ freevars t2
 
 ------------------
@@ -147,16 +149,16 @@ freevars = \case
 
 isVal :: Term -> Bool
 isVal = \case
-  Abs{} -> True
-  T     -> True
-  F     -> True
-  Unit  -> True
-  _     -> False
+  Abs {} -> True
+  T -> True
+  F -> True
+  Unit -> True
+  _ -> False
 
 singleEval :: Term -> Maybe Term
 singleEval = \case
   (App (Abs x ty t12) v2) | isVal v2 -> Just $ subst x v2 t12
-  (App v1@Abs{} t2) -> App v1 <$> singleEval t2
+  (App v1@Abs {} t2) -> App v1 <$> singleEval t2
   (App t1 t2) -> flip App t2 <$> singleEval t1
   (If T t2 t3) -> pure t2
   (If F t2 t3) -> pure t3
@@ -175,6 +177,6 @@ notT = Abs "p" BoolT (If (Var "p") F T)
 main :: IO ()
 main =
   let term = alphaconvert (App notT T)
-  in case runTypecheckM $ typecheck term of
-    Left e -> print e
-    Right _ -> print (multiStepEval term)
+   in case runTypecheckM $ typecheck term of
+        Left e -> print e
+        Right _ -> print (multiStepEval term)

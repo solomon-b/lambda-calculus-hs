@@ -1,30 +1,31 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
+
 module Main where
 
-import Data.List (foldl')
+import Control.Monad
+import Control.Monad.Except
+import Control.Monad.Reader
+import Control.Monad.State
+import Data.List (foldl', (\\))
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
-import Data.List ((\\))
-import Control.Monad
-import Control.Monad.State
-import Control.Monad.Reader
-import Control.Monad.Except
 
 ---------------
 --- Grammar ---
 ---------------
 
-data Term = Var String
-          | Abs String Type Term
-          | App Term Term
-          | Unit
-          | T
-          | F
-          | If Term Term Term
-  deriving Show
+data Term
+  = Var String
+  | Abs String Type Term
+  | App Term Term
+  | Unit
+  | T
+  | F
+  | If Term Term Term
+  deriving (Show)
 
 data Type = Type :-> Type | UnitT | BoolT
   deriving (Show, Eq)
@@ -40,13 +41,13 @@ data TypeErr = TypeError deriving (Show, Eq)
 
 data Stream a = Stream a (Stream a)
 
-data AlphaContext = AlphaContext { _names :: Stream String, _register :: Map String String }
+data AlphaContext = AlphaContext {_names :: Stream String, _register :: Map String String}
 
 names :: [String]
-names = (pure <$> ['a'..'z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['a' .. 'z'])
+names = (pure <$> ['a' .. 'z']) ++ (flip (:) <$> (show <$> [1 ..]) <*> ['a' .. 'z'])
 
 stream :: [String] -> Stream String
-stream (x:xs) = Stream x (stream xs)
+stream (x : xs) = Stream x (stream xs)
 
 alpha :: Term -> State AlphaContext Term
 alpha = \case
@@ -82,8 +83,7 @@ alphaconvert term = evalState (alpha term) emptyContext
 --- Typechecking ---
 --------------------
 
-newtype TypecheckM a =
-  TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Gamma) a }
+newtype TypecheckM a = TypecheckM {unTypecheckM :: ExceptT TypeErr (Reader Gamma) a}
   deriving (Functor, Applicative, Monad, MonadReader Gamma, MonadError TypeErr)
 
 extendTypecheckM :: Gamma -> TypecheckM a -> Either TypeErr a
@@ -135,8 +135,9 @@ subst :: String -> Term -> Term -> Term
 subst x s = \case
   (Var x') | x == x' -> s
   (Var y) -> Var y
-  (Abs y ty t1) | x /= y && y `notElem` freevars s -> Abs y ty (subst x s t1)
-             | otherwise -> error "oops name collision"
+  (Abs y ty t1)
+    | x /= y && y `notElem` freevars s -> Abs y ty (subst x s t1)
+    | otherwise -> error "oops name collision"
   (App t1 t2) -> App (subst x s t1) (subst x s t2)
   (If t0 t1 t2) -> If (subst x s t0) (subst x s t1) (subst x s t2)
   T -> T
@@ -145,9 +146,9 @@ subst x s = \case
 
 freevars :: Term -> [String]
 freevars = \case
-  (Var x)       -> [x]
-  (Abs x ty t)  -> freevars t \\ [x]
-  (App t1 t2)   -> freevars t1 ++ freevars t2
+  (Var x) -> [x]
+  (Abs x ty t) -> freevars t \\ [x]
+  (App t1 t2) -> freevars t1 ++ freevars t2
   (If t0 t1 t2) -> freevars t0 ++ freevars t1 ++ freevars t2
 
 ------------------
@@ -156,16 +157,16 @@ freevars = \case
 
 isVal :: Term -> Bool
 isVal = \case
-  Abs{} -> True
-  T     -> True
-  F     -> True
-  Unit  -> True
-  _     -> False
+  Abs {} -> True
+  T -> True
+  F -> True
+  Unit -> True
+  _ -> False
 
 singleEval :: Term -> Maybe Term
 singleEval = \case
   (App (Abs x ty t12) v2) | isVal v2 -> Just $ subst x v2 t12
-  (App v1@Abs{} t2) -> App v1 <$> singleEval t2
+  (App v1@Abs {} t2) -> App v1 <$> singleEval t2
   (App t1 t2) -> flip App t2 <$> singleEval t1
   (If T t2 t3) -> pure t2
   (If F t2 t3) -> pure t3
@@ -178,8 +179,8 @@ multiStepEval t = maybe t multiStepEval (singleEval t)
 --- Modules ---
 ---------------
 
-data Module = Module { declarations :: [(String, Term)] }
-  deriving Show
+data Module = Module {declarations :: [(String, Term)]}
+  deriving (Show)
 
 checkDecl :: (String, Term) -> TypecheckM (String, (Type, Maybe Term))
 checkDecl (bndr, term) = do
@@ -188,15 +189,15 @@ checkDecl (bndr, term) = do
 
 checkModule :: Module -> TypecheckM ()
 checkModule (Module []) = pure ()
-checkModule (Module (x:xs)) = do
+checkModule (Module (x : xs)) = do
   (bndr, (ty, term)) <- checkDecl x
   local (extendTerm bndr ty term) $ checkModule (Module xs)
 
 checkModule' :: Module -> StateT Gamma TypecheckM ()
 checkModule' (Module xs) = forM_ xs $ \x -> do
-    gamma <- get
-    (bndr, (ty, term)) <- lift $ local (const gamma) (checkDecl x)
-    modify (extendTerm bndr ty term)
+  gamma <- get
+  (bndr, (ty, term)) <- lift $ local (const gamma) (checkDecl x)
+  modify (extendTerm bndr ty term)
 
 runCheckModule :: Module -> Either TypeErr ()
 runCheckModule mod = runTypecheckM $ evalStateT (checkModule' mod) []
@@ -209,22 +210,22 @@ inlineTerms xs term =
         App t1 t2 -> App (f t1 (x, t)) (f t2 (x, t))
         If t1 t2 t3 -> If (f t1 (x, t)) (f t2 (x, t)) (f t3 (x, t))
         t -> t
-  in foldl' f term xs
+   in foldl' f term xs
 
 data Zipper a = Z [a] a [a]
-  deriving Show
+  deriving (Show)
 
 inlineModule :: Module -> Term
 inlineModule (Module [x]) = snd x
-inlineModule (Module (x:xs)) =
+inlineModule (Module (x : xs)) =
   let f (Z left curr []) = inlineTerms left (snd curr)
-      f (Z left curr (r:ight)) = f $ Z ((inlineTerms left <$> curr) : left) r ight
-  in f $ Z [] x xs
+      f (Z left curr (r : ight)) = f $ Z ((inlineTerms left <$> curr) : left) r ight
+   in f $ Z [] x xs
 
 execModule :: Module -> Either TypeErr Term
 execModule m@(Module decls) =
   let main = inlineModule (Module (fmap alphaconvert <$> decls))
-  in runCheckModule m >> pure (multiStepEval main)
+   in runCheckModule m >> pure (multiStepEval main)
 
 ------------
 --- Main ---
