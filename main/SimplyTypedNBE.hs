@@ -34,21 +34,8 @@ nth xs i
             (Snoc xs _, i) -> go (xs, i - 1)
        in go (xs, i)
 
-(!?) :: [a] -> Int -> Maybe a
-xs !? n
-  | n < 0 = Nothing
-  | otherwise =
-      foldr
-        ( \x r k -> case k of
-            0 -> Just x
-            _ -> r (k - 1)
-        )
-        (const Nothing)
-        xs
-        n
-
 --------------------------------------------------------------------------------
--- Syntaxs
+-- Terms
 
 data Type = Type :-> Type | UnitT | BoolT
   deriving stock (Show, Eq, Ord)
@@ -275,7 +262,7 @@ notT =
 
 main :: IO ()
 main = do
-  let term = App (App constT T) Unit
+  let term = Anno (Abs (Name "f") (Var (Ix 0))) ((BoolT :-> BoolT) :-> (BoolT :-> BoolT))
   case synth initCtx term of
     Left err -> print err
     Right ty -> do
