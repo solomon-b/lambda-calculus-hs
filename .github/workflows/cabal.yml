@@ -39,9 +39,6 @@ jobs:
         cabal: ["3.4"]
         ghc: ["8.10.7", "9.0.2", "9.2.4"]
 
-    env:
-      CONFIG: "--project-file=cabal.project"
-
     steps:
       - name: "Checkout"
         uses: actions/checkout@v2
@@ -68,7 +65,7 @@ jobs:
             ${{ runner.os }}-
       
       - name: "Build"
-        run: cabal build $CONFIG
+        run: cabal build
 
 # NOTE: keeping these here for future versions
 #      - name: "Test"
