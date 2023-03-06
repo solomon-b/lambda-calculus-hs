@@ -1,19 +1,21 @@
 {-# LANGUAGE LambdaCase #-}
+
 module Main where
 
+import Control.Monad.State
+import Data.List ((\\))
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
-import Data.List ((\\))
-import Control.Monad.State
 
 -------------
 --- Terms ---
 -------------
 
-data Term = Var String
-          | Abs String Term
-          | App Term Term
-  deriving Show
+data Term
+  = Var String
+  | Abs String Term
+  | App Term Term
+  deriving (Show)
 
 ------------------------
 --- Alpha Conversion ---
@@ -21,13 +23,13 @@ data Term = Var String
 
 data Stream a = Stream a (Stream a)
 
-data AlphaContext = AlphaContext { _names :: Stream String, _register :: Map String String }
+data AlphaContext = AlphaContext {_names :: Stream String, _register :: Map String String}
 
 names :: [String]
-names = (pure <$> ['a'..'z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['a' .. 'z'])
+names = (pure <$> ['a' .. 'z']) ++ (flip (:) <$> (show <$> [1 ..]) <*> ['a' .. 'z'])
 
 stream :: [String] -> Stream String
-stream (x:xs) = Stream x (stream xs)
+stream (x : xs) = Stream x (stream xs)
 
 alpha :: Term -> State AlphaContext Term
 alpha = \case
@@ -61,8 +63,9 @@ subst :: String -> Term -> Term -> Term
 subst x s = \case
   (Var x') | x == x' -> s
   (Var y) -> Var y
-  (Abs y t1) | x /= y && y `notElem` freevars s -> Abs y (subst x s t1)
-             | otherwise -> error "oops name collision"
+  (Abs y t1)
+    | x /= y && y `notElem` freevars s -> Abs y (subst x s t1)
+    | otherwise -> error "oops name collision"
   (App t1 t2) -> App (subst x s t1) (subst x s t2)
 
 freevars :: Term -> [String]
@@ -77,13 +80,13 @@ freevars = \case
 
 isVal :: Term -> Bool
 isVal = \case
-  Abs{} -> True
-  _     -> False
+  Abs {} -> True
+  _ -> False
 
 singleEval :: Term -> Maybe Term
 singleEval = \case
   (App (Abs x t12) v2) | isVal v2 -> Just $ subst x v2 t12
-  (App v1@Abs{} t2) -> App v1 <$> singleEval t2
+  (App v1@Abs {} t2) -> App v1 <$> singleEval t2
   (App t1 t2) -> flip App t2 <$> singleEval t1
   _ -> Nothing
 

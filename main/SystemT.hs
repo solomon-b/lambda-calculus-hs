@@ -1,32 +1,35 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
+
 module Main where
 
+import Control.Monad.Except
+import Control.Monad.Reader
+import Control.Monad.State
+import Data.List
 import Data.Map (Map)
 import qualified Data.Map.Strict as M
-import Data.List
-import Control.Monad.State
-import Control.Monad.Reader
-import Control.Monad.Except
 
-data Term = Var String
-          | Abs String Type Term
-          | App Term Term
-          | Unit
-          | T
-          | F
-          | If Term Term Term
-          | Z
-          | S Term
-          | Rec Term Term
+data Term
+  = Var String
+  | Abs String Type Term
+  | App Term Term
+  | Unit
+  | T
+  | F
+  | If Term Term Term
+  | Z
+  | S Term
+  | Rec Term Term
   deriving (Show, Eq)
 
 data Type = Type :-> Type | UnitT | BoolT | NatT
   deriving (Show, Eq)
 
 type Gamma = [(String, Type)]
+
 data TypeErr = TypeError deriving (Show, Eq)
 
 ------------------------
@@ -35,13 +38,13 @@ data TypeErr = TypeError deriving (Show, Eq)
 
 data Stream a = Stream a (Stream a)
 
-data AlphaContext = AlphaContext { _names :: Stream String, _register :: Map String String }
+data AlphaContext = AlphaContext {_names :: Stream String, _register :: Map String String}
 
 names :: [String]
-names = (pure <$> ['a'..'z']) ++ (flip (:) <$> (show <$> [1..]) <*> ['a' .. 'z'])
+names = (pure <$> ['a' .. 'z']) ++ (flip (:) <$> (show <$> [1 ..]) <*> ['a' .. 'z'])
 
 stream :: [String] -> Stream String
-stream (x:xs) = Stream x (stream xs)
+stream (x : xs) = Stream x (stream xs)
 
 alpha :: Term -> State AlphaContext Term
 alpha = \case
@@ -82,8 +85,7 @@ alphaconvert term = evalState (alpha term) emptyContext
 --- Typechecking ---
 --------------------
 
-newtype TypecheckM a =
-  TypecheckM { unTypecheckM :: ExceptT TypeErr (Reader Gamma) a }
+newtype TypecheckM a = TypecheckM {unTypecheckM :: ExceptT TypeErr (Reader Gamma) a}
   deriving (Functor, Applicative, Monad, MonadReader Gamma, MonadError TypeErr)
 
 runTypecheckM :: TypecheckM Type -> Either TypeErr Type
@@ -132,9 +134,10 @@ subst :: String -> Term -> Term -> Term
 subst x v1 = \case
   (Var y) | x == y -> v1
   (Var y) -> Var y
-  (Abs y ty t1) | x == y -> Abs y ty t1
-             | y `notElem` freevars v1 -> Abs y ty (subst x v1 t1)
-             | otherwise -> error "oops name collision"
+  (Abs y ty t1)
+    | x == y -> Abs y ty t1
+    | y `notElem` freevars v1 -> Abs y ty (subst x v1 t1)
+    | otherwise -> error "oops name collision"
   (App t1 t2) -> App (subst x v1 t1) (subst x v1 t2)
   Z -> Z
   (S t) -> S (subst x v1 t)
@@ -159,18 +162,18 @@ freevars = \case
 
 isVal :: Term -> Bool
 isVal = \case
-  Abs{} -> True
-  T     -> True
-  F     -> True
-  Unit  -> True
-  Z     -> True
+  Abs {} -> True
+  T -> True
+  F -> True
+  Unit -> True
+  Z -> True
   (S t) -> isVal t
-  _     -> False
+  _ -> False
 
 singleEval :: Term -> Maybe Term
 singleEval = \case
   (App (Abs x ty t12) v2) | isVal v2 -> Just $ subst x v2 t12
-  (App v1@Abs{} t2) -> App v1 <$> singleEval t2
+  (App v1@Abs {} t2) -> App v1 <$> singleEval t2
   (App (Rec base step) Z) -> pure base
   (App (Rec base step) (S n)) -> pure $ App (App step n) (App (Rec base step) n)
   (App t1 t2) -> flip App t2 <$> singleEval t1
@@ -198,6 +201,6 @@ add = Abs "base" NatT (Rec (Var "base") add1)
 main :: IO ()
 main =
   let term = alphaconvert $ App (App add (S $ S Z)) (S $ S Z)
-  in case runTypecheckM $ typecheck term of
-    Left e -> print e
-    Right _ -> print (multiStepEval term)
+   in case runTypecheckM $ typecheck term of
+        Left e -> print e
+        Right _ -> print (multiStepEval term)
