@@ -1,14 +1,21 @@
 
 name: nix:build
 on:
-  pull_request:
   push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
 jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout 🛎️
-    - uses: actions/checkout@v3
+      uses: actions/checkout@v3
 
     - name: Install Nix ❄
       uses: cachix/install-nix-action@v20
