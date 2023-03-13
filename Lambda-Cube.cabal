@@ -1,4 +1,4 @@
-cabal-version:       >=1.10
+cabal-version:       3.0
 name:                Lambda-Cube
 version:             0.1.0.0
 -- synopsis:
@@ -13,74 +13,109 @@ maintainer:          ssbothwell@gmail.com
 build-type:          Simple
 extra-source-files:  CHANGELOG.md
 
+common common-settings
+  default-language:   Haskell2010
+  default-extensions:
+    DeriveFoldable
+    DeriveFunctor
+    DerivingStrategies
+    GeneralizedNewtypeDeriving
+    LambdaCase
+    NamedFieldPuns
+    OverloadedStrings
+    RecordWildCards
+    StrictData
+  
+  ghc-options:
+    -Wall
+    -Wcpp-undef
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wpartial-fields
+    -Werror=missing-home-modules
+    -Wall
+    -Wcpp-undef
+    -Widentities
+    -Wincomplete-record-updates
+    -Wincomplete-uni-patterns
+    -Wpartial-fields
+    -Werror=missing-home-modules
+
 executable Untyped
+  import:              common-settings
   main-is:             Untyped.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
-  default-language:    Haskell2010
 
 executable SimplyTyped
+  import:              common-settings
   main-is:             SimplyTyped.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
-  default-language:    Haskell2010
 
 executable SimplyTypedModules
+  import:              common-settings
   main-is:             SimplyTypedModules.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
-  default-language:    Haskell2010
 
 executable SimplyTypedPatterns
+  import:              common-settings
   main-is:             SimplyTypedPatterns.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers, lens
-  default-language:    Haskell2010
 
 executable SystemT
+  import:              common-settings
   main-is:             SystemT.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
-  default-language:    Haskell2010
 
 executable SystemF
+  import:              common-settings
   main-is:             SystemF.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers, lens
-  default-language:    Haskell2010
 
 executable SystemOmega
+  import:              common-settings
   main-is:             SystemOmega.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers, lens
-  default-language:    Haskell2010
 
 executable SystemFOmega
+  import:              common-settings
   main-is:             SystemFOmega.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers, lens
-  default-language:    Haskell2010
 
 executable LambdaPi
+  import:              common-settings
   main-is:             LambdaPi.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers, lens
-  default-language:    Haskell2010
 
 executable UntypedNBE
+  import:              common-settings
   main-is:             UntypedNBE.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
-  default-language:    Haskell2010
 
 executable SimplyTypedNBE
+  import:              common-settings
   main-is:             SimplyTypedNBE.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
-  default-language:    Haskell2010
 
 executable SimplyTypedElab
+  import:              common-settings
   main-is:             SimplyTypedElab.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
-  default-language:    Haskell2010
+
+executable MLTT
+  import:              common-settings
+  main-is:             MLTT.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, containers
