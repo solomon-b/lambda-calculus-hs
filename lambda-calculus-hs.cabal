@@ -1,5 +1,5 @@
 cabal-version:       3.0
-name:                Lambda-Cube
+name:                lambda-calculus-hs
 version:             0.1.0.0
 -- synopsis:
 -- description:
@@ -117,5 +117,11 @@ executable SimplyTypedElab
 executable MLTT
   import:              common-settings
   main-is:             MLTT.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, containers
+
+executable 00-SimplyTypedEvaluation
+  import:              common-settings
+  main-is:             new/00-SimplyTypedEvaluation.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
