@@ -187,6 +187,7 @@ quote l (PairTy ty1 ty2) (VPair tm1 tm2) =
       tm2' = quote l ty2 tm2
    in Pair tm1' tm2'
 quote l _ (VNeutral _ neu) = quoteNeutral l neu
+quote _ _ VUnit = Unit
 quote _ _ _ = error "impossible case in quote"
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
