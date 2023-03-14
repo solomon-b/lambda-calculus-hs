@@ -162,30 +162,39 @@ data Error
 
 synth :: Env -> Term -> Either Error (Type, Syntax)
 synth ctx = \case
-  Var bndr ->
-    case resolveCell ctx bndr of
-      Just Cell {..} -> pure (cellType, quote (Lvl $ size ctx) cellType cellValue)
-      Nothing -> Left $ OutOfScopeError bndr
-  Ap tm1 tm2 -> 
-    synth ctx tm1 >>= \case
-      (FuncTy ty1 ty2, f) -> do
-        arg <- check ctx ty1 tm2
-        pure (ty2, SAp f arg)
-      ty -> Left $ TypeError $ "Expected a function type but got " <> show ty
+  Var bndr -> varTactic ctx bndr
+  Ap tm1 tm2 -> apTactic ctx tm1 tm2
   Anno ty tm -> (ty,) <$> check ctx ty tm
   Unit -> pure (UnitTy, SUnit)
   tm -> Left $ TypeError $ "Cannot synthesize type for " <> show tm
 
 check :: Env -> Type -> Term -> Either Error Syntax
-check ctx (FuncTy ty1 ty2) (Lam bndr tm) = do
-  let var = freshCell ctx bndr ty1
-  fiber <- check (bindCell ctx var) ty2 tm
-  pure $ SLam bndr fiber
+check ctx (FuncTy ty1 ty2) (Lam bndr tm) = lamTactic ctx ty1 ty2 bndr tm
 check ctx ty tm =
   case synth ctx tm of
     Right (ty2, tm) | ty == ty2 -> pure tm
     Right ty2 -> Left $ TypeError $ "Expected: " <> show ty <> ", but got: " <> show ty2
     Left err -> Left err
+
+varTactic :: Env -> Name -> Either Error (Type, Syntax)
+varTactic ctx bndr =
+  case resolveCell ctx bndr of
+    Just Cell {..} -> pure (cellType, quote (Lvl $ size ctx) cellType cellValue)
+    Nothing -> Left $ OutOfScopeError bndr
+
+lamTactic :: Env -> Type -> Type -> Name -> Term -> Either Error Syntax
+lamTactic ctx ty1 ty2 bndr body = do
+  let var = freshCell ctx bndr ty1
+  fiber <- check (bindCell ctx var) ty2 body
+  pure $ SLam bndr fiber
+
+apTactic :: Env -> Term -> Term -> Either Error (Type, Syntax)
+apTactic ctx tm1 tm2 =
+  synth ctx tm1 >>= \case
+    (FuncTy ty1 ty2, f) -> do
+      arg <- check ctx ty1 tm2
+      pure (ty2, SAp f arg)
+    ty -> Left $ TypeError $ "Expected a function type but got " <> show ty
 
 --------------------------------------------------------------------------------
 -- Evaluator

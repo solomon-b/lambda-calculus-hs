@@ -107,30 +107,40 @@ data Closure = Closure {env :: SnocList Value, body :: Term}
 data Error
   = TypeError String
   | OutOfScopeError Int
-  deriving Show
+  deriving (Show)
 
 synth :: SnocList Type -> Term -> Either Error Type
 synth ctx = \case
-  Var (Ix ix) -> maybe (Left $ OutOfScopeError ix) Right $ nth ctx ix
-  Ap tm1 tm2 ->
-    synth ctx tm1 >>= \case
-      FuncTy ty1 ty2 -> do
-        _ <- check ctx ty1 tm2
-        pure ty2
-      ty -> Left $ TypeError $ "Expected a function type but got " <> show ty
+  Var ix -> varTactic ctx ix
+  Ap tm1 tm2 -> apTactic ctx tm1 tm2
   Anno ty tm -> check ctx ty tm
   Unit -> pure UnitTy
   tm -> Left $ TypeError $ "Cannot synthesize type for " <> show tm
 
 check :: SnocList Type -> Type -> Term -> Either Error Type
-check ctx (FuncTy ty1 ty2) (Lam _bndr tm) = do
-  _ <- check (Snoc ctx ty1) ty2 tm
-  pure $ FuncTy ty1 ty2
+check ctx (FuncTy ty1 ty2) (Lam _bndr tm) = lamTactic ctx ty1 ty2 tm
 check ctx ty tm =
   case synth ctx tm of
     Right ty2 | ty == ty2 -> pure ty
     Right ty2 -> Left $ TypeError $ "Expected: " <> show ty <> ", but got: " <> show ty2
     Left err -> Left err
+
+varTactic :: SnocList Type -> Ix -> Either Error Type
+varTactic ctx (Ix ix) =
+  maybe (Left $ OutOfScopeError ix) Right $ nth ctx ix
+
+lamTactic :: SnocList Type -> Type -> Type -> Term -> Either Error Type
+lamTactic ctx ty1 ty2 body = do
+  _ <- check (Snoc ctx ty1) ty2 body
+  pure $ FuncTy ty1 ty2
+
+apTactic :: SnocList Type -> Term -> Term -> Either Error Type
+apTactic ctx tm1 tm2 =
+  synth ctx tm1 >>= \case
+    FuncTy ty1 ty2 -> do
+      _ <- check ctx ty1 tm2
+      pure ty2
+    ty -> Left $ TypeError $ "Expected a function type but got " <> show ty
 
 --------------------------------------------------------------------------------
 -- Evaluator
