@@ -149,3 +149,9 @@ executable 04-TypedHoles
   main-is:             04-TypedHoles.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers
+
+executable 05-SystemT
+  import:              common-settings
+  main-is:             05-SystemT.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
