@@ -85,14 +85,29 @@ data Closure = Closure {env :: SnocList Value, body :: Term}
   deriving stock (Show, Eq, Ord)
 
 --------------------------------------------------------------------------------
+-- Environment
+
+newtype Env = Env { getEnv :: SnocList Type }
+  deriving stock (Show, Eq, Ord)
+
+initEnv :: Env
+initEnv = Env Nil
+
+extendEnv :: Env -> Type -> Env
+extendEnv (Env env) ty = Env (Snoc env ty)
+
+resolveVar :: Env -> Ix -> Maybe Type
+resolveVar ctx (Ix ix) = nth (getEnv ctx) ix
+
+--------------------------------------------------------------------------------
 -- Typechecker
 
 data Error
   = TypeError String
-  | OutOfScopeError Int
+  | OutOfScopeError Ix
   deriving (Show)
 
-synth :: SnocList Type -> Term -> Either Error Type
+synth :: Env -> Term -> Either Error Type
 synth ctx = \case
   Var ix -> varTactic ctx ix
   Ap tm1 tm2 -> apTactic ctx tm1 tm2
@@ -100,7 +115,7 @@ synth ctx = \case
   Unit -> pure UnitTy
   tm -> Left $ TypeError $ "Cannot synthesize type for " <> show tm
 
-check :: SnocList Type -> Type -> Term -> Either Error Type
+check :: Env -> Type -> Term -> Either Error Type
 check ctx (FuncTy ty1 ty2) (Lam _bndr tm) = lamTactic ctx ty1 ty2 tm
 check ctx ty tm =
   case synth ctx tm of
@@ -108,16 +123,16 @@ check ctx ty tm =
     Right ty2 -> Left $ TypeError $ "Expected: " <> show ty <> ", but got: " <> show ty2
     Left err -> Left err
 
-varTactic :: SnocList Type -> Ix -> Either Error Type
-varTactic ctx (Ix ix) =
-  maybe (Left $ OutOfScopeError ix) Right $ nth ctx ix
+varTactic :: Env -> Ix -> Either Error Type
+varTactic ctx ix =
+  maybe (Left $ OutOfScopeError ix) Right $ resolveVar ctx ix
 
-lamTactic :: SnocList Type -> Type -> Type -> Term -> Either Error Type
+lamTactic :: Env -> Type -> Type -> Term -> Either Error Type
 lamTactic ctx ty1 ty2 body = do
-  _ <- check (Snoc ctx ty1) ty2 body
+  _ <- check (extendEnv ctx ty1) ty2 body
   pure $ FuncTy ty1 ty2
 
-apTactic :: SnocList Type -> Term -> Term -> Either Error Type
+apTactic :: Env -> Term -> Term -> Either Error Type
 apTactic ctx tm1 tm2 =
   synth ctx tm1 >>= \case
     FuncTy ty1 ty2 -> do
@@ -167,7 +182,7 @@ instantiateClosure (Closure env body) v = eval (Snoc env v) body
 main :: IO ()
 main =
   let term' = idenT
-   in case synth Nil term' of
+   in case synth initEnv term' of
         Left err -> print err
         Right _ ->
           print $ eval Nil idenT'
