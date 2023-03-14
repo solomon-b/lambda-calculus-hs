@@ -105,8 +105,7 @@ eval env = \case
   Unit -> VUnit
 
 doApply :: Value -> Value -> Value
-doApply (VLam _ clo) arg =
-  instantiateClosure clo arg
+doApply (VLam _ clo) arg = instantiateClosure clo arg
 doApply _ _ = error "impossible case in doApply"
 
 doFst :: Value -> Value
@@ -123,8 +122,11 @@ instantiateClosure (Closure env body) v = eval (Snoc env v) body
 --------------------------------------------------------------------------------
 -- Main
 
+run :: Term -> Value
+run = eval Nil
+
 main :: IO ()
-main = print $ eval Nil (Ap idenT' Unit)
+main = print $ run (Ap idenT' Unit)
 
 -- λx. x
 idenT :: Term

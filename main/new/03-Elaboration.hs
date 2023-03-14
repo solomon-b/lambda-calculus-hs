@@ -1,11 +1,11 @@
-{-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# LANGUAGE TupleSections #-}
+{-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 module Main where
 
 --------------------------------------------------------------------------------
 
-import Data.Foldable (sequenceA_, find)
+import Data.Foldable (find, sequenceA_)
 import Data.Maybe (fromMaybe)
 import Data.String
 
@@ -158,7 +158,7 @@ freshCell ctx name ty = Cell name ty (freshVar ctx ty)
 data Error
   = TypeError String
   | OutOfScopeError Name
-  deriving Show
+  deriving (Show)
 
 synth :: Env -> Term -> Either Error (Type, Syntax)
 synth ctx = \case
@@ -216,10 +216,8 @@ eval env = \case
   SUnit -> VUnit
 
 doApply :: Value -> Value -> Value
-doApply (VLam _ clo) arg =
-  instantiateClosure clo arg
-doApply (VNeutral (FuncTy ty1 ty2) neu) arg =
-  VNeutral ty2 (pushFrame neu (VApp ty1 arg))
+doApply (VLam _ clo) arg = instantiateClosure clo arg
+doApply (VNeutral (FuncTy ty1 ty2) neu) arg = VNeutral ty2 (pushFrame neu (VApp ty1 arg))
 doApply _ _ = error "impossible case in doApply"
 
 doFst :: Value -> Value

@@ -4,8 +4,10 @@ module Main where
 
 --------------------------------------------------------------------------------
 
+import Control.Monad (foldM, (>=>))
+import Control.Monad.Except (ExceptT, MonadError (..), runExceptT)
+import Control.Monad.Reader (MonadReader (..), Reader, runReader)
 import Data.Foldable (sequenceA_)
-import Data.Maybe (fromMaybe)
 import Data.String
 
 --------------------------------------------------------------------------------
@@ -76,6 +78,9 @@ newtype Lvl
   = Lvl Int
   deriving newtype (Show, Eq, Ord)
 
+initLevel :: Lvl
+initLevel = Lvl 0
+
 incLevel :: Lvl -> Lvl
 incLevel (Lvl n) = Lvl (1 + n)
 
@@ -104,14 +109,14 @@ data Closure = Closure {env :: SnocList Value, body :: Term}
 --------------------------------------------------------------------------------
 -- Environment
 
-newtype Env = Env { getEnv :: SnocList Type }
+newtype Env = Env {getEnv :: SnocList Type}
   deriving stock (Show, Eq, Ord)
 
 initEnv :: Env
 initEnv = Env Nil
 
-extendEnv :: Env -> Type -> Env
-extendEnv (Env env) ty = Env (Snoc env ty)
+extendEnv :: Type -> Env -> Env
+extendEnv ty (Env env) = Env (Snoc env ty)
 
 resolveVar :: Env -> Ix -> Maybe Type
 resolveVar ctx (Ix ix) = nth (getEnv ctx) ix
@@ -124,95 +129,110 @@ data Error
   | OutOfScopeError Ix
   deriving (Show)
 
-synth :: Env -> Term -> Either Error Type
-synth ctx = \case
-  Var ix -> varTactic ctx ix
-  Ap tm1 tm2 -> apTactic ctx tm1 tm2
-  Anno ty tm -> check ctx ty tm
+newtype TypecheckM a = TypecheckM {getTypecheckM :: ExceptT Error (Reader Env) a}
+  deriving (Functor, Applicative, Monad, MonadReader Env, MonadError Error)
+
+runTypecheckM :: Env -> TypecheckM a -> Either Error a
+runTypecheckM env = flip runReader env . runExceptT . getTypecheckM
+
+synth :: Term -> TypecheckM Type
+synth = \case
+  Var ix -> varTactic ix
+  Ap tm1 tm2 -> apTactic tm1 tm2
+  Anno ty tm -> check ty tm
   Unit -> pure UnitTy
-  tm -> Left $ TypeError $ "Cannot synthesize type for " <> show tm
+  tm -> throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
-check :: Env -> Type -> Term -> Either Error Type
-check ctx (FuncTy ty1 ty2) (Lam _bndr tm) = lamTactic ctx ty1 ty2 tm
-check ctx ty tm =
-  case synth ctx tm of
-    Right ty2 | ty == ty2 -> pure ty
-    Right ty2 -> Left $ TypeError $ "Expected: " <> show ty <> ", but got: " <> show ty2
-    Left err -> Left err
+check :: Type -> Term -> TypecheckM Type
+check (FuncTy ty1 ty2) (Lam _bndr tm) = lamTactic ty1 ty2 tm
+check ty tm =
+  synth tm >>= \case
+    ty2 | ty == ty2 -> pure ty
+    ty2 -> throwError $ TypeError $ "Expected: " <> show ty <> ", but got: " <> show ty2
 
-varTactic :: Env -> Ix -> Either Error Type
-varTactic ctx ix =
-  maybe (Left $ OutOfScopeError ix) Right $ resolveVar ctx ix
+varTactic :: Ix -> TypecheckM Type
+varTactic ix = do
+  ctx <- ask
+  maybe (throwError $ OutOfScopeError ix) pure $ resolveVar ctx ix
 
-lamTactic :: Env -> Type -> Type -> Term -> Either Error Type
-lamTactic ctx ty1 ty2 body = do
-  _ <- check (extendEnv ctx ty1) ty2 body
+lamTactic :: Type -> Type -> Term -> TypecheckM Type
+lamTactic ty1 ty2 body = do
+  _ <- local (extendEnv ty1) $ check ty2 body
   pure $ FuncTy ty1 ty2
 
-apTactic :: Env -> Term -> Term -> Either Error Type
-apTactic ctx tm1 tm2 =
-  synth ctx tm1 >>= \case
+apTactic :: Term -> Term -> TypecheckM Type
+apTactic tm1 tm2 =
+  synth tm1 >>= \case
     FuncTy ty1 ty2 -> do
-      _ <- check ctx ty1 tm2
+      _ <- check ty1 tm2
       pure ty2
-    ty -> Left $ TypeError $ "Expected a function type but got " <> show ty
+    ty -> throwError $ TypeError $ "Expected a function type but got " <> show ty
 
 --------------------------------------------------------------------------------
 -- Evaluator
 
-eval :: SnocList Value -> Term -> Value
-eval env = \case
-  Var (Ix ix) -> fromMaybe (error "internal error") $ nth env ix
-  Lam bndr body -> VLam bndr (Closure env body)
-  Ap tm1 tm2 ->
-    let fun = eval env tm1
-        arg = eval env tm2
-     in doApply fun arg
-  Pair tm1 tm2 ->
-    let tm1' = eval env tm1
-        tm2' = eval env tm2
-     in VPair tm1' tm2'
-  Fst tm -> doFst $ eval env tm
-  Snd tm -> doSnd $ eval env tm
-  Anno _ty tm -> eval env tm
-  Unit -> VUnit
+newtype EvalM a = EvalM {getEvalM :: Reader (SnocList Value) a}
+  deriving (Functor, Applicative, Monad, MonadReader (SnocList Value))
 
-doApply :: Value -> Value -> Value
-doApply (VLam _ clo) arg =
-  instantiateClosure clo arg
-doApply (VNeutral (FuncTy ty1 ty2) neu) arg =
-  VNeutral ty2 (pushFrame neu (VApp ty1 arg))
+runEvalM :: SnocList Value -> EvalM a -> a
+runEvalM env = flip runReader env . getEvalM
+
+eval :: Term -> EvalM Value
+eval = \case
+  Var (Ix ix) -> do
+    env <- ask
+    maybe (error "internal error") pure $ nth env ix
+  Lam bndr body -> do
+    env <- ask
+    pure $ VLam bndr (Closure env body)
+  Ap tm1 tm2 -> do
+    fun <- eval tm1
+    arg <- eval tm2
+    doApply fun arg
+  Pair tm1 tm2 -> do
+    tm1' <- eval tm1
+    tm2' <- eval tm2
+    pure $ VPair tm1' tm2'
+  Fst tm -> eval tm >>= doFst
+  Snd tm -> eval tm >>= doSnd
+  Anno _ty tm -> eval tm
+  Unit -> pure VUnit
+
+doApply :: Value -> Value -> EvalM Value
+doApply (VLam _ clo) arg = instantiateClosure clo arg
+doApply (VNeutral (FuncTy ty1 ty2) neu) arg = pure $ VNeutral ty2 (pushFrame neu (VApp ty1 arg))
 doApply _ _ = error "impossible case in doApply"
 
-doFst :: Value -> Value
-doFst (VPair a _b) = a
+doFst :: Value -> EvalM Value
+doFst (VPair a _b) = pure a
 doFst _ = error "impossible case in doFst"
 
-doSnd :: Value -> Value
-doSnd (VPair _a b) = b
+doSnd :: Value -> EvalM Value
+doSnd (VPair _a b) = pure b
 doSnd _ = error "impossible case in doSnd"
 
-instantiateClosure :: Closure -> Value -> Value
-instantiateClosure (Closure env body) v = eval (Snoc env v) body
+instantiateClosure :: Closure -> Value -> EvalM Value
+instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 
 --------------------------------------------------------------------------------
 -- Quoting
 
-quote :: Lvl -> Type -> Value -> Term
-quote l (FuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) =
-  let body = bindVar ty1 l $ \v l' ->
-        quote l' ty2 $ instantiateClosure clo v
-   in Lam bndr body
-quote l (FuncTy ty1 ty2) f =
-  let body = bindVar ty1 l $ \v l' ->
-        quote l' ty2 (doApply f v)
-   in Lam "_" body
-quote l (PairTy ty1 ty2) (VPair tm1 tm2) =
-  let tm1' = quote l ty1 tm1
-      tm2' = quote l ty2 tm2
-   in Pair tm1' tm2'
+quote :: Lvl -> Type -> Value -> EvalM Term
+quote l (FuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) = do
+  body <- bindVar ty1 l $ \v l' -> do
+    clo <- instantiateClosure clo v
+    quote l' ty2 clo
+  pure $ Lam bndr body
+quote l (FuncTy ty1 ty2) f = do
+  body <- bindVar ty1 l $ \v l' ->
+    doApply f v >>= quote l' ty2
+  pure $ Lam "_" body
+quote l (PairTy ty1 ty2) (VPair tm1 tm2) = do
+  tm1' <- quote l ty1 tm1
+  tm2' <- quote l ty2 tm2
+  pure $ Pair tm1' tm2'
 quote l _ (VNeutral _ neu) = quoteNeutral l neu
-quote _ _ VUnit = Unit
+quote _ _ VUnit = pure Unit
 quote _ _ _ = error "impossible case in quote"
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
@@ -223,28 +243,31 @@ bindVar ty lvl f =
 quoteLevel :: Lvl -> Lvl -> Ix
 quoteLevel (Lvl l) (Lvl x) = Ix (l - (x + 1))
 
-quoteNeutral :: Lvl -> Neutral -> Term
-quoteNeutral l Neutral {..} = foldl (quoteFrame l) (quoteHead l head) spine
+quoteNeutral :: Lvl -> Neutral -> EvalM Term
+quoteNeutral l Neutral {..} = foldM (quoteFrame l) (quoteHead l head) spine
 
 quoteHead :: Lvl -> Head -> Term
-quoteHead l (VVar x) = Var (quoteLevel l x)
+quoteHead l (VVar x) = Var $ quoteLevel l x
 
-quoteFrame :: Lvl -> Term -> Frame -> Term
+quoteFrame :: Lvl -> Term -> Frame -> EvalM Term
 quoteFrame l tm = \case
-  VApp ty arg -> Ap tm (quote l ty arg)
-  VFst -> Fst tm
-  VSnd -> Snd tm
+  VApp ty arg -> Ap tm <$> quote l ty arg
+  VFst -> pure $ Fst tm
+  VSnd -> pure $ Snd tm
 
 --------------------------------------------------------------------------------
 -- Main
 
+run :: Term -> Either Error Term
+run term = do
+  type' <- runTypecheckM initEnv (synth term)
+  pure $ runEvalM Nil $ (eval >=> quote initLevel type') term
+
 main :: IO ()
 main =
-  let term' = idenT
-   in case synth Nil term' of
-        Left err -> print err
-        Right type' ->
-          print $ quote (Lvl 0) type' $ eval Nil idenT'
+  case run (Ap idenT Unit) of
+    Left err -> print err
+    Right val -> print val
 
 -- λx. x
 idenT :: Term
