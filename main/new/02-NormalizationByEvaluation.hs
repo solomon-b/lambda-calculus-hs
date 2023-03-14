@@ -107,7 +107,7 @@ data Closure = Closure {env :: SnocList Value, body :: Term}
 data Error
   = TypeError String
   | OutOfScopeError Int
-  deriving (Show)
+  deriving Show
 
 synth :: SnocList Type -> Term -> Either Error Type
 synth ctx = \case
@@ -171,6 +171,45 @@ instantiateClosure :: Closure -> Value -> Value
 instantiateClosure (Closure env body) v = eval (Snoc env v) body
 
 --------------------------------------------------------------------------------
+-- Quoting
+
+quote :: Lvl -> Type -> Value -> Term
+quote l (FuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) =
+  let body = bindVar ty1 l $ \v l' ->
+        quote l' ty2 $ instantiateClosure clo v
+   in Lam bndr body
+quote l (FuncTy ty1 ty2) f =
+  let body = bindVar ty1 l $ \v l' ->
+        quote l' ty2 (doApply f v)
+   in Lam "_" body
+quote l (PairTy ty1 ty2) (VPair tm1 tm2) =
+  let tm1' = quote l ty1 tm1
+      tm2' = quote l ty2 tm2
+   in Pair tm1' tm2'
+quote l _ (VNeutral _ neu) = quoteNeutral l neu
+quote _ _ _ = error "impossible case in quote"
+
+bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
+bindVar ty lvl f =
+  let v = VNeutral ty $ Neutral (VVar lvl) Nil
+   in f v $ incLevel lvl
+
+quoteLevel :: Lvl -> Lvl -> Ix
+quoteLevel (Lvl l) (Lvl x) = Ix (l - (x + 1))
+
+quoteNeutral :: Lvl -> Neutral -> Term
+quoteNeutral l Neutral {..} = foldl (quoteFrame l) (quoteHead l head) spine
+
+quoteHead :: Lvl -> Head -> Term
+quoteHead l (VVar x) = Var (quoteLevel l x)
+
+quoteFrame :: Lvl -> Term -> Frame -> Term
+quoteFrame l tm = \case
+  VApp ty arg -> Ap tm (quote l ty arg)
+  VFst -> Fst tm
+  VSnd -> Snd tm
+
+--------------------------------------------------------------------------------
 -- Main
 
 main :: IO ()
@@ -178,8 +217,8 @@ main =
   let term' = idenT
    in case synth Nil term' of
         Left err -> print err
-        Right _ ->
-          print $ eval Nil idenT'
+        Right type' ->
+          print $ quote (Lvl 0) type' $ eval Nil idenT'
 
 -- λx. x
 idenT :: Term
