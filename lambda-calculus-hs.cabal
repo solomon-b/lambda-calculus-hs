@@ -44,102 +44,102 @@ common common-settings
 
 executable Untyped
   import:              common-settings
-  main-is:             Untyped.hs
+  main-is:             old/Untyped.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable SimplyTyped
   import:              common-settings
-  main-is:             SimplyTyped.hs
+  main-is:             old/SimplyTyped.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable SimplyTypedModules
   import:              common-settings
-  main-is:             SimplyTypedModules.hs
+  main-is:             old/SimplyTypedModules.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable SimplyTypedPatterns
   import:              common-settings
-  main-is:             SimplyTypedPatterns.hs
+  main-is:             old/SimplyTypedPatterns.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers, lens
 
 executable SystemT
   import:              common-settings
-  main-is:             SystemT.hs
+  main-is:             old/SystemT.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable SystemF
   import:              common-settings
-  main-is:             SystemF.hs
+  main-is:             old/SystemF.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers, lens
 
 executable SystemOmega
   import:              common-settings
-  main-is:             SystemOmega.hs
+  main-is:             old/SystemOmega.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers, lens
 
 executable SystemFOmega
   import:              common-settings
-  main-is:             SystemFOmega.hs
+  main-is:             old/SystemFOmega.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers, lens
 
 executable LambdaPi
   import:              common-settings
-  main-is:             LambdaPi.hs
+  main-is:             old/LambdaPi.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers, lens
 
 executable UntypedNBE
   import:              common-settings
-  main-is:             UntypedNBE.hs
+  main-is:             old/UntypedNBE.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable SimplyTypedNBE
   import:              common-settings
-  main-is:             SimplyTypedNBE.hs
+  main-is:             old/SimplyTypedNBE.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable SimplyTypedElab
   import:              common-settings
-  main-is:             SimplyTypedElab.hs
+  main-is:             old/SimplyTypedElab.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable MLTT
   import:              common-settings
-  main-is:             MLTT.hs
+  main-is:             old/MLTT.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable 00-SimplyTypedEvaluation
   import:              common-settings
-  main-is:             new/00-SimplyTypedEvaluation.hs
+  main-is:             00-SimplyTypedEvaluation.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable 01-BidirectionalTypechecking
   import:              common-settings
-  main-is:             new/01-BidirectionalTypechecking.hs
+  main-is:             01-BidirectionalTypechecking.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable 02-NormalizationByEvaluation
   import:              common-settings
-  main-is:             new/02-NormalizationByEvaluation.hs
+  main-is:             02-NormalizationByEvaluation.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
 
 executable 03-Elaboration
   import:              common-settings
-  main-is:             new/03-Elaboration.hs
+  main-is:             03-Elaboration.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
