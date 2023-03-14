@@ -143,3 +143,9 @@ executable 03-Elaboration
   main-is:             03-Elaboration.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers
+
+executable 04-TypedHoles
+  import:              common-settings
+  main-is:             04-TypedHoles.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
