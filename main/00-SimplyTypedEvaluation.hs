@@ -4,7 +4,6 @@ module Main where
 
 --------------------------------------------------------------------------------
 
-import Data.Foldable (sequenceA_)
 import Data.Maybe (fromMaybe)
 import Data.String
 
@@ -15,16 +14,6 @@ data SnocList a
   = Snoc (SnocList a) a
   | Nil
   deriving (Show, Eq, Ord, Functor, Foldable)
-
-zipSnocWith :: (a -> b -> c) -> SnocList a -> SnocList b -> SnocList c
-zipSnocWith f = go
-  where
-    go Nil _ = Nil
-    go _ Nil = Nil
-    go (Snoc as a) (Snoc bs b) = Snoc (go as bs) (f a b)
-
-zipSnocWithM_ :: (Applicative m) => (a -> b -> m c) -> SnocList a -> SnocList b -> m ()
-zipSnocWithM_ f xs ys = sequenceA_ (zipSnocWith f xs ys)
 
 nth :: SnocList a -> Int -> Maybe a
 nth xs i
