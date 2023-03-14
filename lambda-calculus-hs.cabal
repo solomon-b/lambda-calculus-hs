@@ -125,3 +125,9 @@ executable 00-SimplyTypedEvaluation
   main-is:             new/00-SimplyTypedEvaluation.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
+
+executable 01-BidirectionalTypechecking
+  import:              common-settings
+  main-is:             new/01-BidirectionalTypechecking.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, containers

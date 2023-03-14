@@ -102,6 +102,37 @@ data Closure = Closure {env :: SnocList Value, body :: Term}
   deriving stock (Show, Eq, Ord)
 
 --------------------------------------------------------------------------------
+-- Typechecker
+
+data Error
+  = TypeError String
+  | OutOfScopeError Int
+  deriving Show
+
+synth :: SnocList Type -> Term -> Either Error Type
+synth ctx = \case
+  Var (Ix ix) -> maybe (Left $ OutOfScopeError ix) Right $ nth ctx ix
+  Ap tm1 tm2 ->
+    synth ctx tm1 >>= \case
+      FuncTy ty1 ty2 -> do
+        _ <- check ctx ty1 tm2
+        pure ty2
+      ty -> Left $ TypeError $ "Expected a function type but got " <> show ty
+  Anno ty tm -> check ctx ty tm
+  Unit -> pure UnitTy
+  tm -> Left $ TypeError $ "Cannot synthesize type for " <> show tm
+
+check :: SnocList Type -> Type -> Term -> Either Error Type
+check ctx (FuncTy ty1 ty2) (Lam _bndr tm) = do
+  _ <- check (Snoc ctx ty1) ty2 tm
+  pure $ FuncTy ty1 ty2
+check ctx ty tm =
+  case synth ctx tm of
+    Right ty2 | ty == ty2 -> pure ty
+    Right ty2 -> Left $ TypeError $ "Expected: " <> show ty <> ", but got: " <> show ty2
+    Left err -> Left err
+
+--------------------------------------------------------------------------------
 -- Evaluator
 
 eval :: SnocList Value -> Term -> Value
@@ -182,7 +213,12 @@ quoteFrame l tm = \case
 -- Main
 
 main :: IO ()
-main = print $ quote (Lvl 0) (UnitTy `FuncTy` UnitTy) $ eval Nil idenT'
+main =
+  let term' = idenT
+   in case synth Nil term' of
+        Left err -> print err
+        Right type' ->
+          print $ quote (Lvl 0) type' $ eval Nil idenT'
 
 -- λx. x
 idenT :: Term
