@@ -1,11 +1,14 @@
-{-# OPTIONS_GHC -Wno-name-shadowing #-}
+{-# LANGUAGE DerivingVia #-}
 
 module Main where
 
 --------------------------------------------------------------------------------
 
-import Control.Monad.Except (ExceptT, MonadError (..), runExceptT)
-import Control.Monad.Reader (MonadReader (..), Reader, runReader)
+import Control.Monad.Except (MonadError (..))
+import Control.Monad.Identity
+import Control.Monad.Reader (MonadReader (..))
+import Control.Monad.Trans.Except (ExceptT (..))
+import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Data.String
 
 --------------------------------------------------------------------------------
@@ -97,11 +100,10 @@ data Error
   | OutOfScopeError Ix
   deriving (Show)
 
-newtype TypecheckM a = TypecheckM {getTypecheckM :: ExceptT Error (Reader Env) a}
-  deriving (Functor, Applicative, Monad, MonadReader Env, MonadError Error)
-
-runTypecheckM :: Env -> TypecheckM a -> Either Error a
-runTypecheckM env = flip runReader env . runExceptT . getTypecheckM
+newtype TypecheckM a = TypecheckM {runTypecheckM :: Env -> Either Error a}
+  deriving
+    (Functor, Applicative, Monad, MonadReader Env, MonadError Error)
+    via ExceptT Error (Reader Env)
 
 synth :: Term -> TypecheckM Type
 synth = \case
@@ -139,11 +141,10 @@ apTactic tm1 tm2 =
 --------------------------------------------------------------------------------
 -- Evaluator
 
-newtype EvalM a = EvalM {getEvalM :: Reader (SnocList Value) a}
-  deriving (Functor, Applicative, Monad, MonadReader (SnocList Value))
-
-runEvalM :: SnocList Value -> EvalM a -> a
-runEvalM env = flip runReader env . getEvalM
+newtype EvalM a = EvalM {runEvalM :: SnocList Value -> a}
+  deriving
+    (Functor, Applicative, Monad, MonadReader (SnocList Value))
+    via Reader (SnocList Value)
 
 eval :: Term -> EvalM Value
 eval = \case
@@ -186,7 +187,7 @@ instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 
 run :: Term -> Either Error Value
 run term =
-  runEvalM Nil . eval . const term <$> runTypecheckM initEnv (synth term)
+  flip runEvalM Nil . eval . const term <$> runTypecheckM (synth term) initEnv
 
 main :: IO ()
 main =

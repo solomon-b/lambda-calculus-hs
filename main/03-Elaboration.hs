@@ -1,3 +1,4 @@
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
@@ -5,9 +6,11 @@ module Main where
 
 --------------------------------------------------------------------------------
 
-import Control.Monad (foldM)
-import Control.Monad.Except (ExceptT, MonadError (..), runExceptT)
-import Control.Monad.Reader (MonadReader (..), Reader, runReader)
+import Control.Monad.Except (MonadError (..))
+import Control.Monad.Identity
+import Control.Monad.Reader (MonadReader (..))
+import Control.Monad.Trans.Except (ExceptT (..))
+import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Data.Foldable (find)
 import Data.Maybe (fromMaybe)
 import Data.String
@@ -156,11 +159,10 @@ data Error
   | OutOfScopeError Name
   deriving (Show)
 
-newtype TypecheckM a = TypecheckM {getTypecheckM :: ExceptT Error (Reader Env) a}
-  deriving (Functor, Applicative, Monad, MonadReader Env, MonadError Error)
-
-runTypecheckM :: Env -> TypecheckM a -> Either Error a
-runTypecheckM env = flip runReader env . runExceptT . getTypecheckM
+newtype TypecheckM a = TypecheckM {runTypecheckM :: Env -> Either Error a}
+  deriving
+    (Functor, Applicative, Monad, MonadReader Env, MonadError Error)
+    via ExceptT Error (Reader Env)
 
 synth :: Term -> TypecheckM (Type, Syntax)
 synth = \case
@@ -182,7 +184,7 @@ varTactic bndr = do
   ctx <- ask
   case resolveCell ctx bndr of
     Just Cell {..} -> do
-      let quoted = runEvalM (locals ctx) $ quote (Lvl $ size ctx) cellType cellValue
+      let quoted = flip runEvalM (locals ctx) $ quote (Lvl $ size ctx) cellType cellValue
       pure (cellType, quoted)
     Nothing -> throwError $ OutOfScopeError bndr
 
@@ -204,11 +206,10 @@ apTactic tm1 tm2 =
 --------------------------------------------------------------------------------
 -- Evaluator
 
-newtype EvalM a = EvalM {getEvalM :: Reader (SnocList Value) a}
-  deriving (Functor, Applicative, Monad, MonadReader (SnocList Value))
-
-runEvalM :: SnocList Value -> EvalM a -> a
-runEvalM env = flip runReader env . getEvalM
+newtype EvalM a = EvalM {runEvalM :: SnocList Value -> a}
+  deriving
+    (Functor, Applicative, Monad, MonadReader (SnocList Value))
+    via Reader (SnocList Value)
 
 eval :: Syntax -> EvalM Value
 eval = \case
@@ -292,8 +293,8 @@ bindVar ty lvl f =
 
 run :: Term -> Either Error Syntax
 run term = do
-  (type', syntax) <- runTypecheckM initEnv (synth term)
-  let result = runEvalM Nil $ do
+  (type', syntax) <- runTypecheckM (synth term) initEnv
+  let result = flip runEvalM Nil $ do
         value <- eval syntax
         quote initLevel type' value
   pure result

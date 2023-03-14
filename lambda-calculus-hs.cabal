@@ -46,100 +46,100 @@ executable Untyped
   import:              common-settings
   main-is:             old/Untyped.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable SimplyTyped
   import:              common-settings
   main-is:             old/SimplyTyped.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable SimplyTypedModules
   import:              common-settings
   main-is:             old/SimplyTypedModules.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable SimplyTypedPatterns
   import:              common-settings
   main-is:             old/SimplyTypedPatterns.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers, lens
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, lens
 
 executable SystemT
   import:              common-settings
   main-is:             old/SystemT.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable SystemF
   import:              common-settings
   main-is:             old/SystemF.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers, lens
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, lens
 
 executable SystemOmega
   import:              common-settings
   main-is:             old/SystemOmega.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers, lens
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, lens
 
 executable SystemFOmega
   import:              common-settings
   main-is:             old/SystemFOmega.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers, lens
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, lens
 
 executable LambdaPi
   import:              common-settings
   main-is:             old/LambdaPi.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers, lens
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, lens
 
 executable UntypedNBE
   import:              common-settings
   main-is:             old/UntypedNBE.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable SimplyTypedNBE
   import:              common-settings
   main-is:             old/SimplyTypedNBE.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable SimplyTypedElab
   import:              common-settings
   main-is:             old/SimplyTypedElab.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable MLTT
   import:              common-settings
   main-is:             old/MLTT.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable 00-SimplyTypedEvaluation
   import:              common-settings
   main-is:             00-SimplyTypedEvaluation.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable 01-BidirectionalTypechecking
   import:              common-settings
   main-is:             01-BidirectionalTypechecking.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable 02-NormalizationByEvaluation
   import:              common-settings
   main-is:             02-NormalizationByEvaluation.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable 03-Elaboration
   import:              common-settings
   main-is:             03-Elaboration.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
