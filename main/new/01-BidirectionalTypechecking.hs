@@ -54,8 +54,7 @@ data Type = FuncTy Type Type | PairTy Type Type | UnitTy
   deriving stock (Show, Eq, Ord)
 
 data Value
-  = VNeutral Type Neutral
-  | VLam Name Closure
+  = VLam Name Closure
   | VPair Value Value
   | VUnit
   deriving stock (Show, Eq, Ord)
@@ -81,22 +80,6 @@ incLevel (Lvl n) = Lvl (1 + n)
 
 newtype Name = Name {getName :: String}
   deriving newtype (Show, Eq, Ord, IsString)
-
-data Neutral = Neutral {head :: Head, spine :: SnocList Frame}
-  deriving stock (Show, Eq, Ord)
-
-newtype Head
-  = VVar Lvl
-  deriving (Show, Eq, Ord)
-
-data Frame
-  = VApp Type Value
-  | VFst
-  | VSnd
-  deriving stock (Show, Eq, Ord)
-
-pushFrame :: Neutral -> Frame -> Neutral
-pushFrame Neutral {..} frame = Neutral {head = head, spine = Snoc spine frame}
 
 data Closure = Closure {env :: SnocList Value, body :: Term}
   deriving stock (Show, Eq, Ord)
@@ -155,8 +138,6 @@ eval env = \case
 doApply :: Value -> Value -> Value
 doApply (VLam _ clo) arg =
   instantiateClosure clo arg
-doApply (VNeutral (FuncTy ty1 ty2) neu) arg =
-  VNeutral ty2 (pushFrame neu (VApp ty1 arg))
 doApply _ _ = error "impossible case in doApply"
 
 doFst :: Value -> Value
