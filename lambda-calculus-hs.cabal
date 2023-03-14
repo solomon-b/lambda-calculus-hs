@@ -137,3 +137,9 @@ executable 02-NormalizationByEvaluation
   main-is:             new/02-NormalizationByEvaluation.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, containers
+
+executable 03-Elaboration
+  import:              common-settings
+  main-is:             new/03-Elaboration.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, containers
