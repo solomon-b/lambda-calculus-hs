@@ -366,7 +366,7 @@ eval = \case
     tm2' <- eval tm2
     doNatRec n' tm1' tm2'
   SRecord fields -> doRecord fields
-  SGet name tm -> doGet name tm
+  SGet name tm -> eval tm >>= doGet name
   SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
 
 doApply :: Value -> Value -> EvalM Value
@@ -401,11 +401,11 @@ doNatRec _ _ _ = error "impossible case in doNatRec"
 doRecord :: [(Name, Syntax)] -> EvalM Value
 doRecord fields = VRecord <$> traverse (traverse eval) fields
 
-doGet :: Name -> Syntax -> EvalM Value
-doGet name (SRecord fields) =
+doGet :: Name -> Value -> EvalM Value
+doGet name (VRecord fields) =
   case lookup name fields of
     Nothing -> error "impossible case in doGet lookup"
-    Just field -> eval field
+    Just field -> pure field
 doGet _ _ = error "impossible case in doGet"
 
 instantiateClosure :: Closure -> Value -> EvalM Value
@@ -477,9 +477,18 @@ run term =
 
 main :: IO ()
 main =
-  case run (Anno (RecordTy [("foo", BoolTy), ("bar", NatTy)]) recordT) of
+  case run getTest of
     Left err -> print err
     Right result -> print result
+
+getTest :: Term
+getTest =
+  Ap
+    ( Anno
+        (RecordTy [("foo", BoolTy), ("bar", NatTy)] `FuncTy` BoolTy)
+        (Lam "x" (Get "foo" (Var "x")))
+    )
+    recordT
 
 recordT :: Term
 recordT = Record [("foo", Tru), ("bar", Zero)]
