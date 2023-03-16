@@ -206,7 +206,9 @@ synth :: Term -> TypecheckM (Type, Syntax)
 synth = \case
   Var bndr -> varTactic bndr
   Ap tm1 tm2 -> apTactic tm1 tm2
-  Anno ty tm -> (ty,) <$> check ty tm
+  Pair tm1 tm2 -> pairTactic tm1 tm2
+  Fst tm -> fstTactic tm
+  Snd tm -> sndTactic tm
   Unit -> pure (UnitTy, SUnit)
   Tru -> pure (BoolTy, STru)
   Fls -> pure (BoolTy, SFls)
@@ -216,6 +218,7 @@ synth = \case
   NatRec tm1 tm2 n -> natRecTactic tm1 tm2 n
   Record fields -> recordTactic fields
   Get name tm -> getTactic name tm
+  Anno ty tm -> (ty,) <$> check ty tm
   Hole -> throwError $ TypeError "Cannot synthesize a type hole"
   tm -> throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
@@ -253,6 +256,27 @@ apTactic tm1 tm2 =
       arg <- check ty1 tm2
       pure (ty2, SAp f arg)
     ty -> throwError $ TypeError $ "Expected a function type but got " <> show ty
+
+-- | Pair Introduction Tactic
+pairTactic :: Term -> Term -> TypecheckM (Type, Syntax)
+pairTactic tm1 tm2 = do
+  (ty1, tm1') <- synth tm1
+  (ty2, tm2') <- synth tm2
+  pure (PairTy ty1 ty2, SPair tm1' tm2')
+
+-- | Pair Fst Elimination Tactic
+fstTactic :: Term -> TypecheckM (Type, Syntax)
+fstTactic tm =
+  synth tm >>= \case
+    (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
+    (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+
+-- | Pair Snd Elimination Tactic
+sndTactic :: Term -> TypecheckM (Type, Syntax)
+sndTactic tm =
+  synth tm >>= \case
+    (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
+    (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Bool Elimination Tactic
 ifTactic :: Term -> Term -> Term -> TypecheckM (Type, Syntax)
@@ -342,7 +366,7 @@ eval = \case
     tm2' <- eval tm2
     doNatRec n' tm1' tm2'
   SRecord fields -> doRecord fields
-  SGet name tm -> doGet name tm
+  SGet name tm -> eval tm >>= doGet name
   SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
 
 doApply :: Value -> Value -> EvalM Value
@@ -377,11 +401,11 @@ doNatRec _ _ _ = error "impossible case in doNatRec"
 doRecord :: [(Name, Syntax)] -> EvalM Value
 doRecord fields = VRecord <$> traverse (traverse eval) fields
 
-doGet :: Name -> Syntax -> EvalM Value
-doGet name (SRecord fields) =
+doGet :: Name -> Value -> EvalM Value
+doGet name (VRecord fields) =
   case lookup name fields of
     Nothing -> error "impossible case in doGet lookup"
-    Just field -> eval field
+    Just field -> pure field
 doGet _ _ = error "impossible case in doGet"
 
 instantiateClosure :: Closure -> Value -> EvalM Value
@@ -453,9 +477,18 @@ run term =
 
 main :: IO ()
 main =
-  case run (Anno (RecordTy [("foo", BoolTy), ("bar", NatTy)]) recordT) of
+  case run getTest of
     Left err -> print err
     Right result -> print result
+
+getTest :: Term
+getTest =
+  Ap
+    ( Anno
+        (RecordTy [("foo", BoolTy), ("bar", NatTy)] `FuncTy` BoolTy)
+        (Lam "x" (Get "foo" (Var "x")))
+    )
+    recordT
 
 recordT :: Term
 recordT = Record [("foo", Tru), ("bar", Zero)]

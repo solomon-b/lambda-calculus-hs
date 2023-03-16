@@ -207,7 +207,9 @@ synth :: Term -> TypecheckM (Type, Syntax)
 synth = \case
   Var bndr -> varTactic bndr
   Ap tm1 tm2 -> apTactic tm1 tm2
-  Anno ty tm -> (ty,) <$> check ty tm
+  Pair tm1 tm2 -> pairTactic tm1 tm2
+  Fst tm -> fstTactic tm
+  Snd tm -> sndTactic tm
   Unit -> pure (UnitTy, SUnit)
   Tru -> pure (BoolTy, STru)
   Fls -> pure (BoolTy, SFls)
@@ -218,6 +220,7 @@ synth = \case
   Record fields -> recordTactic fields
   Get name tm -> getTactic name tm
   Hole -> throwError $ TypeError "Cannot synthesize a type hole"
+  Anno ty tm -> (ty,) <$> check ty tm
   tm -> throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
 check :: Type -> Term -> TypecheckM Syntax
@@ -225,7 +228,7 @@ check (FuncTy ty1 ty2) (Lam bndr tm) = lamTactic ty1 ty2 bndr tm
 check ty Hole = holeTactic ty
 check ty tm =
   synth tm >>= \case
-    (ty2, tm) | ty `subsumes` ty2 -> pure tm
+    (ty2, tm) | ty2 `subsumes` ty -> pure tm
     (ty2, _) -> throwError $ TypeError $ "Expected: " <> show ty <> ", but got: " <> show ty2
 
 -- | Var Tactic
@@ -254,6 +257,27 @@ apTactic tm1 tm2 =
       arg <- check ty1 tm2
       pure (ty2, SAp f arg)
     ty -> throwError $ TypeError $ "Expected a function type but got " <> show ty
+
+-- | Pair Introduction Tactic
+pairTactic :: Term -> Term -> TypecheckM (Type, Syntax)
+pairTactic tm1 tm2 = do
+  (ty1, tm1') <- synth tm1
+  (ty2, tm2') <- synth tm2
+  pure (PairTy ty1 ty2, SPair tm1' tm2')
+
+-- | Pair Fst Elimination Tactic
+fstTactic :: Term -> TypecheckM (Type, Syntax)
+fstTactic tm =
+  synth tm >>= \case
+    (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
+    (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+
+-- | Pair Snd Elimination Tactic
+sndTactic :: Term -> TypecheckM (Type, Syntax)
+sndTactic tm =
+  synth tm >>= \case
+    (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
+    (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Bool Elimination Tactic
 ifTactic :: Term -> Term -> Term -> TypecheckM (Type, Syntax)
@@ -304,7 +328,7 @@ holeTactic ty = do
 --------------------------------------------------------------------------------
 -- Subsumption
 
--- | ty1 > ty2
+-- | ty1 <: ty2
 subsumes :: Type -> Type -> Bool
 subsumes (RecordTy fields1) (RecordTy fields2) =
   let fields1' = Map.fromList fields1
@@ -354,7 +378,7 @@ eval = \case
     tm2' <- eval tm2
     doNatRec n' tm1' tm2'
   SRecord fields -> doRecord fields
-  SGet name tm -> doGet name tm
+  SGet name tm -> eval tm >>= doGet name
   SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
 
 doApply :: Value -> Value -> EvalM Value
@@ -389,12 +413,12 @@ doNatRec _ _ _ = error "impossible case in doNatRec"
 doRecord :: [(Name, Syntax)] -> EvalM Value
 doRecord fields = VRecord <$> traverse (traverse eval) fields
 
-doGet :: Name -> Syntax -> EvalM Value
-doGet name (SRecord fields) =
+doGet :: Name -> Value -> EvalM Value
+doGet name (VRecord fields) =
   case lookup name fields of
     Nothing -> error "impossible case in doGet lookup"
-    Just field -> eval field
-doGet _ _ = error "impossible case in doGet"
+    Just field -> pure field
+doGet _ s = error $ show s -- "impossible case in doGet"
 
 instantiateClosure :: Closure -> Value -> EvalM Value
 instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
@@ -465,12 +489,21 @@ run term =
 
 main :: IO ()
 main =
-  case run (Anno (RecordTy [("foo", BoolTy), ("bar", NatTy), ("baz", UnitTy)]) recordT) of
+  case run subTypeApT of
     Left err -> print err
     Right result -> print result
 
+subTypeApT :: Term
+subTypeApT =
+  Ap
+    ( Anno
+        (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
+        (Lam "x" (Get "foo" (Var "x")))
+    )
+    recordT
+
 recordT :: Term
-recordT = Record [("foo", Tru), ("bar", Zero)]
+recordT = Record [("foo", Tru), ("bar", Zero), ("baz", Unit)]
 
 addT :: Term
 addT =
