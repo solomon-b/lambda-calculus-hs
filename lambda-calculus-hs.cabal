@@ -48,12 +48,6 @@ executable Untyped
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers
 
-executable SimplyTyped
-  import:              common-settings
-  main-is:             old/SimplyTyped.hs
-  hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
-
 executable SimplyTypedModules
   import:              common-settings
   main-is:             old/SimplyTypedModules.hs
@@ -65,12 +59,6 @@ executable SimplyTypedPatterns
   main-is:             old/SimplyTypedPatterns.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, lens
-
-executable SystemT
-  import:              common-settings
-  main-is:             old/SystemT.hs
-  hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 executable SystemF
   import:              common-settings
@@ -99,18 +87,6 @@ executable LambdaPi
 executable UntypedNBE
   import:              common-settings
   main-is:             old/UntypedNBE.hs
-  hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
-
-executable SimplyTypedNBE
-  import:              common-settings
-  main-is:             old/SimplyTypedNBE.hs
-  hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
-
-executable SimplyTypedElab
-  import:              common-settings
-  main-is:             old/SimplyTypedElab.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers
 
