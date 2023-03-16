@@ -225,7 +225,7 @@ check (FuncTy ty1 ty2) (Lam bndr tm) = lamTactic ty1 ty2 bndr tm
 check ty Hole = holeTactic ty
 check ty tm =
   synth tm >>= \case
-    (ty2, tm) | ty `subsumes` ty2 -> pure tm
+    (ty2, tm) | ty2 `subsumes` ty -> pure tm
     (ty2, _) -> throwError $ TypeError $ "Expected: " <> show ty <> ", but got: " <> show ty2
 
 -- | Var Tactic
@@ -304,7 +304,7 @@ holeTactic ty = do
 --------------------------------------------------------------------------------
 -- Subsumption
 
--- | ty1 > ty2
+-- | ty1 <: ty2
 subsumes :: Type -> Type -> Bool
 subsumes (RecordTy fields1) (RecordTy fields2) =
   let fields1' = Map.fromList fields1
@@ -465,12 +465,12 @@ run term =
 
 main :: IO ()
 main =
-  case run (Anno (RecordTy [("foo", BoolTy), ("bar", NatTy), ("baz", UnitTy)]) recordT) of
+  case run (Anno (RecordTy [("foo", BoolTy), ("bar", NatTy)]) recordT) of
     Left err -> print err
     Right result -> print result
 
 recordT :: Term
-recordT = Record [("foo", Tru), ("bar", Zero)]
+recordT = Record [("foo", Tru), ("bar", Zero), ("baz", Unit)]
 
 addT :: Term
 addT =
