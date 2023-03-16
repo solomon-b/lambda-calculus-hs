@@ -154,7 +154,7 @@ fstTactic tm =
   synth tm >>= \case
     PairTy ty1 _ty2 -> pure ty1
     ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
-  
+
 -- | Pair Snd Elimination Tactic
 sndTactic :: Term -> TypecheckM Type
 sndTactic tm =
