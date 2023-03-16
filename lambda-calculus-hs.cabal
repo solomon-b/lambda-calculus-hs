@@ -137,3 +137,9 @@ executable 06-Records
   main-is:             06-Records.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers
+
+executable 07-Subtyping
+  import:              common-settings
+  main-is:             07-Subtyping.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers
