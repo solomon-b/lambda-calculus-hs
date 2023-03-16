@@ -5,16 +5,13 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE StrictData #-}
+{-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 module Main where
 
 --------------------------------------------------------------------------------
 
-import Control.Monad.State
 import Data.Functor (($>))
-import Data.List ((\\))
-import Data.Map (Map)
-import qualified Data.Map.Strict as M
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -31,7 +28,7 @@ nth xs i
       let go = \case
             (Nil, _) -> Nothing
             (Snoc _ x, 0) -> Just x
-            (Snoc xs _, i) -> go (xs, i - 1)
+            (Snoc ys _, j) -> go (ys, j - 1)
        in go (xs, i)
 
 --------------------------------------------------------------------------------
@@ -172,30 +169,32 @@ eval env = \case
   F -> VFalse
   Unit -> VUnit
   If t1 t2 t3 -> doIf (eval env t1) (eval env t2) (eval env t3)
-  Anno t1 ty -> eval env t1
+  Anno t1 _ty -> eval env t1
 
 doApply :: Value -> Value -> Value
 doApply (VLam _ clo) arg =
   instantiateClosure clo arg
 doApply (VNeutral (ty1 :-> ty2) neu) arg =
   VNeutral ty2 (pushFrame neu (VApp ty1 arg))
+doApply _ _ = error "impossible case in doApply"
 
 instantiateClosure :: Closure -> Value -> Value
 instantiateClosure (Closure env body) v = eval (extend env v) body
 
 doIf :: Value -> Value -> Value -> Value
-doIf VTrue t2 t3 = t2
-doIf VFalse t2 t3 = t3
+doIf VTrue t2 _t3 = t2
+doIf VFalse _t2 t3 = t3
+doIf _ _ _ = error "impossible case in doIf"
 
 quote :: Lvl -> Type -> Value -> Syntax
 quote _ UnitT _ = Unit
 quote _ BoolT VTrue = T
 quote _ BoolT VFalse = F
-quote l ty@(tyA :-> tyB) (VLam bndr clo@(Closure env body)) =
+quote l (tyA :-> tyB) (VLam bndr clo@(Closure _env _body)) =
   let body = bindVar tyA l $ \v l' ->
         quote l' tyB $ instantiateClosure clo v
    in Abs bndr body
-quote l ty@(tyA :-> tyB) f =
+quote l (tyA :-> tyB) f =
   let body = bindVar tyA l $ \v l' ->
         quote l' tyB (doApply f v)
    in Abs (Name "_") body
@@ -203,6 +202,7 @@ quote l ty1 (VNeutral ty2 neu) =
   if ty1 == ty2
     then quoteNeutral l neu
     else error "Internal error while quoting"
+quote _ _ _ = error "impossible case in quote"
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
@@ -210,7 +210,7 @@ bindVar ty lvl f =
    in f v $ incLevel lvl
 
 quoteLevel :: Lvl -> Lvl -> Ix
-quoteLevel env@(Lvl l) (Lvl x) = Ix (l - (x + 1))
+quoteLevel (Lvl l) (Lvl x) = Ix (l - (x + 1))
 
 quoteNeutral :: Lvl -> Neutral -> Syntax
 quoteNeutral l Neutral {..} = foldl (quoteFrame l) (quoteHead l head) spine
