@@ -143,3 +143,9 @@ executable 07-Subtyping
   main-is:             07-Subtyping.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers
+
+executable 08-NominalInductiveTypes
+  import:              common-settings
+  main-is:             08-NominalInductiveTypes.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, semialign, these
