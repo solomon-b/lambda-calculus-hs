@@ -136,10 +136,10 @@ executable 06-Records
   import:              common-settings
   main-is:             06-Records.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign
 
 executable 07-Subtyping
   import:              common-settings
   main-is:             07-Subtyping.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign
