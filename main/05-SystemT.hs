@@ -186,7 +186,7 @@ freshCell ctx name ty = Cell name ty (freshVar ctx ty)
 data Error
   = TypeError String
   | OutOfScopeError Name
-  deriving stock (Show)
+  deriving (Show)
 
 newtype Holes = Holes {getHoles :: [Type]}
   deriving newtype (Show, Semigroup, Monoid)
@@ -196,107 +196,215 @@ newtype TypecheckM a = TypecheckM {runTypecheckM :: Env -> (Either Error a, Hole
     (Functor, Applicative, Monad, MonadReader Env, MonadError Error, MonadWriter Holes)
     via (ExceptT Error (WriterT Holes (Reader Env)))
 
-synth :: Term -> TypecheckM (Type, Syntax)
+newtype Check = Check {runCheck :: Type -> TypecheckM Syntax}
+
+newtype Synth = Synth {runSynth :: TypecheckM (Type, Syntax)}
+
+synth :: Term -> Synth
 synth = \case
   Var bndr -> varTactic bndr
-  Ap tm1 tm2 -> apTactic tm1 tm2
-  Pair tm1 tm2 -> pairTactic tm1 tm2
-  Fst tm -> fstTactic tm
-  Snd tm -> sndTactic tm
-  Unit -> pure (UnitTy, SUnit)
-  Tru -> pure (BoolTy, STru)
-  Fls -> pure (BoolTy, SFls)
-  If p tm1 tm2 -> ifTactic p tm1 tm2
-  Zero -> pure (NatTy, SZero)
-  Succ tm -> succTactic tm
-  NatRec tm1 tm2 n -> natRecTactic tm1 tm2 n
-  Anno ty tm -> (ty,) <$> check ty tm
-  Hole -> throwError $ TypeError "Cannot synthesize a type hole"
-  tm -> throwError $ TypeError $ "Cannot synthesize type for " <> show tm
+  Ap tm1 tm2 -> applyTactic (synth tm1) (check tm2)
+  Fst tm -> fstTactic (synth tm)
+  Snd tm -> sndTactic (synth tm)
+  Anno ty tm -> annoTactic ty (check tm)
+  Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
+  tm -> Synth $ throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
-check :: Type -> Term -> TypecheckM Syntax
-check (FuncTy ty1 ty2) (Lam bndr tm) = lamTactic ty1 ty2 bndr tm
-check ty Hole = holeTactic ty
-check ty tm =
-  synth tm >>= \case
-    (ty2, tm) | ty == ty2 -> pure tm
-    ty2 -> throwError $ TypeError $ "Expected: " <> show ty <> ", but got: " <> show ty2
+check :: Term -> Check
+check (Lam bndr body) = lamTactic bndr (check body)
+check Unit = unitTactic
+check (Pair tm1 tm2) = pairTactic (check tm1) (check tm2)
+check Hole = holeTactic
+check (If tm1 tm2 tm3) = ifTactic (check tm1) (check tm2) (check tm3)
+check Tru = trueTactic
+check Fls = falseTactic
+check Zero = zeroTactic
+check (Succ tm) = succTactic (check tm)
+check (NatRec tm1 tm2 n) = natRecTactic (check tm1) (check tm2) (check n)
+check tm = subTactic (synth tm)
 
 -- | Var Tactic
-varTactic :: Name -> TypecheckM (Type, Syntax)
-varTactic bndr = do
+--
+-- (x : A) ∈ Γ
+-- ─────────── Var⇒
+--  Γ ⊢ x ⇒ A
+varTactic :: Name -> Synth
+varTactic bndr = Synth $ do
   ctx <- ask
+
   case resolveCell ctx bndr of
     Just Cell {..} -> do
       let quoted = flip runEvalM (locals ctx) $ quote (Lvl $ size ctx) cellType cellValue
       pure (cellType, quoted)
     Nothing -> throwError $ OutOfScopeError bndr
 
--- | Lambda Introduction Tactic
-lamTactic :: Type -> Type -> Name -> Term -> TypecheckM Syntax
-lamTactic ty1 ty2 bndr body = do
-  ctx <- ask
-  let var = freshCell ctx bndr ty1
-  fiber <- local (bindCell var) $ check ty2 body
-  pure $ SLam bndr fiber
+-- | Sub Tactic
+--
+-- Γ ⊢ e ⇒ A  A ≡ B
+-- ──────────────── Sub⇐
+--    Γ ⊢ e ⇐ B
+subTactic :: Synth -> Check
+subTactic (Synth synth) = Check $ \ty1 -> do
+  (ty2, tm) <- synth
+  if ty2 == ty1
+    then pure tm
+    else throwError $ TypeError $ "Expected: " <> show ty1 <> ", but got: " <> show ty2
 
--- | Lambda Elimination Tactic
-apTactic :: Term -> Term -> TypecheckM (Type, Syntax)
-apTactic tm1 tm2 =
-  synth tm1 >>= \case
-    (FuncTy ty1 ty2, f) -> do
-      arg <- check ty1 tm2
-      pure (ty2, SAp f arg)
-    ty -> throwError $ TypeError $ "Expected a function type but got " <> show ty
+-- | Anno Tactic
+--
+--    Γ ⊢ e ⇐ A
+-- ─────────────── Anno⇒
+-- Γ ⊢ (e : A) ⇒ A
+annoTactic :: Type -> Check -> Synth
+annoTactic ty (Check check) = Synth $ do
+  tm <- check ty
+  pure (ty, tm)
+
+-- | Unit Introduction Tactic
+--
+-- ───────────── Unit⇐
+-- Γ ⊢ () ⇐ Unit
+unitTactic :: Check
+unitTactic = Check $ \case
+  UnitTy -> pure SUnit
+  ty -> throwError $ TypeError $ "Expected Unit type but got: " <> show ty
+
+-- | Lambda Introduction Tactic
+--
+--  Γ, x : A₁ ⊢ e ⇐ A₂
+-- ──────────────────── LamIntro⇐
+-- Γ ⊢ (λx.e) ⇐ A₁ → A₂
+lamTactic :: Name -> Check -> Check
+lamTactic bndr (Check bodyTac) = Check $ \case
+  a `FuncTy` b -> do
+    ctx <- ask
+    let var = freshCell ctx bndr a
+    fiber <- local (bindCell var) $ bodyTac b
+    pure $ SLam bndr fiber
+  ty -> throwError $ TypeError $ "Tried to introduce a lambda at a non-function type: " <> show ty
+
+-- | Lambda Elination Tactic
+--
+-- Γ ⊢ e₁ ⇒ A → B  Γ ⊢ e₂ ⇐ A
+-- ────────────────────────── LamElim⇐
+--       Γ ⊢ e₁ e₂ ⇒ B
+applyTactic :: Synth -> Check -> Synth
+applyTactic (Synth funcTac) (Check argTac) =
+  Synth $
+    funcTac >>= \case
+      (a `FuncTy` b, f) -> do
+        arg <- argTac a
+        pure (b, SAp f arg)
+      (ty, _) -> throwError $ TypeError $ "Expected a function type but got " <> show ty
 
 -- | Pair Introduction Tactic
-pairTactic :: Term -> Term -> TypecheckM (Type, Syntax)
-pairTactic tm1 tm2 = do
-  (ty1, tm1') <- synth tm1
-  (ty2, tm2') <- synth tm2
-  pure (PairTy ty1 ty2, SPair tm1' tm2')
+--
+-- Γ ⊢ a ⇐ A   Γ ⊢ b ⇐ B
+-- ───────────────────── Pair⇐
+--  Γ ⊢ (a , b) ⇐ A × B
+pairTactic :: Check -> Check -> Check
+pairTactic (Check checkFst) (Check checkSnd) = Check $ \case
+  PairTy a b -> do
+    tm1 <- checkFst a
+    tm2 <- checkSnd b
+    pure (SPair tm1 tm2)
+  ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Pair Fst Elimination Tactic
-fstTactic :: Term -> TypecheckM (Type, Syntax)
-fstTactic tm =
-  synth tm >>= \case
-    (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
-    (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+--
+-- Γ ⊢ (t₁ , t₂) ⇒ A × B
+-- ───────────────────── Fst⇒
+--       Γ ⊢ t₁ ⇒ A
+fstTactic :: Synth -> Synth
+fstTactic (Synth synth) =
+  Synth $
+    synth >>= \case
+      (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
+      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Pair Snd Elimination Tactic
-sndTactic :: Term -> TypecheckM (Type, Syntax)
-sndTactic tm =
-  synth tm >>= \case
-    (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
-    (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
-
--- | Bool Elimination Tactic
-ifTactic :: Term -> Term -> Term -> TypecheckM (Type, Syntax)
-ifTactic p t1 t2 = do
-  p' <- check BoolTy p
-  (ty, t1') <- synth t1
-  t2' <- check ty t2
-  pure (ty, SIf p' t1' t2')
-
--- | Successor Elimination Tactic
-succTactic :: Term -> TypecheckM (Type, Syntax)
-succTactic tm = do
-  tm' <- check NatTy tm
-  pure (NatTy, SSucc tm')
-
--- | Nat Recursion Tactic
-natRecTactic :: Term -> Term -> Term -> TypecheckM (Type, Syntax)
-natRecTactic tm1 tm2 n = do
-  n' <- check NatTy n
-  (zTy, tm1') <- synth tm1
-  tm2' <- check (NatTy `FuncTy` (zTy `FuncTy` zTy)) tm2
-  pure (zTy, SNatRec tm1' tm2' n')
+--
+-- Γ ⊢ (t₁ , t₂) ⇒ A × B
+-- ───────────────────── Snd⇒
+--       Γ ⊢ t₂ ⇒ A
+sndTactic :: Synth -> Synth
+sndTactic (Synth synth) =
+  Synth $
+    synth >>= \case
+      (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
+      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Type Hole Tactic
-holeTactic :: Type -> TypecheckM Syntax
-holeTactic ty = do
+--
+--
+-- ────────── Hole⇐
+--  Γ ⊢ ? ⇐ A
+holeTactic :: Check
+holeTactic = Check $ \ty -> do
   tell (Holes [ty])
   pure (SHole ty)
+
+-- | Bool-False Introduction Tactic
+--
+-- ──────────────── False⇐
+-- Γ ⊢ False ⇐ Unit
+falseTactic :: Check
+falseTactic = Check $ \case
+  BoolTy -> pure SFls
+  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+
+-- | Bool-True Introduction Tactic
+--
+-- ──────────────── True⇐
+-- Γ ⊢ True ⇐ Unit
+trueTactic :: Check
+trueTactic = Check $ \case
+  BoolTy -> pure STru
+  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+
+-- | Bool Elimination Tactic
+--
+-- Γ ⊢ t₁ ⇐ Bool  Γ ⊢ t₂ ⇐ T  Γ ⊢ t₃ ⇐ T
+-- ───────────────────────────────────── If⇐
+--   Γ ⊢ If t₁ then t₂ else t₃ ⇐ Bool
+ifTactic :: Check -> Check -> Check -> Check
+ifTactic (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
+  tm1 <- checkT1 BoolTy
+  tm2 <- checkT2 ty
+  tm3 <- checkT3 ty
+  pure (SIf tm1 tm2 tm3)
+
+-- | ℕ-Zero Introduction Tactic
+--
+-- ───────── Zero⇐
+-- Γ ⊢ 0 ⇐ ℕ
+zeroTactic :: Check
+zeroTactic = Check $ \case
+  NatTy -> pure SZero
+  ty -> throwError $ TypeError $ "Expected ℕ type but got: " <> show ty
+
+-- | ℕ-Succ Introdution Tactic
+--
+--   Γ ⊢ t ⇐ ℕ
+-- ────────────── Succ⇐
+-- Γ ⊢ Succ 0 ⇐ ℕ
+succTactic :: Check -> Check
+succTactic (Check check) = Check $ \case
+  NatTy -> SSucc <$> check NatTy
+  ty -> throwError $ TypeError $ "Expected ℕ type but got: " <> show ty
+
+-- | Nat Recursion Tactic
+--
+-- Γ ⊢ s ⇐ ℕ  Γ ⊢ t₁ ⇐ T  Γ ⊢ t₂ ⇐ ℕ → T → T
+-- ───────────────────────────────────────── ℕ-Elim⇐
+--           Γ ⊢ elim t₁ t₂ s ⇐ T
+natRecTactic :: Check -> Check -> Check -> Check
+natRecTactic (Check zeroTac) (Check succTac) (Check scrutTac) =
+  Check $ \ty -> do
+    scrutinee <- scrutTac NatTy
+    tm1 <- zeroTac ty
+    tm2 <- succTac (NatTy `FuncTy` (ty `FuncTy` ty))
+    pure (SNatRec tm1 tm2 scrutinee)
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -426,12 +534,11 @@ bindVar ty lvl f =
 
 run :: Term -> Either (Error, Holes) (Syntax, Holes)
 run term =
-  case runTypecheckM (synth term) initEnv of
+  case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
     (Right (type', syntax), holes) -> do
       let result = flip runEvalM Nil $ do
             value <- eval syntax
-            -- error $ show type' <> "\n" <> show value
             quote initLevel type' value
       pure (result, holes)
 

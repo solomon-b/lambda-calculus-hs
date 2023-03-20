@@ -14,9 +14,9 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Data.List (find, foldl', sort, (\\))
 import Data.List.NonEmpty (NonEmpty (..))
-import qualified Data.List.NonEmpty as NEL
+import Data.List.NonEmpty qualified as NEL
 import Data.Map (Map)
-import qualified Data.Map.Strict as M
+import Data.Map.Strict qualified as M
 
 -------------
 --- Terms ---

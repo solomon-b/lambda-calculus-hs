@@ -1,12 +1,13 @@
 {-# LANGUAGE DerivingVia #-}
-{-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
+-- | NOTE: Record subtyping isn't currently working
 module Main where
 
 --------------------------------------------------------------------------------
 
 import Control.Applicative (liftA2)
+import Control.Arrow ((&&&))
 import Control.Monad.Except (MonadError (..))
 import Control.Monad.Identity
 import Control.Monad.Reader (MonadReader (..))
@@ -14,10 +15,14 @@ import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
+import Data.Align (Semialign)
 import Data.Foldable (find)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.Scientific (Scientific)
+import Data.Semialign (Semialign (..))
 import Data.String
+import Data.These (These (..))
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -37,6 +42,9 @@ nth xs i
             (Snoc xs' _, i') -> go (xs', i' - 1)
        in go (xs, i)
 
+alignWithM :: (Traversable t, Applicative f, Semialign t) => (These a b1 -> f b2) -> t a -> t b1 -> f (t b2)
+alignWithM f as = traverse f . align as
+
 --------------------------------------------------------------------------------
 -- Types
 
@@ -51,16 +59,16 @@ data Term
   | Tru
   | Fls
   | If Term Term Term
-  | Zero
-  | Succ Term
-  | NatRec Term Term Term
   | Record [(Name, Term)]
   | Get Name Term
   | Anno Type Term
+  | Integer Integer
+  | Natural Integer
+  | Real Scientific
   | Hole
   deriving stock (Show, Eq, Ord)
 
-data Type = FuncTy Type Type | PairTy Type Type | UnitTy | BoolTy | NatTy | RecordTy [(Name, Type)]
+data Type = FuncTy Type Type | PairTy Type Type | UnitTy | BoolTy | RecordTy [(Name, Type)] | NaturalTy | IntegerTy | RealTy
   deriving stock (Show, Eq, Ord)
 
 data Syntax
@@ -74,11 +82,11 @@ data Syntax
   | STru
   | SFls
   | SIf Syntax Syntax Syntax
-  | SZero
-  | SSucc Syntax
-  | SNatRec Syntax Syntax Syntax
   | SRecord [(Name, Syntax)]
   | SGet Name Syntax
+  | SInteger Integer
+  | SNatural Integer
+  | SReal Scientific
   | SHole Type
   deriving stock (Show, Eq, Ord)
 
@@ -89,9 +97,10 @@ data Value
   | VUnit
   | VTru
   | VFls
-  | VZero
-  | VSucc Value
   | VRecord [(Name, Value)]
+  | VInteger Integer
+  | VNatural Integer
+  | VReal Scientific
   deriving stock (Show, Eq, Ord)
 
 -- | Debruijn Indices
@@ -132,7 +141,6 @@ data Frame
   | VFst
   | VSnd
   | VIf Type Value Value
-  | VNatRec Type Value Value
   | VGet Name
   deriving stock (Show, Eq, Ord)
 
@@ -193,7 +201,7 @@ freshCell ctx name ty = Cell name ty (freshVar ctx ty)
 data Error
   = TypeError String
   | OutOfScopeError Name
-  deriving stock (Show)
+  deriving (Show)
 
 newtype Holes = Holes {getHoles :: [Type]}
   deriving newtype (Show, Semigroup, Monoid)
@@ -203,138 +211,267 @@ newtype TypecheckM a = TypecheckM {runTypecheckM :: Env -> (Either Error a, Hole
     (Functor, Applicative, Monad, MonadReader Env, MonadError Error, MonadWriter Holes)
     via (ExceptT Error (WriterT Holes (Reader Env)))
 
-synth :: Term -> TypecheckM (Type, Syntax)
+newtype Check = Check {runCheck :: Type -> TypecheckM Syntax}
+
+newtype Synth = Synth {runSynth :: TypecheckM (Type, Syntax)}
+
+synth :: Term -> Synth
 synth = \case
   Var bndr -> varTactic bndr
-  Ap tm1 tm2 -> apTactic tm1 tm2
-  Pair tm1 tm2 -> pairTactic tm1 tm2
-  Fst tm -> fstTactic tm
-  Snd tm -> sndTactic tm
-  Unit -> pure (UnitTy, SUnit)
-  Tru -> pure (BoolTy, STru)
-  Fls -> pure (BoolTy, SFls)
-  If p tm1 tm2 -> ifTactic p tm1 tm2
-  Zero -> pure (NatTy, SZero)
-  Succ tm -> succTactic tm
-  NatRec tm1 tm2 n -> natRecTactic tm1 tm2 n
-  Record fields -> recordTactic fields
-  Get name tm -> getTactic name tm
-  Hole -> throwError $ TypeError "Cannot synthesize a type hole"
-  Anno ty tm -> (ty,) <$> check ty tm
-  tm -> throwError $ TypeError $ "Cannot synthesize type for " <> show tm
+  Ap tm1 tm2 -> applyTactic (synth tm1) (check tm2)
+  Fst tm -> fstTactic (synth tm)
+  Snd tm -> sndTactic (synth tm)
+  Anno ty tm -> annoTactic ty (check tm)
+  Get name tm -> getTactic name (synth tm)
+  Integer z -> integerTactic z
+  Natural n -> naturalTactic n
+  Real r -> realTactic r
+  Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
+  tm -> Synth $ throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
-check :: Type -> Term -> TypecheckM Syntax
-check (FuncTy ty1 ty2) (Lam bndr tm) = lamTactic ty1 ty2 bndr tm
-check ty Hole = holeTactic ty
-check ty tm =
-  synth tm >>= \case
-    (ty2, tm) | ty2 `subsumes` ty -> pure tm
-    (ty2, _) -> throwError $ TypeError $ "Expected: " <> show ty <> ", but got: " <> show ty2
+check :: Term -> Check
+check (Lam bndr body) = lamTactic bndr (check body)
+check Unit = unitTactic
+check (Pair tm1 tm2) = pairTactic (check tm1) (check tm2)
+check Hole = holeTactic
+check (If tm1 tm2 tm3) = ifTactic (check tm1) (check tm2) (check tm3)
+check Tru = trueTactic
+check Fls = falseTactic
+check (Record fields) = recordTactic (fmap (fmap (id &&& check)) fields)
+check tm = subTactic (synth tm)
 
 -- | Var Tactic
-varTactic :: Name -> TypecheckM (Type, Syntax)
-varTactic bndr = do
+--
+-- (x : A) ∈ Γ
+-- ─────────── Var⇒
+--  Γ ⊢ x ⇒ A
+varTactic :: Name -> Synth
+varTactic bndr = Synth $ do
   ctx <- ask
+
   case resolveCell ctx bndr of
     Just Cell {..} -> do
       let quoted = flip runEvalM (locals ctx) $ quote (Lvl $ size ctx) cellType cellValue
       pure (cellType, quoted)
     Nothing -> throwError $ OutOfScopeError bndr
 
--- | Lambda Introduction Tactic
-lamTactic :: Type -> Type -> Name -> Term -> TypecheckM Syntax
-lamTactic ty1 ty2 bndr body = do
-  ctx <- ask
-  let var = freshCell ctx bndr ty1
-  fiber <- local (bindCell var) $ check ty2 body
-  pure $ SLam bndr fiber
+-- | Sub Tactic
+--
+-- Γ ⊢ e ⇒ A  A <∶ B
+-- ──────────────── Sub⇐
+--    Γ ⊢ e ⇐ B
+subTactic :: Synth -> Check
+subTactic (Synth synth) = Check $ \ty1 -> do
+  (ty2, tm) <- synth
+  if ty2 `isSubtypeOf` ty1
+    then pure tm
+    else throwError $ TypeError $ "Expected: " <> show ty1 <> ", but got: " <> show ty2
 
--- | Lambda Elimination Tactic
-apTactic :: Term -> Term -> TypecheckM (Type, Syntax)
-apTactic tm1 tm2 =
-  synth tm1 >>= \case
-    (FuncTy ty1 ty2, f) -> do
-      arg <- check ty1 tm2
-      pure (ty2, SAp f arg)
-    ty -> throwError $ TypeError $ "Expected a function type but got " <> show ty
+-- | Anno Tactic
+--
+--    Γ ⊢ e ⇐ A
+-- ─────────────── Anno⇒
+-- Γ ⊢ (e : A) ⇒ A
+annoTactic :: Type -> Check -> Synth
+annoTactic ty (Check check) = Synth $ do
+  tm <- check ty
+  pure (ty, tm)
+
+-- | Unit Introduction Tactic
+--
+-- ───────────── Unit⇐
+-- Γ ⊢ () ⇐ Unit
+unitTactic :: Check
+unitTactic = Check $ \case
+  UnitTy -> pure SUnit
+  ty -> throwError $ TypeError $ "Expected Unit type but got: " <> show ty
+
+-- | Lambda Introduction Tactic
+--
+--  Γ, x : A₁ ⊢ e ⇐ A₂
+-- ──────────────────── LamIntro⇐
+-- Γ ⊢ (λx.e) ⇐ A₁ → A₂
+lamTactic :: Name -> Check -> Check
+lamTactic bndr (Check bodyTac) = Check $ \case
+  a `FuncTy` b -> do
+    ctx <- ask
+    let var = freshCell ctx bndr a
+    fiber <- local (bindCell var) $ bodyTac b
+    pure $ SLam bndr fiber
+  ty -> throwError $ TypeError $ "Tried to introduce a lambda at a non-function type: " <> show ty
+
+-- | Lambda Elination Tactic
+--
+-- Γ ⊢ e₁ ⇒ A → B  Γ ⊢ e₂ ⇐ A
+-- ────────────────────────── LamElim⇐
+--       Γ ⊢ e₁ e₂ ⇒ B
+applyTactic :: Synth -> Check -> Synth
+applyTactic (Synth funcTac) (Check argTac) =
+  Synth $
+    funcTac >>= \case
+      (a `FuncTy` b, f) -> do
+        arg <- argTac a
+        pure (b, SAp f arg)
+      (ty, _) -> throwError $ TypeError $ "Expected a function type but got " <> show ty
 
 -- | Pair Introduction Tactic
-pairTactic :: Term -> Term -> TypecheckM (Type, Syntax)
-pairTactic tm1 tm2 = do
-  (ty1, tm1') <- synth tm1
-  (ty2, tm2') <- synth tm2
-  pure (PairTy ty1 ty2, SPair tm1' tm2')
+--
+-- Γ ⊢ a ⇐ A   Γ ⊢ b ⇐ B
+-- ───────────────────── Pair⇐
+--  Γ ⊢ (a , b) ⇐ A × B
+pairTactic :: Check -> Check -> Check
+pairTactic (Check checkFst) (Check checkSnd) = Check $ \case
+  PairTy a b -> do
+    tm1 <- checkFst a
+    tm2 <- checkSnd b
+    pure (SPair tm1 tm2)
+  ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Pair Fst Elimination Tactic
-fstTactic :: Term -> TypecheckM (Type, Syntax)
-fstTactic tm =
-  synth tm >>= \case
-    (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
-    (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+--
+-- Γ ⊢ (t₁ , t₂) ⇒ A × B
+-- ───────────────────── Fst⇒
+--       Γ ⊢ t₁ ⇒ A
+fstTactic :: Synth -> Synth
+fstTactic (Synth synth) =
+  Synth $
+    synth >>= \case
+      (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
+      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Pair Snd Elimination Tactic
-sndTactic :: Term -> TypecheckM (Type, Syntax)
-sndTactic tm =
-  synth tm >>= \case
-    (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
-    (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
-
--- | Bool Elimination Tactic
-ifTactic :: Term -> Term -> Term -> TypecheckM (Type, Syntax)
-ifTactic p t1 t2 = do
-  p' <- check BoolTy p
-  (ty, t1') <- synth t1
-  t2' <- check ty t2
-  pure (ty, SIf p' t1' t2')
-
--- | Nat Successor Introduction Tactic
-succTactic :: Term -> TypecheckM (Type, Syntax)
-succTactic tm = do
-  tm' <- check NatTy tm
-  pure (NatTy, SSucc tm')
-
--- | Nat Elimination Tactic
-natRecTactic :: Term -> Term -> Term -> TypecheckM (Type, Syntax)
-natRecTactic tm1 tm2 n = do
-  n' <- check NatTy n
-  (zTy, tm1') <- synth tm1
-  tm2' <- check (NatTy `FuncTy` (zTy `FuncTy` zTy)) tm2
-  pure (zTy, SNatRec tm1' tm2' n')
-
--- | Record Introduction Tactic
-recordTactic :: [(Name, Term)] -> TypecheckM (Type, Syntax)
-recordTactic fields = do
-  fields' <- traverse (traverse synth) fields
-  let ty = fmap (fmap fst) fields'
-      tm = fmap (fmap snd) fields'
-  pure (RecordTy ty, SRecord tm)
-
--- | Record Elimination Tactic
-getTactic :: Name -> Term -> TypecheckM (Type, Syntax)
-getTactic name tm = do
-  synth tm >>= \case
-    (RecordTy fields, tm') ->
-      case lookup name fields of
-        Just ty -> pure (ty, SGet name tm')
-        Nothing -> throwError $ TypeError $ "Record does not contain a field called " <> show name
-    (ty, _) -> throwError $ TypeError $ "Expected a record type but got " <> show ty
+--
+-- Γ ⊢ (t₁ , t₂) ⇒ A × B
+-- ───────────────────── Snd⇒
+--       Γ ⊢ t₂ ⇒ A
+sndTactic :: Synth -> Synth
+sndTactic (Synth synth) =
+  Synth $
+    synth >>= \case
+      (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
+      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Type Hole Tactic
-holeTactic :: Type -> TypecheckM Syntax
-holeTactic ty = do
+--
+--
+-- ────────── Hole⇐
+--  Γ ⊢ ? ⇐ A
+holeTactic :: Check
+holeTactic = Check $ \ty -> do
   tell (Holes [ty])
   pure (SHole ty)
+
+-- | Bool-False Introduction Tactic
+--
+-- ──────────────── False⇐
+-- Γ ⊢ False ⇐ Unit
+falseTactic :: Check
+falseTactic = Check $ \case
+  BoolTy -> pure SFls
+  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+
+-- | Bool-True Introduction Tactic
+--
+-- ──────────────── True⇐
+-- Γ ⊢ True ⇐ Unit
+trueTactic :: Check
+trueTactic = Check $ \case
+  BoolTy -> pure STru
+  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+
+-- | Bool Elimination Tactic
+--
+-- Γ ⊢ t₁ ⇐ Bool  Γ ⊢ t₂ ⇐ T  Γ ⊢ t₃ ⇐ T
+-- ───────────────────────────────────── If⇐
+--   Γ ⊢ If t₁ then t₂ else t₃ ⇐ Bool
+ifTactic :: Check -> Check -> Check -> Check
+ifTactic (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
+  tm1 <- checkT1 BoolTy
+  tm2 <- checkT2 ty
+  tm3 <- checkT3 ty
+  pure (SIf tm1 tm2 tm3)
+
+-- | Record Introduction Tactic
+--
+--         for each i  Γ ⊢ tᵢ ⇐ Tᵢ
+-- ─────────────────────────────────────── Record⇐
+-- Γ ⊢ { lᵢ = tᵢ} ⇐ { lᵢ : Tᵢ (i ∈ I..n) }
+recordTactic :: [(Name, (Term, Check))] -> Check
+recordTactic fields = Check $ \case
+  RecordTy ty -> do
+    fields' <-
+      alignWithM
+        ( \case
+            These ty (_, chk) -> runCheck chk ty
+            This ty -> throwError $ TypeError $ "Term is missing field of type: " <> show ty
+            That (tm, _) -> throwError $ TypeError $ "Term has extra field: " <> show tm
+        )
+        (Map.fromList ty)
+        (Map.fromList fields)
+    pure (SRecord $ Map.toList fields')
+  ty -> throwError $ TypeError $ "Expected a Record type but got: " <> show ty
+
+-- | Record Elimination Tactic
+--
+-- Γ ⊢ t₁ ⇒ { lᵢ : Tᵢ (i ∈ I..n) }
+-- ─────────────────────────────── Get⇒
+--       Γ ⊢ Get lⱼ t₁ ⇒ Tⱼ
+getTactic :: Name -> Synth -> Synth
+getTactic name (Synth fieldTac) =
+  Synth $
+    fieldTac >>= \case
+      (RecordTy fields, tm) ->
+        case lookup name fields of
+          Just ty -> pure (ty, SGet name tm)
+          Nothing -> throwError $ TypeError $ "Record does not contain a field called " <> show name
+      (ty, _) -> throwError $ TypeError $ "Expected a record type but got " <> show ty
+
+-- | Integer Introduction Tactic
+--
+-- ─────────────── ℤ⇒
+-- Γ ⊢ z ⇒ ℤ
+integerTactic :: Integer -> Synth
+integerTactic z = Synth $ pure (IntegerTy, SInteger z)
+
+-- | Natural Introduction Tactic
+--
+-- ─────────────── ℕ⇒
+-- Γ ⊢ n ⇒ ℕ
+naturalTactic :: Integer -> Synth
+naturalTactic n =
+  Synth $
+    if n >= 0
+      then pure (NaturalTy, SNatural n)
+      else throwError $ TypeError "Naturals must be greater then or equal to zero."
+
+-- | Real Introduction Tactic
+--
+-- ─────────────── ℝ⇒
+-- Γ ⊢ r ⇒ ℝ
+realTactic :: Scientific -> Synth
+realTactic r = Synth $ pure (RealTy, SReal r)
 
 --------------------------------------------------------------------------------
 -- Subsumption
 
 -- | ty1 <: ty2
-subsumes :: Type -> Type -> Bool
-subsumes (RecordTy fields1) (RecordTy fields2) =
+--
+-- TODO: Record Width Subtyping:
+-- https://en.wikipedia.org/wiki/Subtyping#Width_and_depth_subtyping
+-- ie.,:
+-- { foo :: Nat } <: { foo :: Nat, bar :: Bool
+-- ({ foo :: Nat } → Nat) <∶ ({ foo :: Nat, bar :: Bool} → Nat)
+isSubtypeOf :: Type -> Type -> Bool
+isSubtypeOf (RecordTy fields1) (RecordTy fields2) =
   let fields1' = Map.fromList fields1
       fields2' = Map.fromList fields2
-   in Map.isSubmapOfBy subsumes fields2' fields1'
-subsumes super sub = super == sub
+   in Map.isSubmapOfBy isSubtypeOf fields1' fields2'
+isSubtypeOf (a `FuncTy` b) (a1 `FuncTy` b1) =
+  a `isSubtypeOf` a1 && b == b1
+isSubtypeOf NaturalTy IntegerTy = True
+isSubtypeOf NaturalTy RealTy = True
+isSubtypeOf IntegerTy RealTy = True
+isSubtypeOf super sub = super == sub
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -370,15 +507,11 @@ eval = \case
     t1' <- eval t1
     t2' <- eval t2
     doIf p' t1' t2'
-  SZero -> pure VZero
-  SSucc tm -> VSucc <$> eval tm
-  SNatRec tm1 tm2 n -> do
-    n' <- eval n
-    tm1' <- eval tm1
-    tm2' <- eval tm2
-    doNatRec n' tm1' tm2'
   SRecord fields -> doRecord fields
   SGet name tm -> eval tm >>= doGet name
+  SInteger z -> pure $ VInteger z
+  SNatural n -> pure $ VNatural n
+  SReal r -> pure $ VReal r
   SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
 
 doApply :: Value -> Value -> EvalM Value
@@ -399,16 +532,6 @@ doIf VTru t1 _ = pure t1
 doIf VFls _ t2 = pure t2
 doIf (VNeutral ty neu) t1 t2 = pure $ VNeutral BoolTy (pushFrame neu (VIf ty t1 t2))
 doIf _ _ _ = error "impossible case in doIf"
-
-doNatRec :: Value -> Value -> Value -> EvalM Value
-doNatRec VZero z _f = pure z
-doNatRec (VSucc n) z f = do
-  hd <- doApply f n
-  tl <- doNatRec n z f
-  doApply hd tl
-doNatRec (VNeutral ty neu) z f = do
-  pure $ VNeutral ty $ pushFrame neu $ VNatRec ty z f
-doNatRec _ _ _ = error "impossible case in doNatRec"
 
 doRecord :: [(Name, Syntax)] -> EvalM Value
 doRecord fields = VRecord <$> traverse (traverse eval) fields
@@ -444,9 +567,10 @@ quote l _ (VNeutral _ neu) = quoteNeutral l neu
 quote _ _ VUnit = pure SUnit
 quote _ _ VTru = pure STru
 quote _ _ VFls = pure SFls
-quote _ _ VZero = pure SZero
-quote l ty (VSucc tm) = SSucc <$> quote l ty tm
 quote l ty (VRecord fields) = SRecord <$> traverse (traverse (quote l ty)) fields
+quote _ _ (VNatural n) = pure $ SNatural n
+quote _ _ (VInteger z) = pure $ SInteger z
+quote _ _ (VReal r) = pure $ SReal r
 quote _ ty tm = error $ "impossible case in quote:\n" <> show ty <> "\n" <> show tm
 
 quoteLevel :: Lvl -> Lvl -> Ix
@@ -465,7 +589,6 @@ quoteFrame l tm = \case
   VFst -> pure $ SFst tm
   VSnd -> pure $ SSnd tm
   VIf ty t1 t2 -> liftA2 (SIf tm) (quote l ty t1) (quote l ty t2)
-  VNatRec ty tm1 tm2 -> liftA2 (SNatRec tm) (quote l ty tm1) (quote l (NatTy `FuncTy` (ty `FuncTy` ty)) tm2)
   VGet name -> pure $ SGet name tm
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
@@ -478,23 +601,31 @@ bindVar ty lvl f =
 
 run :: Term -> Either (Error, Holes) (Syntax, Holes)
 run term =
-  case runTypecheckM (synth term) initEnv of
+  case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
     (Right (type', syntax), holes) -> do
       let result = flip runEvalM Nil $ do
             value <- eval syntax
-            -- error $ show type' <> "\n" <> show value
             quote initLevel type' value
       pure (result, holes)
 
 main :: IO ()
 main =
-  case run subTypeApT of
+  case run subTypeAp of
     Left err -> print err
     Right result -> print result
 
-subTypeApT :: Term
-subTypeApT =
+subTypeAp :: Term
+subTypeAp =
+  Ap
+    ( Anno
+        (RealTy `FuncTy` BoolTy)
+        (Lam "x" Tru)
+    )
+    (Natural 1)
+
+subTypeApRecordT :: Term
+subTypeApRecordT =
   Ap
     ( Anno
         (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
@@ -503,13 +634,7 @@ subTypeApT =
     recordT
 
 recordT :: Term
-recordT = Record [("foo", Tru), ("bar", Zero), ("baz", Unit)]
-
-addT :: Term
-addT =
-  Anno
-    (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
-    (Lam "n" (Lam "m" (NatRec (Var "m") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "n"))))
+recordT = Record [("foo", Tru), ("bar", Unit), ("baz", Unit)]
 
 -- λp. if p then False else True
 notT :: Term
