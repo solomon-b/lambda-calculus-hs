@@ -20,6 +20,7 @@ common common-settings
     DeriveFunctor
     DerivingStrategies
     GeneralizedNewtypeDeriving
+    ImportQualifiedPost
     LambdaCase
     NamedFieldPuns
     OverloadedStrings
@@ -142,4 +143,4 @@ executable 07-Subtyping
   import:              common-settings
   main-is:             07-Subtyping.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific

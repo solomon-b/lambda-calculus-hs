@@ -1,7 +1,7 @@
 {-# LANGUAGE DerivingVia #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
--- | NOTE: This module is broken currently
+-- | NOTE: Record subtyping isn't currently working
 module Main where
 
 --------------------------------------------------------------------------------
@@ -22,6 +22,7 @@ import Data.Maybe (fromMaybe)
 import Data.Semialign (Semialign (..))
 import Data.String
 import Data.These (These (..))
+import Data.Scientific (Scientific)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -58,16 +59,16 @@ data Term
   | Tru
   | Fls
   | If Term Term Term
-  | Zero
-  | Succ Term
-  | NatRec Term Term Term
   | Record [(Name, Term)]
   | Get Name Term
   | Anno Type Term
+  | Integer Integer
+  | Natural Integer
+  | Real Scientific
   | Hole
   deriving stock (Show, Eq, Ord)
 
-data Type = FuncTy Type Type | PairTy Type Type | UnitTy | BoolTy | NatTy | RecordTy [(Name, Type)]
+data Type = FuncTy Type Type | PairTy Type Type | UnitTy | BoolTy | RecordTy [(Name, Type)] | NaturalTy | IntegerTy | RealTy
   deriving stock (Show, Eq, Ord)
 
 data Syntax
@@ -81,11 +82,11 @@ data Syntax
   | STru
   | SFls
   | SIf Syntax Syntax Syntax
-  | SZero
-  | SSucc Syntax
-  | SNatRec Syntax Syntax Syntax
   | SRecord [(Name, Syntax)]
   | SGet Name Syntax
+  | SInteger Integer
+  | SNatural Integer
+  | SReal Scientific
   | SHole Type
   deriving stock (Show, Eq, Ord)
 
@@ -96,9 +97,10 @@ data Value
   | VUnit
   | VTru
   | VFls
-  | VZero
-  | VSucc Value
   | VRecord [(Name, Value)]
+  | VInteger Integer
+  | VNatural Integer
+  | VReal Scientific
   deriving stock (Show, Eq, Ord)
 
 -- | Debruijn Indices
@@ -139,7 +141,6 @@ data Frame
   | VFst
   | VSnd
   | VIf Type Value Value
-  | VNatRec Type Value Value
   | VGet Name
   deriving stock (Show, Eq, Ord)
 
@@ -222,6 +223,9 @@ synth = \case
   Snd tm -> sndTactic (synth tm)
   Anno ty tm -> annoTactic ty (check tm)
   Get name tm -> getTactic name (synth tm)
+  Integer z -> integerTactic z
+  Natural n -> naturalTactic n
+  Real r -> realTactic r
   Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
   tm -> Synth $ throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
@@ -233,9 +237,6 @@ check Hole = holeTactic
 check (If tm1 tm2 tm3) = ifTactic (check tm1) (check tm2) (check tm3)
 check Tru = trueTactic
 check Fls = falseTactic
-check Zero = zeroTactic
-check (Succ tm) = succTactic (check tm)
-check (NatRec tm1 tm2 n) = natRecTactic (check tm1) (check tm2) (check n)
 check (Record fields) = recordTactic (fmap (fmap (id &&& check)) fields)
 check tm = subTactic (synth tm)
 
@@ -262,7 +263,7 @@ varTactic bndr = Synth $ do
 subTactic :: Synth -> Check
 subTactic (Synth synth) = Check $ \ty1 -> do
   (ty2, tm) <- synth
-  if ty1 `subsumes` ty2
+  if ty2 `isSubtypeOf` ty1
     then pure tm
     else throwError $ TypeError $ "Expected: " <> show ty1 <> ", but got: " <> show ty2
 
@@ -390,38 +391,6 @@ ifTactic (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
   tm3 <- checkT3 ty
   pure (SIf tm1 tm2 tm3)
 
--- | ℕ-Zero Introduction Tactic
---
--- ───────── Zero⇐
--- Γ ⊢ 0 ⇐ ℕ
-zeroTactic :: Check
-zeroTactic = Check $ \case
-  NatTy -> pure SZero
-  ty -> throwError $ TypeError $ "Expected ℕ type but got: " <> show ty
-
--- | ℕ-Succ Introdution Tactic
---
---   Γ ⊢ t ⇐ ℕ
--- ────────────── Succ⇐
--- Γ ⊢ Succ 0 ⇐ ℕ
-succTactic :: Check -> Check
-succTactic (Check check) = Check $ \case
-  NatTy -> SSucc <$> check NatTy
-  ty -> throwError $ TypeError $ "Expected ℕ type but got: " <> show ty
-
--- | Nat Recursion Tactic
---
--- Γ ⊢ s ⇐ ℕ  Γ ⊢ t₁ ⇐ T  Γ ⊢ t₂ ⇐ ℕ → T → T
--- ───────────────────────────────────────── ℕ-Elim⇐
---           Γ ⊢ elim t₁ t₂ s ⇐ T
-natRecTactic :: Check -> Check -> Check -> Check
-natRecTactic (Check zeroTac) (Check succTac) (Check scrutTac) =
-  Check $ \ty -> do
-    scrutinee <- scrutTac NatTy
-    tm1 <- zeroTac ty
-    tm2 <- succTac (NatTy `FuncTy` (ty `FuncTy` ty))
-    pure (SNatRec tm1 tm2 scrutinee)
-
 -- | Record Introduction Tactic
 --
 --         for each i  Γ ⊢ tᵢ ⇐ Tᵢ
@@ -448,24 +417,59 @@ recordTactic fields = Check $ \case
 -- ─────────────────────────────── Get⇒
 --       Γ ⊢ Get lⱼ t₁ ⇒ Tⱼ
 getTactic :: Name -> Synth -> Synth
-getTactic name (Synth fieldTac) = Synth $ do
-  fieldTac >>= \case
-    (RecordTy fields, tm) ->
-      case lookup name fields of
-        Just ty -> pure (ty, SGet name tm)
-        Nothing -> throwError $ TypeError $ "Record does not contain a field called " <> show name
-    (ty, _) -> throwError $ TypeError $ "Expected a record type but got " <> show ty
+getTactic name (Synth fieldTac) = Synth $ fieldTac >>= \case
+  (RecordTy fields, tm) ->
+    case lookup name fields of
+      Just ty -> pure (ty, SGet name tm)
+      Nothing -> throwError $ TypeError $ "Record does not contain a field called " <> show name
+  (ty, _) -> throwError $ TypeError $ "Expected a record type but got " <> show ty
+
+-- | Integer Introduction Tactic
+--
+-- ─────────────── ℤ⇒
+-- Γ ⊢ z ⇒ ℤ
+integerTactic :: Integer -> Synth
+integerTactic z = Synth $ pure (IntegerTy, SInteger z)
+
+-- | Natural Introduction Tactic
+--
+-- ─────────────── ℕ⇒
+-- Γ ⊢ n ⇒ ℕ
+naturalTactic :: Integer -> Synth
+naturalTactic n =
+  Synth $
+    if n >= 0
+      then pure (NaturalTy, SNatural n)
+      else throwError $ TypeError "Naturals must be greater then or equal to zero."
+
+-- | Real Introduction Tactic
+--
+-- ─────────────── ℝ⇒
+-- Γ ⊢ r ⇒ ℝ
+realTactic :: Scientific -> Synth
+realTactic r = Synth $ pure (RealTy, SReal r)
 
 --------------------------------------------------------------------------------
 -- Subsumption
 
 -- | ty1 <: ty2
-subsumes :: Type -> Type -> Bool
-subsumes (RecordTy fields1) (RecordTy fields2) =
+--
+-- TODO: Record Width Subtyping:
+-- https://en.wikipedia.org/wiki/Subtyping#Width_and_depth_subtyping
+-- ie.,:
+-- { foo :: Nat } <: { foo :: Nat, bar :: Bool
+-- ({ foo :: Nat } → Nat) <∶ ({ foo :: Nat, bar :: Bool} → Nat)
+isSubtypeOf :: Type -> Type -> Bool
+isSubtypeOf (RecordTy fields1) (RecordTy fields2) =
   let fields1' = Map.fromList fields1
       fields2' = Map.fromList fields2
-   in Map.isSubmapOfBy subsumes fields2' fields1'
-subsumes super sub = super == sub
+   in Map.isSubmapOfBy isSubtypeOf fields1' fields2'
+isSubtypeOf (a `FuncTy` b) (a1 `FuncTy` b1) =
+  a `isSubtypeOf` a1 && b == b1
+isSubtypeOf NaturalTy IntegerTy = True
+isSubtypeOf NaturalTy RealTy = True
+isSubtypeOf IntegerTy RealTy = True
+isSubtypeOf super sub = super == sub
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -501,15 +505,11 @@ eval = \case
     t1' <- eval t1
     t2' <- eval t2
     doIf p' t1' t2'
-  SZero -> pure VZero
-  SSucc tm -> VSucc <$> eval tm
-  SNatRec tm1 tm2 n -> do
-    n' <- eval n
-    tm1' <- eval tm1
-    tm2' <- eval tm2
-    doNatRec n' tm1' tm2'
   SRecord fields -> doRecord fields
   SGet name tm -> eval tm >>= doGet name
+  SInteger z -> pure $ VInteger z
+  SNatural n -> pure $ VNatural n
+  SReal r -> pure $ VReal r
   SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
 
 doApply :: Value -> Value -> EvalM Value
@@ -530,16 +530,6 @@ doIf VTru t1 _ = pure t1
 doIf VFls _ t2 = pure t2
 doIf (VNeutral ty neu) t1 t2 = pure $ VNeutral BoolTy (pushFrame neu (VIf ty t1 t2))
 doIf _ _ _ = error "impossible case in doIf"
-
-doNatRec :: Value -> Value -> Value -> EvalM Value
-doNatRec VZero z _f = pure z
-doNatRec (VSucc n) z f = do
-  hd <- doApply f n
-  tl <- doNatRec n z f
-  doApply hd tl
-doNatRec (VNeutral ty neu) z f = do
-  pure $ VNeutral ty $ pushFrame neu $ VNatRec ty z f
-doNatRec _ _ _ = error "impossible case in doNatRec"
 
 doRecord :: [(Name, Syntax)] -> EvalM Value
 doRecord fields = VRecord <$> traverse (traverse eval) fields
@@ -575,9 +565,10 @@ quote l _ (VNeutral _ neu) = quoteNeutral l neu
 quote _ _ VUnit = pure SUnit
 quote _ _ VTru = pure STru
 quote _ _ VFls = pure SFls
-quote _ _ VZero = pure SZero
-quote l ty (VSucc tm) = SSucc <$> quote l ty tm
 quote l ty (VRecord fields) = SRecord <$> traverse (traverse (quote l ty)) fields
+quote _ _ (VNatural n) = pure $ SNatural n
+quote _ _ (VInteger z) = pure $ SInteger z
+quote _ _ (VReal r) = pure $ SReal r
 quote _ ty tm = error $ "impossible case in quote:\n" <> show ty <> "\n" <> show tm
 
 quoteLevel :: Lvl -> Lvl -> Ix
@@ -596,7 +587,6 @@ quoteFrame l tm = \case
   VFst -> pure $ SFst tm
   VSnd -> pure $ SSnd tm
   VIf ty t1 t2 -> liftA2 (SIf tm) (quote l ty t1) (quote l ty t2)
-  VNatRec ty tm1 tm2 -> liftA2 (SNatRec tm) (quote l ty tm1) (quote l (NatTy `FuncTy` (ty `FuncTy` ty)) tm2)
   VGet name -> pure $ SGet name tm
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
@@ -620,12 +610,22 @@ run term =
 
 main :: IO ()
 main =
-  case run subTypeApT of
+  case run subTypeAp of
     Left err -> print err
     Right result -> print result
 
-subTypeApT :: Term
-subTypeApT =
+subTypeAp :: Term
+subTypeAp =
+  Ap
+    ( Anno
+        (RealTy `FuncTy` BoolTy)
+        (Lam "x" Tru)
+    )
+    (Natural 1)
+    
+
+subTypeApRecordT :: Term
+subTypeApRecordT =
   Ap
     ( Anno
         (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
@@ -634,13 +634,7 @@ subTypeApT =
     recordT
 
 recordT :: Term
-recordT = Record [("foo", Tru), ("bar", Zero), ("baz", Unit)]
-
-addT :: Term
-addT =
-  Anno
-    (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
-    (Lam "n" (Lam "m" (NatRec (Var "m") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "n"))))
+recordT = Record [("foo", Tru), ("bar", Unit), ("baz", Unit)]
 
 -- λp. if p then False else True
 notT :: Term
