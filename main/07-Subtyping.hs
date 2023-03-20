@@ -17,12 +17,12 @@ import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
 import Data.Align (Semialign)
 import Data.Foldable (find)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
+import Data.Scientific (Scientific)
 import Data.Semialign (Semialign (..))
 import Data.String
 import Data.These (These (..))
-import Data.Scientific (Scientific)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -417,12 +417,14 @@ recordTactic fields = Check $ \case
 -- ─────────────────────────────── Get⇒
 --       Γ ⊢ Get lⱼ t₁ ⇒ Tⱼ
 getTactic :: Name -> Synth -> Synth
-getTactic name (Synth fieldTac) = Synth $ fieldTac >>= \case
-  (RecordTy fields, tm) ->
-    case lookup name fields of
-      Just ty -> pure (ty, SGet name tm)
-      Nothing -> throwError $ TypeError $ "Record does not contain a field called " <> show name
-  (ty, _) -> throwError $ TypeError $ "Expected a record type but got " <> show ty
+getTactic name (Synth fieldTac) =
+  Synth $
+    fieldTac >>= \case
+      (RecordTy fields, tm) ->
+        case lookup name fields of
+          Just ty -> pure (ty, SGet name tm)
+          Nothing -> throwError $ TypeError $ "Record does not contain a field called " <> show name
+      (ty, _) -> throwError $ TypeError $ "Expected a record type but got " <> show ty
 
 -- | Integer Introduction Tactic
 --
@@ -604,7 +606,6 @@ run term =
     (Right (type', syntax), holes) -> do
       let result = flip runEvalM Nil $ do
             value <- eval syntax
-            -- error $ show type' <> "\n" <> show value
             quote initLevel type' value
       pure (result, holes)
 
@@ -622,7 +623,6 @@ subTypeAp =
         (Lam "x" Tru)
     )
     (Natural 1)
-    
 
 subTypeApRecordT :: Term
 subTypeApRecordT =

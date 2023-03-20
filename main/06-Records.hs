@@ -16,7 +16,7 @@ import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
 import Data.Align (Semialign (..))
 import Data.Foldable (find)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String
 import Data.These (These (..))
@@ -601,7 +601,6 @@ run term =
     (Right (type', syntax), holes) -> do
       let result = flip runEvalM Nil $ do
             value <- eval syntax
-            -- error $ show type' <> "\n" <> show value
             quote initLevel type' value
       pure (result, holes)
 

@@ -539,7 +539,6 @@ run term =
     (Right (type', syntax), holes) -> do
       let result = flip runEvalM Nil $ do
             value <- eval syntax
-            -- error $ show type' <> "\n" <> show value
             quote initLevel type' value
       pure (result, holes)
 
