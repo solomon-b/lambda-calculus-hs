@@ -68,7 +68,15 @@ data Term
   | Hole
   deriving stock (Show, Eq, Ord)
 
-data Type = FuncTy Type Type | PairTy Type Type | UnitTy | BoolTy | RecordTy [(Name, Type)] | NaturalTy | IntegerTy | RealTy
+data Type
+  = FuncTy Type Type
+  | PairTy Type Type
+  | UnitTy
+  | BoolTy
+  | RecordTy [(Name, Type)]
+  | NaturalTy
+  | IntegerTy
+  | RealTy
   deriving stock (Show, Eq, Ord)
 
 data Syntax
@@ -459,19 +467,35 @@ realTactic r = Synth $ pure (RealTy, SReal r)
 -- TODO: Record Width Subtyping:
 -- https://en.wikipedia.org/wiki/Subtyping#Width_and_depth_subtyping
 -- ie.,:
--- { foo :: Nat } <: { foo :: Nat, bar :: Bool
--- ({ foo :: Nat } → Nat) <∶ ({ foo :: Nat, bar :: Bool} → Nat)
+-- { foo :: Nat, bar :: Bool } <: { foo :: Nat }
+-- ({ foo :: Nat, bar :: Bool} → Nat) <: ({ foo :: Nat } → Nat)
 isSubtypeOf :: Type -> Type -> Bool
-isSubtypeOf (RecordTy fields1) (RecordTy fields2) =
-  let fields1' = Map.fromList fields1
-      fields2' = Map.fromList fields2
-   in Map.isSubmapOfBy isSubtypeOf fields1' fields2'
-isSubtypeOf (a `FuncTy` b) (a1 `FuncTy` b1) =
-  a `isSubtypeOf` a1 && b == b1
+isSubtypeOf s@RecordTy {} t@RecordTy {} = recordSubtypeTactic s t
+isSubtypeOf s@FuncTy {} t@FuncTy {} = functionSubtypeTactic s t
 isSubtypeOf NaturalTy IntegerTy = True
 isSubtypeOf NaturalTy RealTy = True
 isSubtypeOf IntegerTy RealTy = True
 isSubtypeOf super sub = super == sub
+
+-- | Record Width Subtyping
+recordSubtypeTactic :: Type -> Type -> Bool
+recordSubtypeTactic (RecordTy s) (RecordTy t) =
+  let s' = Map.fromList s
+      t' = Map.fromList t
+   in Map.isSubmapOfBy isSubtypeOf t' s'
+recordSubtypeTactic _ _ = error "impossible case in rec"
+
+-- | Function Subtyping
+--
+-- (ℤ → Unit) <: (ℕ → Unit)
+--
+-- T₁ <: S₁  S₂ <: T₂
+-- ────────────────── Func-Sub
+-- S₁ → S₂ <: T₁ → T₂
+functionSubtypeTactic :: Type -> Type -> Bool
+functionSubtypeTactic (s1 `FuncTy` s2) (t1 `FuncTy` t2) =
+  t1 `isSubtypeOf` s1 && s2 `isSubtypeOf` t2
+functionSubtypeTactic _ _ = error "impossible case in functionSubTypeTactic"
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -541,7 +565,7 @@ doGet name (VRecord fields) =
   case lookup name fields of
     Nothing -> error "impossible case in doGet lookup"
     Just field -> pure field
-doGet _ s = error $ show s -- "impossible case in doGet"
+doGet _ _ = error "impossible case in doGet"
 
 instantiateClosure :: Closure -> Value -> EvalM Value
 instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
@@ -619,8 +643,8 @@ subTypeAp :: Term
 subTypeAp =
   Ap
     ( Anno
-        (RealTy `FuncTy` BoolTy)
-        (Lam "x" Tru)
+        (RealTy `FuncTy` RealTy)
+        (Lam "x" (Var "x"))
     )
     (Natural 1)
 
