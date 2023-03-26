@@ -122,7 +122,7 @@ data Syntax
   | SNatural Integer
   | SReal Scientific
   | SCnstr Name [Syntax]
-  | SCase Syntax [(Name, [Name], Syntax)]
+  | SCase Syntax [(Name, Syntax)]
   | SHole Type
   deriving stock (Show, Eq, Ord)
 
@@ -659,14 +659,12 @@ mkEliminator motiveTy (Data tyName specs) = fmap (mkConstrEliminator tyName moti
 caseTactic :: Synth -> [(Name, Check)] -> Check
 caseTactic scrut cases = Check $ \motive -> do
   runSynth scrut >>= \case
-    (AdtTy tyName, SCnstr nm params) ->
+    (AdtTy tyName, scrut'@SCnstr{}) ->
       lookupDataSpec tyName $ \dataSpec -> do
         let eliminators = Map.fromList $ traceShowId $ mkEliminator motive dataSpec
             checks = Map.fromList cases
-        cases' <- alignWithM (\case These ty chk -> runCheck chk ty; This ty -> error "derp"; That chk -> error "burp") eliminators checks
-        case Map.lookup nm (traceShowId cases') of
-          Just match -> pure $ foldl SAp match params
-          Nothing -> throwError $ TypeError $ "No case match for '" <> show nm <> "'"
+        cases' <- Map.toList <$> alignWithM (\case These ty chk -> runCheck chk ty; This ty -> error "derp"; That chk -> error "burp") eliminators checks
+        pure $ SCase scrut' cases'
     -- (ty | isSubtypeOf _ ty, tm) -> pure _
     (ty, _) -> throwError $ TypeError $ "'" <> "what-am-i" <> "' cannot be a subtype of '" <> show ty <> "'"
 
@@ -785,7 +783,7 @@ eval = \case
   SNatural n -> pure $ VNatural n
   SReal r -> pure $ VReal r
   SCnstr nm bndrs -> doConstructor nm bndrs
-  SCase scrut patterns -> error "TODO" -- doCase scrut patterns
+  SCase scrut patterns -> doCase scrut patterns
   SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
 
 doApply :: Value -> Value -> EvalM Value
@@ -822,14 +820,12 @@ doConstructor nm args = do
   args' <- traverse eval args
   pure $ VCnstr nm args'
 
--- TODO
--- doCase :: Syntax -> [(Name, [Name], Syntax)] -> EvalM Value
--- doCase (SCnstr nm args) patterns = do
---  args' <- traverse eval args
---  case find (\(nm', _, _) -> nm == nm') patterns of
---    Just (_, bndrs, body) -> _
---    Nothing -> error "impossible case in doCase"
--- doCase _ _ = error "impossible case in doCase"
+doCase :: Syntax -> [(Name, Syntax)] -> EvalM Value
+doCase (SCnstr nm args) patterns =
+ case find ((== nm) . fst) patterns of
+   Just (_, body) -> eval $ foldl SAp body args
+   Nothing -> error "impossible case in doCase"
+doCase _ _ = error "impossible case in doCase"
 
 instantiateClosure :: Closure -> Value -> EvalM Value
 instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
