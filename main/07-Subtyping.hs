@@ -462,13 +462,9 @@ realTactic r = Synth $ pure (RealTy, SReal r)
 --------------------------------------------------------------------------------
 -- Subsumption
 
--- | ty1 <: ty2
---
--- TODO: Record Width Subtyping:
--- https://en.wikipedia.org/wiki/Subtyping#Width_and_depth_subtyping
--- ie.,:
--- { foo :: Nat, bar :: Bool } <: { foo :: Nat }
--- ({ foo :: Nat, bar :: Bool} → Nat) <: ({ foo :: Nat } → Nat)
+-- | The subtyping relationship T₁ <: T₂ can be read as "T₁ is a
+-- subtype of T₂". It can be understood as stating that anywhere a T₂
+-- can be used, we can use a T₁.
 isSubtypeOf :: Type -> Type -> Bool
 isSubtypeOf s@RecordTy {} t@RecordTy {} = recordSubtypeTactic s t
 isSubtypeOf s@FuncTy {} t@FuncTy {} = functionSubtypeTactic s t
@@ -477,7 +473,29 @@ isSubtypeOf NaturalTy RealTy = True
 isSubtypeOf IntegerTy RealTy = True
 isSubtypeOf super sub = super == sub
 
--- | Record Width Subtyping
+-- | Record Depth Subtyping
+--
+-- Any field of a record can be replaced by its subtype. Since any
+-- operation supported for a field in the supertype is supported for
+-- its subtype, any operation feasible on the record supertype is
+-- supported by the record subtype.
+--
+-- For example:
+--
+-- { foo : ℕ } <: { foo : ℤ }
+--
+-- We can write our typing rule as:
+--
+--              Sᵢ <: Tᵢ (i ∈ 1..n)
+-- ──────────────────────────────────────────────── RecordDepth
+-- { lᵢ : Sᵢ (i ∈ I..n) } <: { lᵢ : Tᵢ (i ∈ I..n) }
+--
+-- TODO: Record Width Subtyping:
+-- https://en.wikipedia.org/wiki/Subtyping#Width_and_depth_subtyping
+--
+-- eg.,:
+-- { foo :: Nat, bar :: Bool } <: { foo :: Nat }
+-- ({ foo :: Nat, bar :: Bool} → Nat) <: ({ foo :: Nat } → Nat)
 recordSubtypeTactic :: Type -> Type -> Bool
 recordSubtypeTactic (RecordTy s) (RecordTy t) =
   let s' = Map.fromList s
@@ -487,7 +505,26 @@ recordSubtypeTactic _ _ = error "impossible case in rec"
 
 -- | Function Subtyping
 --
--- (ℤ → Unit) <: (ℕ → Unit)
+-- A subtype of T₁ → T₂ is any type S₁ → S₂ such that T₁ <: S₁ and S₂ <: T₂.
+--
+-- For example:
+--
+-- (ℤ → ℕ) <: (ℕ → ℤ)
+--
+-- These feels backwards at first glance, but the received parameter
+-- T₁/S₁ is contravariant. This reverses the subtyping relationship.
+--
+-- Another way of stating the example above is that you can replace a
+-- function ℕ → ℤ with a function ℤ → ℕ.
+--
+-- This works because any ℕ you would have applied to the supertype
+-- function is also an ℤ which can also be applied to the subtype
+-- function.
+--
+-- Likewise the ℕ produced by the subtype function is also a ℤ and
+-- thus satisfies the super type's return param.
+--
+-- Thus our typing rule for function subtyping is:
 --
 -- T₁ <: S₁  S₂ <: T₂
 -- ────────────────── Func-Sub
