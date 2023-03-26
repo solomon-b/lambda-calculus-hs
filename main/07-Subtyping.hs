@@ -231,9 +231,6 @@ synth = \case
   Snd tm -> sndTactic (synth tm)
   Anno ty tm -> annoTactic ty (check tm)
   Get name tm -> getTactic name (synth tm)
-  Integer z -> integerTactic z
-  Natural n -> naturalTactic n
-  Real r -> realTactic r
   Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
   tm -> Synth $ throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
@@ -245,6 +242,9 @@ check Hole = holeTactic
 check (If tm1 tm2 tm3) = ifTactic (check tm1) (check tm2) (check tm3)
 check Tru = trueTactic
 check Fls = falseTactic
+check (Integer z) = integerTactic z
+check (Natural n) = naturalTactic n
+check (Real r) = realTactic r
 check (Record fields) = recordTactic (fmap (fmap (id &&& check)) fields)
 check tm = subTactic (synth tm)
 
@@ -273,7 +273,7 @@ subTactic (Synth synth) = Check $ \ty1 -> do
   (ty2, tm) <- synth
   if ty2 `isSubtypeOf` ty1
     then pure tm
-    else throwError $ TypeError $ "Expected: " <> show ty1 <> ", but got: " <> show ty2
+    else throwError $ TypeError $ "Type '" <> show ty2 <> "' cannot be a subtype of type '" <> show ty1 <> "'"
 
 -- | Anno Tactic
 --
@@ -292,7 +292,8 @@ annoTactic ty (Check check) = Synth $ do
 unitTactic :: Check
 unitTactic = Check $ \case
   UnitTy -> pure SUnit
-  ty -> throwError $ TypeError $ "Expected Unit type but got: " <> show ty
+  ty | isSubtypeOf UnitTy ty -> pure SUnit
+  ty -> throwError $ TypeError $ "'Unit' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Lambda Introduction Tactic
 --
@@ -333,7 +334,7 @@ pairTactic (Check checkFst) (Check checkSnd) = Check $ \case
     tm1 <- checkFst a
     tm2 <- checkSnd b
     pure (SPair tm1 tm2)
-  ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+  ty -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
 
 -- | Pair Fst Elimination Tactic
 --
@@ -345,7 +346,7 @@ fstTactic (Synth synth) =
   Synth $
     synth >>= \case
       (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
-      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+      (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
 
 -- | Pair Snd Elimination Tactic
 --
@@ -357,7 +358,7 @@ sndTactic (Synth synth) =
   Synth $
     synth >>= \case
       (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
-      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+      (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
 
 -- | Type Hole Tactic
 --
@@ -376,7 +377,8 @@ holeTactic = Check $ \ty -> do
 falseTactic :: Check
 falseTactic = Check $ \case
   BoolTy -> pure SFls
-  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+  ty | isSubtypeOf BoolTy ty -> pure SFls
+  ty -> throwError $ TypeError $ "'Bool' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Bool-True Introduction Tactic
 --
@@ -385,7 +387,8 @@ falseTactic = Check $ \case
 trueTactic :: Check
 trueTactic = Check $ \case
   BoolTy -> pure STru
-  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+  ty | isSubtypeOf BoolTy ty -> pure STru
+  ty -> throwError $ TypeError $ "'Bool' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Bool Elimination Tactic
 --
@@ -436,28 +439,36 @@ getTactic name (Synth fieldTac) =
 
 -- | Integer Introduction Tactic
 --
--- ─────────────── ℤ⇒
--- Γ ⊢ z ⇒ ℤ
-integerTactic :: Integer -> Synth
-integerTactic z = Synth $ pure (IntegerTy, SInteger z)
+-- ──────── ℤ⇐
+-- Γ ⊢ z ⇐  ℤ
+integerTactic :: Integer -> Check
+integerTactic z = Check $ \case
+  IntegerTy -> pure (SInteger z)
+  ty | isSubtypeOf IntegerTy ty -> pure (SInteger z)
+  ty -> throwError $ TypeError $ "'Integer' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Natural Introduction Tactic
 --
--- ─────────────── ℕ⇒
--- Γ ⊢ n ⇒ ℕ
-naturalTactic :: Integer -> Synth
-naturalTactic n =
-  Synth $
+-- ───────── ℕ⇐
+-- Γ ⊢ n ⇐ ℕ
+naturalTactic :: Integer -> Check
+naturalTactic n = Check $ \case
+  NaturalTy ->
     if n >= 0
-      then pure (NaturalTy, SNatural n)
+      then pure (SNatural n)
       else throwError $ TypeError "Naturals must be greater then or equal to zero."
+  ty | isSubtypeOf NaturalTy ty -> pure (SNatural n)
+  ty -> throwError $ TypeError $ "'Natural' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Real Introduction Tactic
 --
--- ─────────────── ℝ⇒
--- Γ ⊢ r ⇒ ℝ
-realTactic :: Scientific -> Synth
-realTactic r = Synth $ pure (RealTy, SReal r)
+-- ───────── ℝ⇐
+-- Γ ⊢ r ⇐ ℝ
+realTactic :: Scientific -> Check
+realTactic r = Check $ \case
+  RealTy -> pure (SReal r)
+  ty | isSubtypeOf RealTy ty -> pure (SReal r)
+  ty -> throwError $ TypeError $ "'Real' cannot be a subtype of '" <> show ty <> "'"
 
 --------------------------------------------------------------------------------
 -- Subsumption
