@@ -1,7 +1,7 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE MultiWayIf #-}
-{-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# LANGUAGE TupleSections #-}
+{-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 -- | TODO:
 -- - Case on Records
@@ -91,9 +91,9 @@ data Type
 
 data ArgSpec
   = Term Type
-  -- NOTE If we had type operators then this would be
-  --  | Rec -- [Type]
-  | Rec
+  | -- NOTE If we had type operators then this would be
+    --  | Rec -- [Type]
+    Rec
   deriving stock (Show, Eq, Ord)
 
 data ConstrSpec
@@ -225,10 +225,10 @@ data Env = Env
     localNames :: [Cell],
     size :: Int,
     holes :: [Type],
+    -- | ADT Spec by Type Name
     adtTypes :: Map Name DataSpec,
-    -- ^ ADT Spec by Type Name
+    -- | ADT Spec by Constructor Name
     adtConstructors :: Map Name DataSpec
-    -- ^ ADT Spec by Constructor Name
   }
   deriving stock (Show, Eq, Ord)
 
@@ -242,7 +242,7 @@ stockADTs =
     ]
 
 adtConstructorsMap :: Map Name DataSpec
-adtConstructorsMap = Map.fromList $ foldr (\d@(Data _ cs) acc -> fmap ((, d) . getCnstrName) cs <> acc) [] stockADTs
+adtConstructorsMap = Map.fromList $ foldr (\d@(Data _ cs) acc -> fmap ((,d) . getCnstrName) cs <> acc) [] stockADTs
 
 -- | Lookup an ADT Spec in the global context.
 lookupDataSpec :: Name -> (DataSpec -> TypecheckM a) -> TypecheckM a
@@ -602,34 +602,34 @@ constructorPartialTactic nm chks = Check $ \case
     lookupDataCnstr' nm >>= \dataSpec@(Data tyName _) ->
       case decomposeFunction ty of
         (AdtTy tyName', unappliedParamTypes) | isSubtypeOf (AdtTy tyName) (AdtTy tyName') -> do
-            lookupDataCnstr nm dataSpec $ \cnstrSpec ->
-              case extractParamsFromSpec tyName cnstrSpec of
-                Just (cnstrName, params) -> do
-                  let unappliedParamTypesL = length unappliedParamTypes
-                  if
-                      | length params == unappliedParamTypesL + length chks -> do
-                          args <- zipWithM runCheck chks params
-                          pure $ applyParams cnstrName args unappliedParamTypesL
-                      | length params > unappliedParamTypesL + length chks ->
-                          throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to too few arguments"
-                      | otherwise ->
-                          throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to " <> show (length chks) <> " value arguments, but it's type only expects " <> show unappliedParamTypesL
-                Nothing -> error "impossible case in constructorPartialTactic"
+          lookupDataCnstr nm dataSpec $ \cnstrSpec ->
+            case extractParamsFromSpec tyName cnstrSpec of
+              Just (cnstrName, params) -> do
+                let unappliedParamTypesL = length unappliedParamTypes
+                if
+                    | length params == unappliedParamTypesL + length chks -> do
+                        args <- zipWithM runCheck chks params
+                        pure $ applyParams cnstrName args unappliedParamTypesL
+                    | length params > unappliedParamTypesL + length chks ->
+                        throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to too few arguments"
+                    | otherwise ->
+                        throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to " <> show (length chks) <> " value arguments, but it's type only expects " <> show unappliedParamTypesL
+              Nothing -> error "impossible case in constructorPartialTactic"
         (ty, unappliedParamTypes) | isSubtypeOf (AdtTy tyName) ty -> do
-            lookupDataCnstr nm dataSpec $ \cnstrSpec ->
-              case extractParamsFromSpec tyName cnstrSpec of
-                Just (cnstrName, params) -> do
-                  let unappliedParamTypesL = length unappliedParamTypes
-                  if
-                      | length params == unappliedParamTypesL + length chks -> do
-                          args <- zipWithM runCheck chks params
-                          pure $ applyParams cnstrName args unappliedParamTypesL
-                      | length params > unappliedParamTypesL + length chks ->
-                          throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to too few arguments"
-                      | otherwise ->
-                          throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to " <> show (length chks) <> " value arguments, but it's type only expects " <> show unappliedParamTypesL
-                Nothing -> error "impossible case in constructorPartialTactic"
-        (ty@AdtTy{}, _unappliedParamTypes) -> throwError $ TypeError $ "'" <> show tyName <> "' cannot be a subtype of '" <> show ty <> "'"
+          lookupDataCnstr nm dataSpec $ \cnstrSpec ->
+            case extractParamsFromSpec tyName cnstrSpec of
+              Just (cnstrName, params) -> do
+                let unappliedParamTypesL = length unappliedParamTypes
+                if
+                    | length params == unappliedParamTypesL + length chks -> do
+                        args <- zipWithM runCheck chks params
+                        pure $ applyParams cnstrName args unappliedParamTypesL
+                    | length params > unappliedParamTypesL + length chks ->
+                        throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to too few arguments"
+                    | otherwise ->
+                        throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to " <> show (length chks) <> " value arguments, but it's type only expects " <> show unappliedParamTypesL
+              Nothing -> error "impossible case in constructorPartialTactic"
+        (ty@AdtTy {}, _unappliedParamTypes) -> throwError $ TypeError $ "'" <> show tyName <> "' cannot be a subtype of '" <> show ty <> "'"
         (ty, _unappliedParamTypes) -> throwError $ TypeError $ "'" <> show tyName <> "' cannot be a subtype of '" <> show ty <> "'"
   _ -> error "impossible case in constructorPartialTactic"
 
@@ -709,7 +709,7 @@ mkEliminator motiveTy (Data tyName specs) = fmap (mkConstrEliminator tyName moti
 caseTactic :: Synth -> [(Name, Check)] -> Check
 caseTactic scrut cases = Check $ \motive -> do
   runSynth scrut >>= \case
-    (AdtTy tyName, scrut'@SCnstr{}) ->
+    (AdtTy tyName, scrut'@SCnstr {}) ->
       lookupDataSpec tyName $ \dataSpec -> do
         let eliminators = Map.fromList $ traceShowId $ mkEliminator motive dataSpec
             checks = Map.fromList cases
@@ -876,9 +876,9 @@ doConstructor nm args = do
 
 doCase :: Syntax -> [(Name, Syntax)] -> EvalM Value
 doCase (SCnstr nm args) patterns =
- case find ((== nm) . fst) patterns of
-   Just (_, body) -> eval $ foldl SAp body args
-   Nothing -> error "impossible case in doCase"
+  case find ((== nm) . fst) patterns of
+    Just (_, body) -> eval $ foldl SAp body args
+    Nothing -> error "impossible case in doCase"
 doCase _ _ = error "impossible case in doCase"
 
 instantiateClosure :: Closure -> Value -> EvalM Value
@@ -951,7 +951,8 @@ run term =
       pure (result, holes)
 
 main :: IO ()
-main = -- \x. (\y. y) x
+main =
+  -- \x. (\y. y) x
   case run (Anno (AdtTy "ListBool" `FuncTy` AdtTy "ListBool") (Cnstr "Cons" [Tru])) of
     Left err -> print err
     Right result -> print result
