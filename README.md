@@ -16,11 +16,11 @@ might want to include in your custom language in one place.
 - [X] SystemT
 - [X] Records
 - [X] Subtyping
-- [ ] Inductive Types
+- [X] Inductive Types (with eliminator based pattern matching)
+- [ ] Row Polymorphism
 - [ ] System F
 - [ ] System Omega
 - [ ] Linear Types
-- [ ] Row Polymorphism
-- [ ] Pattern Matching
+- [ ] Case-Trees
 - [ ] Martin-Lof Type Theory (Pi and Sigma Types)
 - [ ] Equality
