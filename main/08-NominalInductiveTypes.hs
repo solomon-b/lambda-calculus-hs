@@ -1,7 +1,11 @@
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
--- | NOTE: Record subtyping isn't currently working
+-- | TODO:
+-- - Case on Records
+-- - Case Trees
 module Main where
 
 --------------------------------------------------------------------------------
@@ -10,19 +14,20 @@ import Control.Applicative (liftA2)
 import Control.Arrow ((&&&))
 import Control.Monad.Except (MonadError (..))
 import Control.Monad.Identity
-import Control.Monad.Reader (MonadReader (..))
+import Control.Monad.Reader (MonadReader (..), asks)
 import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
-import Data.Align (Semialign)
-import Data.Foldable (find)
+import Data.Align (Semialign (..))
+import Data.Foldable (find, foldl')
+import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific)
-import Data.Semialign (Semialign (..))
 import Data.String
-import Data.These (These (..))
+import Data.These
+import Debug.Trace
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -42,12 +47,14 @@ nth xs i
             (Snoc xs' _, i') -> go (xs', i' - 1)
        in go (xs, i)
 
-alignWithM :: (Traversable t, Applicative f, Semialign t) => (These a b1 -> f b2) -> t a -> t b1 -> f (t b2)
+alignWithM :: (Traversable f, Semialign f, Applicative m) => (These a b -> m c) -> f a -> f b -> m (f c)
 alignWithM f as = traverse f . align as
 
 --------------------------------------------------------------------------------
 -- Types
 
+-- | 'Term' represents the concrete syntax of our langage generated
+-- from text by a parser.
 data Term
   = Var Name
   | Lam Name Term
@@ -61,10 +68,12 @@ data Term
   | If Term Term Term
   | Record [(Name, Term)]
   | Get Name Term
-  | Anno Type Term
+  | Cnstr Name [Term]
+  | Case Term [(Name, [Name], Term)]
   | Integer Integer
   | Natural Integer
   | Real Scientific
+  | Anno Type Term
   | Hole
   deriving stock (Show, Eq, Ord)
 
@@ -74,11 +83,38 @@ data Type
   | UnitTy
   | BoolTy
   | RecordTy [(Name, Type)]
+  | AdtTy Name
   | NaturalTy
   | IntegerTy
   | RealTy
   deriving stock (Show, Eq, Ord)
 
+data ArgSpec
+  = Term Type
+  | -- NOTE If we had type operators then this would be
+    --  | Rec -- [Type]
+    Rec
+  deriving stock (Show, Eq, Ord)
+
+data ConstrSpec
+  = Constr Name [ArgSpec]
+  deriving stock (Show, Eq, Ord)
+
+getCnstrName :: ConstrSpec -> Name
+getCnstrName (Constr nm _) = nm
+
+data DataSpec
+  = -- If we had type variables then this would be:
+    -- Data Name [Name] [ConstrSpec]
+    -- If we had Kinds then this would be:
+    -- Data Name [Kind] [ConstrSpec]
+    -- If we had MLTT then this would be:
+    -- Data Name [Term] [ConstrSpec]
+    Data Name [ConstrSpec]
+  deriving stock (Show, Eq, Ord)
+
+-- | 'Syntax' is the internal abstract syntax of our language. We
+-- elaborate 'Term' values into 'Syntax' during typechecking.
 data Syntax
   = SVar Ix
   | SLam Name Syntax
@@ -95,9 +131,12 @@ data Syntax
   | SInteger Integer
   | SNatural Integer
   | SReal Scientific
+  | SCnstr Name [Syntax]
+  | SCase Syntax [(Name, Syntax)]
   | SHole Type
   deriving stock (Show, Eq, Ord)
 
+-- | 'Value' is the evaluated form of expressions in our language.
 data Value
   = VNeutral Type Neutral
   | VLam Name Closure
@@ -109,9 +148,14 @@ data Value
   | VInteger Integer
   | VNatural Integer
   | VReal Scientific
+  | VCnstr Name [Value]
   deriving stock (Show, Eq, Ord)
 
 -- | Debruijn Indices
+--
+-- 'Ix' is used to reference lambda bound terms with respect to
+-- α-conversion. The index 'n' represents the value bound by the 'n'
+-- lambda counting outward from the site of the index.
 --
 -- λ.λ.λ.2
 -- ^-----^
@@ -121,8 +165,15 @@ newtype Ix
 
 -- | Debruijn Levels
 --
+-- Similar to Debruijn Indices but counting inward from the outermost
+-- lambda.
+--
 -- λ.λ.λ.0
 -- ^-----^
+--
+-- Levels eliminate the need to reindex free variables when weakening
+-- the context. This is useful in our 'Value' representation of
+-- lambdas where we have a 'Closure' holding a stack of free variables.
 newtype Lvl
   = Lvl Int
   deriving newtype (Show, Eq, Ord)
@@ -150,6 +201,7 @@ data Frame
   | VSnd
   | VIf Type Value Value
   | VGet Name
+  | VCase Type [(Name, Value)]
   deriving stock (Show, Eq, Ord)
 
 pushFrame :: Neutral -> Frame -> Neutral
@@ -172,12 +224,48 @@ data Env = Env
   { locals :: SnocList Value,
     localNames :: [Cell],
     size :: Int,
-    holes :: [Type]
+    holes :: [Type],
+    -- | ADT Spec by Type Name
+    adtTypes :: Map Name DataSpec,
+    -- | ADT Spec by Constructor Name
+    adtConstructors :: Map Name DataSpec
   }
   deriving stock (Show, Eq, Ord)
 
+-- | We predefine a few ADTs here for demonstration purposes. In a
+-- complete langauge these would be defined using 'data' declarations.
+stockADTs :: Map Name DataSpec
+stockADTs =
+  Map.fromList
+    [ ("MaybeBool", Data "MaybeBool" [Constr "Nothing" [], Constr "Just" [Term BoolTy]]),
+      ("ListBool", Data "ListBool" [Constr "Nil" [], Constr "Cons" [Term BoolTy, Rec]])
+    ]
+
+adtConstructorsMap :: Map Name DataSpec
+adtConstructorsMap = Map.fromList $ foldr (\d@(Data _ cs) acc -> fmap ((,d) . getCnstrName) cs <> acc) [] stockADTs
+
+-- | Lookup an ADT Spec in the global context.
+lookupDataSpec :: Name -> (DataSpec -> TypecheckM a) -> TypecheckM a
+lookupDataSpec tyName k =
+  asks (Map.lookup tyName . adtTypes) >>= \case
+    Just dataSpec -> k dataSpec
+    Nothing -> throwError $ OutOfScopeError tyName
+
+-- | Lookup a Data Constructor Spec from a given ADT Spec.
+lookupDataCnstr :: Name -> DataSpec -> (ConstrSpec -> TypecheckM a) -> TypecheckM a
+lookupDataCnstr cnstrName (Data tyName specs) k =
+  case find (\(Constr nm _) -> nm == cnstrName) specs of
+    Just cnstrSpec -> k cnstrSpec
+    Nothing -> throwError $ TypeError $ "Data Constructor '" <> show cnstrName <> "' does not match type: " <> show tyName
+
+lookupDataCnstr' :: Name -> TypecheckM DataSpec
+lookupDataCnstr' nm =
+  asks (Map.lookup nm . adtConstructors) >>= \case
+    Just dataSpec -> pure dataSpec
+    Nothing -> throwError $ OutOfScopeError nm
+
 initEnv :: Env
-initEnv = Env Nil [] 0 mempty
+initEnv = Env Nil [] 0 mempty stockADTs adtConstructorsMap
 
 extendLocalNames :: Env -> Cell -> Env
 extendLocalNames e@Env {localNames} cell = e {localNames = cell : localNames}
@@ -191,8 +279,13 @@ bindCell cell@Cell {..} Env {..} =
     { locals = Snoc locals cellValue,
       localNames = cell : localNames,
       size = size + 1,
-      holes = holes
+      holes = holes,
+      adtTypes = adtTypes,
+      adtConstructors = adtConstructors
     }
+
+bindCells :: [Cell] -> Env -> Env
+bindCells cells env = foldr bindCell env cells
 
 resolveCell :: Env -> Name -> Maybe Cell
 resolveCell Env {..} bndr = find ((== bndr) . cellName) localNames
@@ -246,6 +339,8 @@ check (Integer z) = integerTactic z
 check (Natural n) = naturalTactic n
 check (Real r) = realTactic r
 check (Record fields) = recordTactic (fmap (fmap (id &&& check)) fields)
+check (Cnstr nm args) = constructorTactic nm (fmap check args)
+check (Case scrut cases) = caseTactic (synth scrut) (fmap (\(x, y, z) -> (x, check (foldr Lam z y))) cases)
 check tm = subTactic (synth tm)
 
 -- | Var Tactic
@@ -470,6 +565,163 @@ realTactic r = Check $ \case
   ty | isSubtypeOf RealTy ty -> pure (SReal r)
   ty -> throwError $ TypeError $ "'Real' cannot be a subtype of '" <> show ty <> "'"
 
+-- | ADT Introduction Tactic
+--
+-- Γ ⊢ 𝐶 : T₁ → ... → Tₙ → T   Γ ⊢ 𝑡ᵢ ⇐ Tᵢ (i ∈ 1 ... n)
+-- ──────────────────────────────────────────────────── Cnstr⇐
+--                   Γ ⊢ 𝐶 𝑡₁ ... 𝑡ₙ ⇐ T
+constructorTactic :: Name -> [Check] -> Check
+constructorTactic nm chks = Check $ \case
+  ty@AdtTy {} -> runCheck (constructorFullTactic nm chks) ty
+  ty@FuncTy {} -> runCheck (constructorPartialTactic nm chks) ty
+  ty -> throwError $ TypeError $ "Expected '" <> show (AdtTy nm) <> "', but recieved '" <> show ty <> "'"
+
+constructorFullTactic :: Name -> [Check] -> Check
+constructorFullTactic nm chks = Check $ \case
+  AdtTy tyName -> do
+    lookupDataSpec tyName $ \dataSpec ->
+      lookupDataCnstr nm dataSpec $ \cnstrSpec ->
+        case extractParamsFromSpec tyName cnstrSpec of
+          Just (cnstrName, params) -> do
+            let plength = length params
+            let clength = length chks
+            if
+                | clength > plength ->
+                    throwError $ TypeError $ "Data Constructor '" <> show cnstrName <> "' is applied to " <> show clength <> " value arguments, but it's type only expects " <> show plength
+                | clength < plength ->
+                    throwError $ TypeError $ "Data Constructor '" <> show cnstrName <> "' is applied to too few arguments"
+                | otherwise -> do
+                    args <- zipWithM runCheck chks params
+                    pure $ SCnstr nm args
+          Nothing -> error "impossible case in constructorFullTactic"
+  _ -> error "impossible case in constructorFullTactic"
+
+constructorPartialTactic :: Name -> [Check] -> Check
+constructorPartialTactic nm chks = Check $ \case
+  ty@FuncTy {} ->
+    lookupDataCnstr' nm >>= \dataSpec@(Data tyName _) ->
+      case decomposeFunction ty of
+        (AdtTy tyName', unappliedParamTypes) | isSubtypeOf (AdtTy tyName) (AdtTy tyName') -> do
+          lookupDataCnstr nm dataSpec $ \cnstrSpec ->
+            case extractParamsFromSpec tyName cnstrSpec of
+              Just (cnstrName, params) -> do
+                let unappliedParamTypesL = length unappliedParamTypes
+                if
+                    | length params == unappliedParamTypesL + length chks -> do
+                        args <- zipWithM runCheck chks params
+                        pure $ applyParams cnstrName args unappliedParamTypesL
+                    | length params > unappliedParamTypesL + length chks ->
+                        throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to too few arguments"
+                    | otherwise ->
+                        throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to " <> show (length chks) <> " value arguments, but it's type only expects " <> show unappliedParamTypesL
+              Nothing -> error "impossible case in constructorPartialTactic"
+        (ty, unappliedParamTypes) | isSubtypeOf (AdtTy tyName) ty -> do
+          lookupDataCnstr nm dataSpec $ \cnstrSpec ->
+            case extractParamsFromSpec tyName cnstrSpec of
+              Just (cnstrName, params) -> do
+                let unappliedParamTypesL = length unappliedParamTypes
+                if
+                    | length params == unappliedParamTypesL + length chks -> do
+                        args <- zipWithM runCheck chks params
+                        pure $ applyParams cnstrName args unappliedParamTypesL
+                    | length params > unappliedParamTypesL + length chks ->
+                        throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to too few arguments"
+                    | otherwise ->
+                        throwError $ TypeError $ "Data Constructor'" <> show nm <> "' is applied to " <> show (length chks) <> " value arguments, but it's type only expects " <> show unappliedParamTypesL
+              Nothing -> error "impossible case in constructorPartialTactic"
+        (ty@AdtTy {}, _unappliedParamTypes) -> throwError $ TypeError $ "'" <> show tyName <> "' cannot be a subtype of '" <> show ty <> "'"
+        (ty, _unappliedParamTypes) -> throwError $ TypeError $ "'" <> show tyName <> "' cannot be a subtype of '" <> show ty <> "'"
+  _ -> error "impossible case in constructorPartialTactic"
+
+-- | Eta expand around a data constructor with the missing params
+applyParams :: Name -> [Syntax] -> Int -> Syntax
+applyParams cnstrName args missing =
+  let vars = fmap (SVar . Ix) [0 .. missing - 1]
+   in foldl' (\acc _ -> SLam "_" acc) (SCnstr cnstrName (args <> vars)) vars
+
+extractParamsFromSpec :: Name -> ConstrSpec -> Maybe (Name, [Type])
+extractParamsFromSpec tyName cnstrSpec = decomposeFunctionAdt (constrType tyName cnstrSpec)
+
+-- | Build a function type from a 'ConstrSpec'
+constrType :: Name -> ConstrSpec -> Type
+constrType tyName (Constr _nm []) = AdtTy tyName
+constrType tyName (Constr nm (Term x : xs)) = FuncTy x $ constrType tyName (Constr nm xs)
+constrType tyName (Constr nm (Rec : xs)) = FuncTy (AdtTy tyName) $ constrType tyName (Constr nm xs)
+
+-- | Decompose a function into its return type and a list of its args.
+decomposeFunction :: Type -> (Type, [Type])
+decomposeFunction (FuncTy a b) = (a :) <$> decomposeFunction b
+decomposeFunction ty = (ty, [])
+
+-- | Decompose a function and fail if the return type is not an ADT.
+decomposeFunctionAdt :: Type -> Maybe (Name, [Type])
+decomposeFunctionAdt ty =
+  case decomposeFunction ty of
+    (AdtTy tyName, args) -> Just (tyName, args)
+    _ -> Nothing
+
+-- | ADT Elimination Tactic
+--
+-- The core idea is that given an ADT:
+--
+-- data ListBool = Nil | Cons Bool ListBool
+--
+-- We want to build an eliminator function:
+--
+-- list-bool-elim : A -> (Bool -> A -> A) -> ListBool -> A
+--
+-- NOTE: The 'Nil' eliminator ought to be '() -> A' but that is
+-- isomorphic to 'A' so we can simplify it.
+--
+-- The 'DataSpec' for ListBool is:
+--
+-- Data "ListBool" [Constr "Nil" [], Constr "Just" [Term BoolTy, Rec []]]
+--
+-- From this we derive the recursion principle for our eliminator. The
+-- elminator receives one function per Data Constructor which returns
+-- our goal type 'A'. The parameters on the constructor become
+-- parameters on the function where recursive references are replaced
+-- by the goal type:
+--
+--                   ∨---- (Term BoolTy, Rec []])
+-- bool-elim : A -> (Bool -> A -> A) -> ListBool -> A
+--             ∧---- Constr "Nil" []
+--
+-- The goal type 'A' is the type of the case pattern bodies.
+--
+-- For example:
+--
+-- case xs of
+--   | Nil -> false
+--   | Cons b xs -> b
+--
+-- bool-elim : (Bool) -> (Bool -> Bool -> Bool) -> ListBool -> Bool
+--
+-- For the 'Nil' case we check the body against 'Bool' and for
+-- the 'Cons' case we check the body against '(Bool -> Bool -> Bool)'
+mkConstrEliminator :: Name -> Type -> ConstrSpec -> (Name, Type)
+mkConstrEliminator tyName motiveTy (Constr nm args) =
+  (nm, foldr (flip $ \acc -> \case Term ty -> ty `FuncTy` acc; Rec -> AdtTy tyName `FuncTy` acc) motiveTy args)
+
+mkEliminator :: Type -> DataSpec -> [(Name, Type)]
+mkEliminator motiveTy (Data tyName specs) = fmap (mkConstrEliminator tyName motiveTy) specs
+
+caseTactic :: Synth -> [(Name, Check)] -> Check
+caseTactic scrut cases = Check $ \motive -> do
+  runSynth scrut >>= \case
+    (AdtTy tyName, scrut'@SCnstr {}) ->
+      lookupDataSpec tyName $ \dataSpec -> do
+        let eliminators = Map.fromList $ traceShowId $ mkEliminator motive dataSpec
+            checks = Map.fromList cases
+            alignCases = \case
+              These ty chk -> runCheck chk ty
+              This _ty -> throwError $ TypeError "The constructor 'what-am-i' is missing a case"
+              That _chk -> throwError $ TypeError $ "The constructor 'what-am-i' is not of type '" <> show tyName <> "'"
+        cases' <- Map.toList <$> alignWithM alignCases eliminators checks
+        pure $ SCase scrut' cases'
+    -- (ty | isSubtypeOf _ ty, tm) -> error "TODO: How do I perform a subtyping check here?"
+    (ty, _) -> throwError $ TypeError $ "'" <> "what-am-i" <> "' cannot be a subtype of '" <> show ty <> "'"
+
 --------------------------------------------------------------------------------
 -- Subsumption
 
@@ -584,6 +836,8 @@ eval = \case
   SInteger z -> pure $ VInteger z
   SNatural n -> pure $ VNatural n
   SReal r -> pure $ VReal r
+  SCnstr nm bndrs -> doConstructor nm bndrs
+  SCase scrut patterns -> doCase scrut patterns
   SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
 
 doApply :: Value -> Value -> EvalM Value
@@ -615,6 +869,18 @@ doGet name (VRecord fields) =
     Just field -> pure field
 doGet _ _ = error "impossible case in doGet"
 
+doConstructor :: Name -> [Syntax] -> EvalM Value
+doConstructor nm args = do
+  args' <- traverse eval args
+  pure $ VCnstr nm args'
+
+doCase :: Syntax -> [(Name, Syntax)] -> EvalM Value
+doCase (SCnstr nm args) patterns =
+  case find ((== nm) . fst) patterns of
+    Just (_, body) -> eval $ foldl SAp body args
+    Nothing -> error "impossible case in doCase"
+doCase _ _ = error "impossible case in doCase"
+
 instantiateClosure :: Closure -> Value -> EvalM Value
 instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 
@@ -643,6 +909,7 @@ quote l ty (VRecord fields) = SRecord <$> traverse (traverse (quote l ty)) field
 quote _ _ (VNatural n) = pure $ SNatural n
 quote _ _ (VInteger z) = pure $ SInteger z
 quote _ _ (VReal r) = pure $ SReal r
+quote l ty (VCnstr nm args) = SCnstr nm <$> traverse (quote l ty) args
 quote _ ty tm = error $ "impossible case in quote:\n" <> show ty <> "\n" <> show tm
 
 quoteLevel :: Lvl -> Lvl -> Ix
@@ -661,7 +928,9 @@ quoteFrame l tm = \case
   VFst -> pure $ SFst tm
   VSnd -> pure $ SSnd tm
   VIf ty t1 t2 -> liftA2 (SIf tm) (quote l ty t1) (quote l ty t2)
+  -- NOTE: This never get constructed. Do I need them in STLC?
   VGet name -> pure $ SGet name tm
+  VCase mot cases -> (SCase tm <$> traverse (traverse (quote l mot)) cases)
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
@@ -683,21 +952,19 @@ run term =
 
 main :: IO ()
 main =
-  case run subTypeAp of
+  -- \x. (\y. y) x
+  case run (Anno (AdtTy "ListBool" `FuncTy` AdtTy "ListBool") (Cnstr "Cons" [Tru])) of
     Left err -> print err
     Right result -> print result
 
-subTypeAp :: Term
-subTypeAp =
-  Ap
-    ( Anno
-        (RealTy `FuncTy` RealTy)
-        (Lam "x" (Var "x"))
-    )
-    (Natural 1)
+caseMatch :: Term
+caseMatch =
+  Anno
+    BoolTy
+    (Case (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nil" []])) [("Nil", [], Fls), ("Cons", ["x", "xs"], Var "x")])
 
-subTypeApRecordT :: Term
-subTypeApRecordT =
+subTypeApT :: Term
+subTypeApT =
   Ap
     ( Anno
         (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
