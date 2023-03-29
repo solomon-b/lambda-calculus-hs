@@ -200,7 +200,7 @@ data Frame
   | VSnd
   | VIf Type Value Value
   | VGet Name
-  | VCase [(Name, Value)]
+  | VCase Type [(Name, Value)]
   deriving stock (Show, Eq, Ord)
 
 pushFrame :: Neutral -> Frame -> Neutral
@@ -895,9 +895,9 @@ quoteFrame l tm = \case
   VFst -> pure $ SFst tm
   VSnd -> pure $ SSnd tm
   VIf ty t1 t2 -> liftA2 (SIf tm) (quote l ty t1) (quote l ty t2)
+  -- NOTE: This never get constructed. Do I need them in STLC?
   VGet name -> pure $ SGet name tm
-
--- VCase cases -> _
+  VCase mot cases -> (SCase tm <$> traverse (traverse (quote l mot)) cases)
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
