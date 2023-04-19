@@ -39,6 +39,8 @@ nth xs i
 --------------------------------------------------------------------------------
 -- Types
 
+-- | 'Term' represents the concrete syntax of our langage generated
+-- from text by a parser.
 data Term
   = Var Name
   | Lam Name Term
@@ -57,9 +59,16 @@ data Term
   | Hole
   deriving stock (Show, Eq, Ord)
 
-data Type = FuncTy Type Type | PairTy Type Type | UnitTy | BoolTy | NatTy
+data Type
+  = FuncTy Type Type
+  | PairTy Type Type
+  | UnitTy
+  | BoolTy
+  | NatTy
   deriving stock (Show, Eq, Ord)
 
+-- | 'Syntax' is the internal abstract syntax of our language. We
+-- elaborate 'Term' values into 'Syntax' during typechecking.
 data Syntax
   = SVar Ix
   | SLam Name Syntax
@@ -77,6 +86,7 @@ data Syntax
   | SHole Type
   deriving stock (Show, Eq, Ord)
 
+-- | 'Value' is the evaluated form of expressions in our language.
 data Value
   = VNeutral Type Neutral
   | VLam Name Closure
@@ -90,6 +100,10 @@ data Value
 
 -- | Debruijn Indices
 --
+-- 'Ix' is used to reference lambda bound terms with respect to
+-- α-conversion. The index 'n' represents the value bound by the 'n'
+-- lambda counting outward from the site of the index.
+--
 -- λ.λ.λ.2
 -- ^-----^
 newtype Ix
@@ -98,8 +112,15 @@ newtype Ix
 
 -- | Debruijn Levels
 --
+-- Similar to Debruijn Indices but counting inward from the outermost
+-- lambda.
+--
 -- λ.λ.λ.0
 -- ^-----^
+--
+-- Levels eliminate the need to reindex free variables when weakening
+-- the context. This is useful in our 'Value' representation of
+-- lambdas where we have a 'Closure' holding a stack of free variables.
 newtype Lvl
   = Lvl Int
   deriving newtype (Show, Eq, Ord)
@@ -149,6 +170,7 @@ data Env = Env
   { locals :: SnocList Value,
     localNames :: [Cell],
     size :: Int,
+    -- | Holes encountered during typechecking
     holes :: [Type]
   }
   deriving stock (Show, Eq, Ord)
