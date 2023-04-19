@@ -1,5 +1,4 @@
 {-# LANGUAGE DerivingVia #-}
-{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
@@ -224,6 +223,7 @@ data Env = Env
   { locals :: SnocList Value,
     localNames :: [Cell],
     size :: Int,
+    -- | Holes encountered during typechecking
     holes :: [Type],
     -- | ADT Spec by Constructor Name
     adtConstructors :: Map Name DataTypeSpec
@@ -276,9 +276,6 @@ bindCell cell@Cell {..} Env {..} =
       holes = holes,
       adtConstructors = adtConstructors
     }
-
-bindCells :: [Cell] -> Env -> Env
-bindCells cells env = foldr bindCell env cells
 
 resolveCell :: Env -> Name -> Maybe Cell
 resolveCell Env {..} bndr = find ((== bndr) . cellName) localNames
