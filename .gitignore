@@ -1,5 +1,5 @@
 /dist-newstyle/
 /presentation/_minted-presentation/
-/.envrc
+/.envrc.local
 /.direnv/
 /result
