@@ -3,7 +3,7 @@
 
   inputs = {
     # Nix Inputs
-    nixpkgs.url = github:nixos/nixpkgs/22.11;
+    nixpkgs.url = github:nixos/nixpkgs/23.05;
     flake-utils.url = github:numtide/flake-utils;
   };
 
@@ -18,7 +18,7 @@
     in
     utils.eachDefaultSystem (system:
     let
-      compilerVersion = "ghc924";
+      compilerVersion = "ghc927";
       pkgs = nixpkgs.legacyPackages.${system};
       hsPkgs = pkgs.haskell.packages.${compilerVersion}.override {
         overrides = hfinal: hprev: {
