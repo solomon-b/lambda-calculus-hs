@@ -37,7 +37,7 @@ jobs:
     strategy:
       matrix:
         cabal: ["3.4"]
-        ghc: ["8.10.7", "9.0.2", "9.2.4"]
+        ghc: ["8.10.7", "9.0.2", "9.2.7", "9.4.5"]
 
     steps:
       - name: "Checkout"
