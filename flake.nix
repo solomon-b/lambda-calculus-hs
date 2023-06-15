@@ -22,20 +22,20 @@
       pkgs = nixpkgs.legacyPackages.${system};
       hsPkgs = pkgs.haskell.packages.${compilerVersion}.override {
         overrides = hfinal: hprev: {
-          Lambda-Cube = hfinal.callCabal2nix "Lambda-Cube" ./. { };
+          lambda-calculus-hs = hfinal.callCabal2nix "lambda-calculus-hs" ./. { };
         };
       };
     in
     rec {
       packages =
         utils.flattenTree
-          { Lambda-Cube = hsPkgs.Lambda-Cube; };
+          { lambda-calculus-hs = hsPkgs.lambda-calculus-hs; };
 
       # nix develop
       devShell = hsPkgs.shellFor {
         withHoogle = true;
         packages = p: [
-          p.Lambda-Cube
+          p.lambda-calculus-hs
         ];
         buildInputs = with pkgs;
           [
@@ -52,6 +52,6 @@
       };
 
       # nix build
-      defaultPackage = packages.Lambda-Cube;
+      defaultPackage = packages.lambda-calculus-hs;
     });
 }
