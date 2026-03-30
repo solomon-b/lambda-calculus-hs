@@ -2,16 +2,15 @@
   description = "Single file Lambda Calculus implementations and presentation slides.";
 
   inputs = {
-    nixpkgs.url = github:nixos/nixpkgs/24.05;
+    nixpkgs.url = github:nixos/nixpkgs/25.11;
     flake-utils.url = github:numtide/flake-utils;
   };
 
   outputs = { self , nixpkgs , flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
     let
-      compilerVersion = "ghc982";
       pkgs = nixpkgs.legacyPackages.${system};
-      hsPkgs = pkgs.haskell.packages.${compilerVersion}.override {
+      hsPkgs = pkgs.haskellPackages.override {
         overrides = hfinal: hprev: {
           lambda-calculus-hs = hfinal.callCabal2nix "lambda-calculus-hs" ./. { };
         };
@@ -34,7 +33,7 @@
             [
               cabal-install
               cabal2nix
-              haskell-language-server
+              hsPkgs.haskell-language-server
               haskellPackages.ghcid
               haskellPackages.fourmolu
               haskellPackages.cabal-fmt
