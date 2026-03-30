@@ -57,6 +57,10 @@ data Term
   | Pair Term Term
   | Fst Term
   | Snd Term
+  | InL Term
+  | InR Term
+  | Case Term (Name, Term) (Name, Term)
+  | Absurd Term
   | Unit
   | Tru
   | Fls
@@ -74,6 +78,8 @@ data Type
   = FuncTy Type Type
   | PairTy Type Type
   | UnitTy
+  | SumTy Type Type
+  | VoidTy
   | BoolTy
   | RecordTy [(Name, Type)]
   | NaturalTy
@@ -90,6 +96,10 @@ data Syntax
   | SPair Syntax Syntax
   | SFst Syntax
   | SSnd Syntax
+  | SInL Syntax
+  | SInR Syntax
+  | SCase Syntax Type Syntax Syntax
+  | SAbsurd Type Syntax
   | SUnit
   | STru
   | SFls
@@ -108,6 +118,8 @@ data Value
   | VLam Name Closure
   | VPair Value Value
   | VUnit
+  | VInL Value
+  | VInR Value
   | VTru
   | VFls
   | VRecord [(Name, Value)]
@@ -164,6 +176,8 @@ data Frame
   = VApp Type Value
   | VFst
   | VSnd
+  | VCase Type Type Type Value Value
+  | VAbsurd Type
   | VIf Type Value Value
   | VGet Name
   deriving stock (Show, Eq, Ord)
@@ -255,6 +269,10 @@ check :: Term -> Check
 check (Lam bndr body) = lamTactic bndr (check body)
 check Unit = unitTactic
 check (Pair tm1 tm2) = pairTactic (check tm1) (check tm2)
+check (InL tm1) = inLTactic (check tm1)
+check (InR tm2) = inRTactic (check tm2)
+check (Case scrut (bndr1, t1) (bndr2, t2)) = caseTactic (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
+check (Absurd tm) = absurdTactic (synth tm)
 check Hole = holeTactic
 check (If tm1 tm2 tm3) = ifTactic (check tm1) (check tm2) (check tm3)
 check Tru = trueTactic
@@ -376,6 +394,52 @@ sndTactic (Synth synth) =
     synth >>= \case
       (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
       (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
+
+-- | InL Introduction Tactic
+--
+--      Γ ⊢ e ⇐ A
+--  ───────────────── InL⇐
+--  Γ ⊢ InL e ⇐ A + B
+inLTactic :: Check -> Check
+inLTactic (Check check) = Check $ \case
+  SumTy a _b -> SInL <$> check a
+  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
+
+-- | InR Introduction Tactic
+--
+--  Γ ⊢ e ⇐ B
+--  ──────────────── InR⇐
+--  Γ ⊢ InR e ⇐ A + B
+inRTactic :: Check -> Check
+inRTactic (Check check) = Check $ \case
+  SumTy _a b -> SInR <$> check b
+  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
+
+-- | Case Elimination Tactic
+--  Γ ⊢ e ⇒ A + B    Γ ⊢ f ⇐ A → C    Γ ⊢ g ⇐ B → C
+--  ─────────────────────────────────────────────── Case⇐
+--                Γ ⊢ Case e f g ⇐ C
+caseTactic :: Synth -> Check -> Check -> Check
+caseTactic (Synth synth) (Check checkT1) (Check checkT2) = Check $ \ty -> do
+  (scrutTy, scrut) <- synth
+  case scrutTy of
+    SumTy a b -> do
+      f <- checkT1 (FuncTy a ty)
+      g <- checkT2 (FuncTy b ty)
+      pure $ SCase scrut scrutTy f g
+    _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
+
+-- | Void Elimination Tactic
+--
+--  Γ ⊢ e ⇒ Void
+--  ─────────────── Absurd⇐
+--  Γ ⊢ absurd e ⇐ C
+absurdTactic :: Synth -> Check
+absurdTactic (Synth synth) = Check $ \ty -> do
+  (scrutTy, scrut) <- synth
+  case scrutTy of
+    VoidTy -> pure $ SAbsurd ty scrut
+    _ -> throwError $ TypeError $ "Expected a Void but got: " <> show scrutTy
 
 -- | Type Hole Tactic
 --
@@ -588,6 +652,16 @@ eval = \case
     pure $ VPair tm1' tm2'
   SFst tm -> eval tm >>= doFst
   SSnd tm -> eval tm >>= doSnd
+  SInL tm -> eval tm >>= pure . VInL
+  SInR tm -> eval tm >>= pure . VInR
+  SCase t1 motive t2 t3 -> do
+    t1' <- eval t1
+    t2' <- eval t2
+    t3' <- eval t3
+    doCase t1' motive t2' t3'
+  SAbsurd ty tm -> do
+    tm' <- eval tm
+    doAbsurd tm' ty
   SUnit -> pure VUnit
   STru -> pure VTru
   SFls -> pure VFls
@@ -615,6 +689,17 @@ doFst _ = error "impossible case in doFst"
 doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
 doSnd _ = error "impossible case in doSnd"
+
+doCase :: Value -> Type -> Value -> Value -> EvalM Value
+doCase (VInL v) _motive f _ = doApply f v
+doCase (VInR v) _motive _ g = doApply g v
+doCase (VNeutral (SumTy a b) neu) motive f g =
+  pure $ VNeutral motive (pushFrame neu (VCase (FuncTy a motive) (FuncTy b motive) motive f g))
+doCase _ _ _ _ = error "impossible case in doCase"
+
+doAbsurd :: Value -> Type -> EvalM Value
+doAbsurd (VNeutral _ neu) ty = pure $ VNeutral ty (pushFrame neu (VAbsurd ty))
+doAbsurd _ _ = error "impossible case in doAbsurd"
 
 doIf :: Value -> Value -> Value -> EvalM Value
 doIf VTru t1 _ = pure t1
@@ -652,6 +737,8 @@ quote l (PairTy ty1 ty2) (VPair tm1 tm2) = do
   tm1' <- quote l ty1 tm1
   tm2' <- quote l ty2 tm2
   pure $ SPair tm1' tm2'
+quote l (SumTy a _b) (VInL tm) = SInL <$> quote l a tm
+quote l (SumTy _a b) (VInR tm) = SInR <$> quote l b tm
 quote l _ (VNeutral _ neu) = quoteNeutral l neu
 quote _ _ VUnit = pure SUnit
 quote _ _ VTru = pure STru
@@ -677,6 +764,11 @@ quoteFrame l tm = \case
   VApp ty arg -> SAp tm <$> quote l ty arg
   VFst -> pure $ SFst tm
   VSnd -> pure $ SSnd tm
+  VCase tyF tyG mot f g -> do
+    f' <- quote l tyF f
+    g' <- quote l tyG g
+    pure $ SCase tm mot f' g'
+  VAbsurd ty -> pure $ SAbsurd ty tm
   VIf ty t1 t2 -> liftA2 (SIf tm) (quote l ty t1) (quote l ty t2)
   VGet name -> pure $ SGet name tm
 
