@@ -10,10 +10,6 @@
 -- are introduced by 'Cnstr' and eliminated by 'Case', which pattern-matches
 -- on the constructor name and binds the fields. Constructors support partial
 -- application via eta-expansion around the constructor's function type.
---
--- Note: the 'caseTactic' currently only works when the scrutinee elaborates
--- to an 'SCnstr' (nullary constructors). Fully-applied constructors elaborate
--- to nested 'SAp' and are not yet matched.
 module Main where
 
 --------------------------------------------------------------------------------
@@ -280,6 +276,14 @@ lookupDataTypeSpec nm k =
   asks (Map.lookup nm . adtConstructors) >>= \case
     Just dataSpec -> k dataSpec
     Nothing -> throwError $ OutOfScopeError nm
+
+-- | Lookup a Data Type Spec from a Data Type Name.
+lookupDataTypeSpecByType :: Name -> (DataTypeSpec -> TypecheckM a) -> TypecheckM a
+lookupDataTypeSpecByType tyName k = do
+  cnstrs <- asks (Map.elems . adtConstructors)
+  case find (\(DataTypeSpec tyName' _) -> tyName == tyName') cnstrs of
+    Just dataSpec -> k dataSpec
+    Nothing -> throwError $ OutOfScopeError tyName
 
 initEnv :: Env
 initEnv = Env Nil [] 0 mempty adtConstructorsMap
@@ -737,19 +741,19 @@ etaExpandCnstr n t = uncurry ($) $ go n (id, t)
 -- the 'Cons' case we check the body against '(Bool -> Bool -> Bool)'
 caseTactic :: Synth -> [(Name, Check)] -> Check
 caseTactic scrut cases = Check $ \motive -> do
-  runSynth scrut >>= \case
-    (AdtTy tyName, scrut'@(SCnstr nm _)) ->
-      lookupDataTypeSpec nm $ \dataSpec -> do
+  (scrutTy, scrut') <- runSynth scrut
+  case scrutTy of
+    AdtTy tyName ->
+      lookupDataTypeSpecByType tyName $ \dataSpec -> do
         let eliminators = Map.fromList $ mkEliminator motive dataSpec
             checks = Map.fromList cases
             alignCases = \case
               These ty chk -> runCheck chk ty
-              This _ty -> throwError $ TypeError "The constructor 'what-am-i' is missing a case"
-              That _chk -> throwError $ TypeError $ "The constructor 'what-am-i' is not of type '" <> show tyName <> "'"
+              This _ty -> throwError $ TypeError $ "Missing case for constructor of type '" <> show tyName <> "'"
+              That _chk -> throwError $ TypeError $ "Extra case branch not in type '" <> show tyName <> "'"
         cases' <- Map.toList <$> alignWithM alignCases eliminators checks
         pure $ SCase scrut' cases'
-    -- (ty | isSubtypeOf _ ty, tm) -> error "TODO: How do I perform a subtyping check here?"
-    (ty, _) -> throwError $ TypeError $ "'" <> "what-am-i" <> "' cannot be a subtype of '" <> show ty <> "'"
+    ty -> throwError $ TypeError $ "Expected an ADT type but got: " <> show ty
 
 mkConstrEliminator :: Name -> Type -> DataConstructorSpec -> (Name, Type)
 mkConstrEliminator tyName motiveTy (Constr nm args) =
@@ -931,11 +935,19 @@ doConstructor nm args = do
   pure $ VCnstr nm args'
 
 doCase :: Syntax -> [(Name, Syntax)] -> EvalM Value
-doCase (SCnstr nm args) patterns =
-  case find ((== nm) . fst) patterns of
-    Just (_, body) -> eval $ foldl SAp body args
-    Nothing -> error "impossible case in doCase"
-doCase _ _ = error "impossible case in doCase"
+doCase scrut patterns = do
+  scrut' <- eval scrut
+  case scrut' of
+    VCnstr nm args -> do
+      case find ((== nm) . fst) patterns of
+        Just (_, body) -> do
+          body' <- eval body
+          foldM doApply body' args
+        Nothing -> error "impossible case in doCase: missing branch"
+    VNeutral ty neu -> do
+      branches <- traverse (traverse eval) patterns
+      pure $ VNeutral ty (pushFrame neu (VCase ty branches))
+    _ -> error "impossible case in doCase: non-constructor scrutinee"
 
 instantiateClosure :: Closure -> Value -> EvalM Value
 instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
