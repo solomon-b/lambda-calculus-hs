@@ -164,8 +164,8 @@ executable 09-NominalInductiveTypes
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness
 
-executable 10-IsoInductiveTypes
+executable 09b-IsoInductiveTypes
   import:              common-settings
-  main-is:             10-IsoInductiveTypes.hs
+  main-is:             09b-IsoInductiveTypes.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness

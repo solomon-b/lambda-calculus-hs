@@ -64,7 +64,7 @@ run target="":
     if [ -n "{{target}}" ]; then
         cabal run "{{target}}"
     else
-        t=$(grep -oP '(?<=^executable )\d+-\S+' lambda-calculus-hs.cabal | fzf --prompt="run> " --height=~20 --reverse) || exit 0
+        t=$(grep -oP '(?<=^executable )\d+\w*-\S+' lambda-calculus-hs.cabal | fzf --prompt="run> " --height=~20 --reverse) || exit 0
         cabal run "$t"
     fi
 
