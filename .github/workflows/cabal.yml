@@ -1,6 +1,3 @@
-# NOTE: This should be a good reference for github actions w.r.t haskell
-# https://markkarpov.com/post/github-actions-for-haskell-ci.html
-
 name: cabal:build
 on:
   push:
@@ -18,58 +15,34 @@ jobs:
     if: "!contains(github.event.pull_request.labels.*.name, 'ignore-server-format-checks')"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - name: Check format
-        run: |
-          ORMOLU_VERSION="0.5.0.0"
-          ORMOLU_URL="https://github.com/tweag/ormolu/releases/download/${ORMOLU_VERSION}/ormolu-Linux.zip"
-          echo "Downloading from ${ORMOLU_URL}"
-          curl --fail --location --output ormolu.zip "${ORMOLU_URL}"
-          unzip ormolu.zip
-          ./ormolu --mode check $(git ls-files '*.hs')
-
-  build-test:
-    runs-on: ubuntu-latest
-    
-#   NOTE: once the library is ready to be released into the wild
-#   we could use this code block to run the tests and build the exe.
-#   on multiple GHC versions and perhaps even multiple cabal versions
-    strategy:
-      matrix:
-        cabal: ["3.4"]
-        ghc: ["8.10.7", "9.0.2", "9.2.7", "9.4.5"]
-
-    steps:
-      - name: "Checkout"
-        uses: actions/checkout@v2
-
-      - name: "Setup"
-        uses: haskell/actions/setup@v1.2
-        id: setup-haskell-cabal
+      - uses: actions/checkout@v4
+      - name: Install ormolu
+        uses: haskell-actions/run-ormolu@v16
         with:
-          ghc-version: "8.10.7"
-          cabal-version: "3.4"
+          mode: check
+          pattern: "**/*.hs"
 
-      - name: "Cache"
-        uses: actions/cache@v2
-        env:
-          cache-name: cache-cabal
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Haskell
+        uses: haskell-actions/setup@v2
+        id: setup
+        with:
+          ghc-version: "9.10.3"
+          cabal-version: "3.12"
+
+      - name: Cache
+        uses: actions/cache@v4
         with:
           path: |
-            ${{ steps.setup-haskell-cabal.outputs.cabal-store }}
+            ${{ steps.setup.outputs.cabal-store }}
             dist-newstyle
-          key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/*.cabal') }}-${{ hashFiles('**/cabal.project') }}
+          key: ${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-${{ hashFiles('**/*.cabal') }}
           restore-keys: |
-            ${{ runner.os }}-build-${{ env.cache-name }}-
-            ${{ runner.os }}-build-
-            ${{ runner.os }}-
-      
-      - name: "Build"
-        run: cabal build
+            ${{ runner.os }}-ghc-${{ steps.setup.outputs.ghc-version }}-
 
-# NOTE: keeping these here for future versions
-#      - name: "Test"
-#        run: cabal test $CONFIG
-#
-#      - run: cabal haddock $CONFIG
-#      - run: cabal sdist
+      - name: Build
+        run: cabal build all
