@@ -26,6 +26,7 @@ import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific)
 import Data.String
 import Data.These
+import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -1029,14 +1030,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-data RunResult = RunResult
-  { elaborated :: Syntax,
-    elaboratedType :: Type,
-    normalForm :: Syntax
-  }
-  deriving (Show)
-
-run :: Term -> Either (Error, Holes) (RunResult, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Type Syntax, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
@@ -1048,31 +1042,34 @@ run term =
 
 main :: IO ()
 main = do
+  let test = runTest run
+      testErr = runTestErr run
+
   putStrLn "=== Iso-Recursive Types ==="
   putStrLn ""
 
   -- Construction tests
-  putStrLn "--- Construction ---"
-  runTest
+  section "Construction"
+  test
     "Nil"
     (Cnstr "Nil" [])
-  runTest
+  test
     "Cons True Nil"
     (Cnstr "Cons" [Tru, Cnstr "Nil" []])
-  runTest
+  test
     "Cons True (Cons False Nil)"
     (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]])
-  runTest
+  test
     "Nothing"
     (Cnstr "Nothing" [])
-  runTest
+  test
     "Just True"
     (Cnstr "Just" [Tru])
   putStrLn ""
 
   -- Case elimination tests
-  putStrLn "--- Case Elimination ---"
-  runTest
+  section "Case Elimination"
+  test
     "case Nil of Nil -> True | Cons x xs -> False  ==>  True"
     ( Anno
         BoolTy
@@ -1081,7 +1078,7 @@ main = do
             [("Nil", [], Tru), ("Cons", ["x", "xs"], Fls)]
         )
     )
-  runTest
+  test
     "case (Cons True Nil) of Nil -> False | Cons x xs -> x  ==>  True"
     ( Anno
         BoolTy
@@ -1090,7 +1087,7 @@ main = do
             [("Nil", [], Fls), ("Cons", ["x", "xs"], Var "x")]
         )
     )
-  runTest
+  test
     "case (Cons False Nil) of Nil -> True | Cons x xs -> x  ==>  False"
     ( Anno
         BoolTy
@@ -1099,7 +1096,7 @@ main = do
             [("Nil", [], Tru), ("Cons", ["x", "xs"], Var "x")]
         )
     )
-  runTest
+  test
     "case Nothing of Nothing -> True | Just x -> x  ==>  True"
     ( Anno
         BoolTy
@@ -1108,7 +1105,7 @@ main = do
             [("Nothing", [], Tru), ("Just", ["x"], Var "x")]
         )
     )
-  runTest
+  test
     "case (Just False) of Nothing -> True | Just x -> x  ==>  False"
     ( Anno
         BoolTy
@@ -1120,9 +1117,9 @@ main = do
   putStrLn ""
 
   -- Nested case / recursive structure tests
-  putStrLn "--- Nested / Recursive ---"
+  section "Nested / Recursive"
   let listBoolTy = dataTypeSpecToMuTy (DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [BoolTy, TVar "ListBool"]])
-  runTest
+  test
     "case (case (Cons True (Cons False Nil)) of Nil -> Nil | Cons x xs -> xs) of Nil -> True | Cons x xs -> x  ==>  False"
     ( Anno
         BoolTy
@@ -1137,7 +1134,7 @@ main = do
             [("Nil", [], Tru), ("Cons", ["x", "xs"], Var "x")]
         )
     )
-  runTest
+  test
     "case Nil of Nil -> Nil | Cons x xs -> xs  ==>  Nil (recursive return type)"
     ( Anno
         listBoolTy
@@ -1149,21 +1146,21 @@ main = do
   putStrLn ""
 
   -- Holes
-  putStrLn "--- Holes ---"
-  runTest
+  section "Holes"
+  test
     "Cons ? Nil  (hole in constructor arg)"
     (Cnstr "Cons" [Hole, Cnstr "Nil" []])
   putStrLn ""
 
   -- Error cases
-  putStrLn "--- Error Cases (expected failures) ---"
-  runTestErr
+  section "Error Cases (expected failures)"
+  testErr
     "Too many args: Cons True False Nil"
     (Cnstr "Cons" [Tru, Fls, Cnstr "Nil" []])
-  runTestErr
+  testErr
     "Too few args: Cons True"
     (Cnstr "Cons" [Tru])
-  runTestErr
+  testErr
     "Missing case branch"
     ( Anno
         BoolTy
@@ -1172,7 +1169,7 @@ main = do
             [("Nil", [], Tru)]
         )
     )
-  runTestErr
+  testErr
     "Extra case branch"
     ( Anno
         BoolTy
@@ -1181,29 +1178,12 @@ main = do
             [("Nil", [], Tru), ("Cons", ["x", "xs"], Fls), ("Bogus", [], Fls)]
         )
     )
-  runTestErr
+  testErr
     "Case on non-mu type"
     ( Anno
         BoolTy
         (CaseRec (Anno BoolTy Tru) [("Nil", [], Fls)])
     )
-  runTestErr
+  testErr
     "Unknown constructor"
     (Cnstr "Bogus" [])
-
-runTestErr :: String -> Term -> IO ()
-runTestErr label term =
-  case run term of
-    Left (err, _) -> putStrLn $ "  OK:   " <> label <> "\n        " <> show err
-    Right (RunResult {..}, _) -> putStrLn $ "  FAIL: " <> label <> " (expected error but got result)\n        " <> show normalForm
-
-runTest :: String -> Term -> IO ()
-runTest label term =
-  case run term of
-    Left (err, _) -> putStrLn $ "  FAIL: " <> label <> "\n        " <> show err
-    Right (RunResult {..}, _) -> do
-      putStrLn $ "  OK:   " <> label
-      putStrLn $ "        Term:   " <> show term
-      putStrLn $ "        Type:   " <> show elaboratedType
-      putStrLn $ "        Elab:   " <> show elaborated
-      putStrLn $ "        Normal: " <> show normalForm

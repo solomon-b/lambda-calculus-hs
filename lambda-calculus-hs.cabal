@@ -43,6 +43,13 @@ common common-settings
     -Wpartial-fields
     -Werror=missing-home-modules
 
+library test-harness
+  import:              common-settings
+  visibility:          private
+  exposed-modules:     TestHarness
+  hs-source-dirs:      lib
+  build-depends:       base >= 2 && <5
+
 executable Untyped
   import:              common-settings
   main-is:             old/Untyped.hs
@@ -161,4 +168,4 @@ executable 10-IsoRecursiveTypes
   import:              common-settings
   main-is:             10-IsoRecursiveTypes.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness
