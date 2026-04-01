@@ -8,8 +8,7 @@
 -- contravariant in the argument and covariant in the return
 -- (@(Int -> Nat) <: (Nat -> Int)@). Record width subtyping allows passing a
 -- record with extra fields where fewer are expected. Record depth subtyping
--- (replacing a field with its subtype) is defined but not yet wired through
--- the sub tactic.
+-- allows passing @{foo : Nat}@ where @{foo : Int}@ is expected.
 module Main where
 
 --------------------------------------------------------------------------------
@@ -336,7 +335,7 @@ annoTactic ty (Check check) = Synth $ do
 unitTactic :: Check
 unitTactic = Check $ \case
   UnitTy -> pure SUnit
-  ty | isSubtypeOf UnitTy ty -> pure SUnit
+  ty | UnitTy `isSubtypeOf` ty -> pure SUnit
   ty -> throwError $ TypeError $ "'Unit' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Lambda Introduction Tactic
@@ -467,7 +466,7 @@ holeTactic = Check $ \ty -> do
 falseTactic :: Check
 falseTactic = Check $ \case
   BoolTy -> pure SFls
-  ty | isSubtypeOf BoolTy ty -> pure SFls
+  ty | BoolTy `isSubtypeOf` ty -> pure SFls
   ty -> throwError $ TypeError $ "'Bool' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Bool-True Introduction Tactic
@@ -477,7 +476,7 @@ falseTactic = Check $ \case
 trueTactic :: Check
 trueTactic = Check $ \case
   BoolTy -> pure STru
-  ty | isSubtypeOf BoolTy ty -> pure STru
+  ty | BoolTy `isSubtypeOf` ty -> pure STru
   ty -> throwError $ TypeError $ "'Bool' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Bool Elimination Tactic
@@ -534,7 +533,7 @@ getTactic name (Synth fieldTac) =
 integerTactic :: Integer -> Check
 integerTactic z = Check $ \case
   IntegerTy -> pure (SInteger z)
-  ty | isSubtypeOf IntegerTy ty -> pure (SInteger z)
+  ty | IntegerTy `isSubtypeOf` ty -> pure (SInteger z)
   ty -> throwError $ TypeError $ "'Integer' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Natural Introduction Tactic
@@ -547,7 +546,7 @@ naturalTactic n = Check $ \case
     if n >= 0
       then pure (SNatural n)
       else throwError $ TypeError "Naturals must be greater then or equal to zero."
-  ty | isSubtypeOf NaturalTy ty -> pure (SNatural n)
+  ty | NaturalTy `isSubtypeOf` ty -> pure (SNatural n)
   ty -> throwError $ TypeError $ "'Natural' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Real Introduction Tactic
@@ -557,7 +556,7 @@ naturalTactic n = Check $ \case
 realTactic :: Scientific -> Check
 realTactic r = Check $ \case
   RealTy -> pure (SReal r)
-  ty | isSubtypeOf RealTy ty -> pure (SReal r)
+  ty | RealTy `isSubtypeOf` ty -> pure (SReal r)
   ty -> throwError $ TypeError $ "'Real' cannot be a subtype of '" <> show ty <> "'"
 
 --------------------------------------------------------------------------------
@@ -591,17 +590,16 @@ isSubtypeOf super sub = super == sub
 -- ──────────────────────────────────────────────── RecordDepth
 -- { lᵢ : Sᵢ (i ∈ I..n) } <: { lᵢ : Tᵢ (i ∈ I..n) }
 --
--- TODO: Record Width Subtyping:
--- https://en.wikipedia.org/wiki/Subtyping#Width_and_depth_subtyping
+-- Record width subtyping falls out of 'Map.isSubmapOfBy': the expected
+-- record's keys must be a subset of the actual record's keys, so extra
+-- fields in the actual record are ignored.
 --
--- eg.,:
 -- { foo :: Nat, bar :: Bool } <: { foo :: Nat }
--- ({ foo :: Nat, bar :: Bool} → Nat) <: ({ foo :: Nat } → Nat)
 recordSubtypeTactic :: Type -> Type -> Bool
 recordSubtypeTactic (RecordTy s) (RecordTy t) =
   let s' = Map.fromList s
       t' = Map.fromList t
-   in Map.isSubmapOfBy isSubtypeOf t' s'
+   in Map.isSubmapOfBy (flip isSubtypeOf) t' s'
 recordSubtypeTactic _ _ = error "impossible case in rec"
 
 -- | Function Subtyping
@@ -896,7 +894,7 @@ main = do
     )
   putStrLn ""
 
-  section "Record Depth Subtyping (currently broken)"
+  section "Record Depth Subtyping"
   test
     "{foo : Nat} passed where {foo : Int} expected"
     ( Ap
