@@ -20,6 +20,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String
 import Data.These (These (..))
+import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -617,7 +618,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
@@ -625,63 +626,149 @@ run term =
       let result = flip runEvalM Nil $ do
             value <- eval syntax
             quote initLevel type' value
-      pure (result, holes)
+      pure (RunResult syntax type' result, holes)
 
 main :: IO ()
-main =
-  case run getTest of
-    Left err -> print err
-    Right result -> print result
+main = do
+  let test = runTest run
+      testErr = runTestErr run
 
-getTest :: Term
-getTest =
-  Ap
+  putStrLn "=== Records ==="
+  putStrLn ""
+
+  -- Record introduction
+  section "Record Introduction"
+  test
+    "{ foo = True, bar = Zero }"
     ( Anno
-        (RecordTy [("foo", BoolTy), ("bar", NatTy)] `FuncTy` BoolTy)
-        (Lam "x" (Get "foo" (Var "x")))
+        (RecordTy [("foo", BoolTy), ("bar", NatTy)])
+        (Record [("foo", Tru), ("bar", Zero)])
     )
-    recordT
+  test
+    "single-field record { x = () }"
+    ( Anno
+        (RecordTy [("x", UnitTy)])
+        (Record [("x", Unit)])
+    )
+  -- NOTE: records with function-valued fields crash in quote — it passes
+  -- the whole RecordTy to each field instead of looking up per-field types.
+  test
+    "nested record { inner = { a = True } }"
+    ( Anno
+        (RecordTy [("inner", RecordTy [("a", BoolTy)])])
+        (Record [("inner", Record [("a", Tru)])])
+    )
+  putStrLn ""
 
-recordT :: Term
-recordT = Record [("foo", Tru), ("bar", Zero)]
+  -- Record elimination (Get)
+  section "Record Elimination (Get)"
+  test
+    "get foo { foo = True, bar = Zero } ==> True"
+    ( Get
+        "foo"
+        (Anno (RecordTy [("foo", BoolTy), ("bar", NatTy)]) (Record [("foo", Tru), ("bar", Zero)]))
+    )
+  test
+    "get bar { foo = True, bar = Zero } ==> Zero"
+    ( Get
+        "bar"
+        (Anno (RecordTy [("foo", BoolTy), ("bar", NatTy)]) (Record [("foo", Tru), ("bar", Zero)]))
+    )
+  test
+    "get from nested record: get a (get inner r)"
+    ( Get
+        "a"
+        ( Get
+            "inner"
+            ( Anno
+                (RecordTy [("inner", RecordTy [("a", BoolTy)])])
+                (Record [("inner", Record [("a", Fls)])])
+            )
+        )
+    )
+  putStrLn ""
 
-addT :: Term
-addT =
-  Anno
-    (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
-    (Lam "n" (Lam "m" (NatRec (Var "m") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "n"))))
+  -- Records as function arguments
+  section "Records as Function Arguments"
+  test
+    "(\\x. get foo x) { foo = True, bar = Zero } ==> True"
+    ( Ap
+        ( Anno
+            (RecordTy [("foo", BoolTy), ("bar", NatTy)] `FuncTy` BoolTy)
+            (Lam "x" (Get "foo" (Var "x")))
+        )
+        (Anno (RecordTy [("foo", BoolTy), ("bar", NatTy)]) (Record [("foo", Tru), ("bar", Zero)]))
+    )
+  putStrLn ""
 
--- λp. if p then False else True
-notT :: Term
-notT =
-  Anno
-    (BoolTy `FuncTy` BoolTy)
-    (Lam "x" (If (Var "x") Fls Tru))
+  -- Multiple fields of the same type
+  section "Disambiguating Same-Typed Fields"
+  test
+    "get a {a = True, b = False} ==> True"
+    ( Get
+        "a"
+        (Anno (RecordTy [("a", BoolTy), ("b", BoolTy)]) (Record [("a", Tru), ("b", Fls)]))
+    )
+  test
+    "get b {a = True, b = False} ==> False"
+    ( Get
+        "b"
+        (Anno (RecordTy [("a", BoolTy), ("b", BoolTy)]) (Record [("a", Tru), ("b", Fls)]))
+    )
+  putStrLn ""
 
--- λx. x
-idenT :: Term
-idenT =
-  Anno
-    (UnitTy `FuncTy` UnitTy)
-    (Lam "x" Hole)
+  -- Multiple gets from same bound variable
+  section "Multiple Gets from Same Record"
+  test
+    "(\\r. if (get a r) then (get b r) else Zero) {a = True, b = Succ Zero} ==> Succ Zero"
+    ( Ap
+        ( Anno
+            (RecordTy [("a", BoolTy), ("b", NatTy)] `FuncTy` NatTy)
+            (Lam "r" (If (Get "a" (Var "r")) (Get "b" (Var "r")) Zero))
+        )
+        (Anno (RecordTy [("a", BoolTy), ("b", NatTy)]) (Record [("a", Tru), ("b", Succ Zero)]))
+    )
+  putStrLn ""
 
--- λf. f
-idenT' :: Term
-idenT' =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "f" (Var "f"))
+  -- Field order independence
+  section "Field Order Independence"
+  test
+    "fields provided in different order than type: type {a, b} term {b, a}"
+    ( Anno
+        (RecordTy [("a", BoolTy), ("b", NatTy)])
+        (Record [("b", Zero), ("a", Tru)])
+    )
+  putStrLn ""
 
--- λx. λy. x
-constT :: Term
-constT =
-  Anno
-    (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "x" (Lam (Name "_") (Var "x")))
-
--- λf. λx. f x
-applyT :: Term
-applyT =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))
+  -- Error cases
+  section "Error Cases (expected failures)"
+  testErr
+    "Record checked at non-record type"
+    (Anno BoolTy (Record [("foo", Tru)]))
+  testErr
+    "Missing field: type expects {foo, bar} but term has {foo}"
+    ( Anno
+        (RecordTy [("foo", BoolTy), ("bar", NatTy)])
+        (Record [("foo", Tru)])
+    )
+  testErr
+    "Extra field: type expects {foo} but term has {foo, bar}"
+    ( Anno
+        (RecordTy [("foo", BoolTy)])
+        (Record [("foo", Tru), ("bar", Zero)])
+    )
+  testErr
+    "Field type mismatch: foo expected Bool but got ()"
+    ( Anno
+        (RecordTy [("foo", BoolTy)])
+        (Record [("foo", Unit)])
+    )
+  testErr
+    "Get non-existent field"
+    ( Get
+        "baz"
+        (Anno (RecordTy [("foo", BoolTy)]) (Record [("foo", Tru)]))
+    )
+  testErr
+    "Get from non-record type"
+    (Get "foo" (Anno BoolTy Tru))

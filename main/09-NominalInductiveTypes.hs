@@ -19,14 +19,14 @@ import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
 import Data.Align (Semialign (..))
-import Data.Foldable (find, foldl')
+import Data.Foldable (find)
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific)
 import Data.String
 import Data.These
-import Debug.Trace
+import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -731,7 +731,7 @@ caseTactic scrut cases = Check $ \motive -> do
   runSynth scrut >>= \case
     (AdtTy tyName, scrut'@(SCnstr nm _)) ->
       lookupDataTypeSpec nm $ \dataSpec -> do
-        let eliminators = Map.fromList $ traceShowId $ mkEliminator motive dataSpec
+        let eliminators = Map.fromList $ mkEliminator motive dataSpec
             checks = Map.fromList cases
             alignCases = \case
               These ty chk -> runCheck chk ty
@@ -995,71 +995,277 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
     (Right (type', syntax), holes) -> do
       let result = flip runEvalM Nil $ do
-            value <- eval $ traceShowId syntax
-            quote initLevel (traceShowId type') value
-      pure (result, holes)
+            value <- eval syntax
+            quote initLevel type' value
+      pure (RunResult syntax type' result, holes)
 
 main :: IO ()
-main =
-  case run (Cnstr "Cons" [Tru, Cnstr "Nil" []]) of
-    Left err -> print err
-    Right result -> print result
+main = do
+  let test = runTest run
+      testErr = runTestErr run
 
-caseMatch :: Term
-caseMatch =
-  Anno
-    BoolTy
-    (Case (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nil" []])) [("Nil", [], Fls), ("Cons", ["x", "xs"], Var "x")])
+  putStrLn "=== Nominal Inductive Types ==="
+  putStrLn ""
 
-subTypeApT :: Term
-subTypeApT =
-  Ap
-    ( Anno
-        (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
-        (Lam "x" (Get "foo" (Var "x")))
+  -- Lambda / application
+  section "Lambda & Application"
+  test
+    "identity: (\\x. x) () ==> ()"
+    ( Ap
+        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+        Unit
     )
-    recordT
+  test
+    "const: (\\x. \\y. x) () () ==> ()"
+    ( Ap
+        ( Ap
+            (Anno (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy)) (Lam "x" (Lam "_" (Var "x"))))
+            Unit
+        )
+        Unit
+    )
+  test
+    "not True ==> False"
+    ( Ap
+        (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
+        (Anno BoolTy Tru)
+    )
+  putStrLn ""
 
-recordT :: Term
-recordT = Record [("foo", Tru), ("bar", Unit), ("baz", Unit)]
+  -- Pairs
+  section "Pairs"
+  test
+    "fst (True, False) ==> True"
+    (Fst (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
+  test
+    "snd (True, False) ==> False"
+    (Snd (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
+  putStrLn ""
 
--- λp. if p then False else True
-notT :: Term
-notT =
-  Anno
-    (BoolTy `FuncTy` BoolTy)
-    (Lam "x" (If (Var "x") Fls Tru))
+  -- Sums
+  section "Sums"
+  test
+    "case InL True of InL x -> x | InR y -> y ==> True"
+    ( Anno
+        BoolTy
+        ( SumCase
+            (Anno (SumTy BoolTy BoolTy) (InL Tru))
+            ("x", Var "x")
+            ("y", Var "y")
+        )
+    )
+  test
+    "case InR False of InL x -> x | InR y -> y ==> False"
+    ( Anno
+        BoolTy
+        ( SumCase
+            (Anno (SumTy BoolTy BoolTy) (InR Fls))
+            ("x", Var "x")
+            ("y", Var "y")
+        )
+    )
+  putStrLn ""
 
--- λx. x
-idenT :: Term
-idenT =
-  Anno
-    (UnitTy `FuncTy` UnitTy)
-    (Lam "x" Hole)
+  -- Booleans / If
+  section "Booleans"
+  test
+    "if True then False else True ==> False"
+    (Anno BoolTy (If Tru Fls Tru))
+  test
+    "if False then False else True ==> True"
+    (Anno BoolTy (If Fls Fls Tru))
+  putStrLn ""
 
--- λf. f
-idenT' :: Term
-idenT' =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "f" (Var "f"))
+  -- Records
+  section "Records"
+  test
+    "get foo { foo = True, bar = () } ==> True"
+    ( Get
+        "foo"
+        (Anno (RecordTy [("foo", BoolTy), ("bar", UnitTy)]) (Record [("foo", Tru), ("bar", Unit)]))
+    )
+  putStrLn ""
 
--- λx. λy. x
-constT :: Term
-constT =
-  Anno
-    (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "x" (Lam (Name "_") (Var "x")))
+  -- Numeric subtyping
+  section "Numeric Subtyping"
+  test
+    "Natural 42 as Integer"
+    (Anno IntegerTy (Natural 42))
+  test
+    "Natural 42 as Real"
+    (Anno RealTy (Natural 42))
+  test
+    "Integer -3 as Real"
+    (Anno RealTy (Integer (-3)))
+  putStrLn ""
 
--- λf. λx. f x
-applyT :: Term
-applyT =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))
+  -- Record subtyping
+  section "Record Subtyping"
+  test
+    "({ foo : Bool, bar : Unit, baz : Unit } -> Bool) applied to wider record"
+    ( Ap
+        ( Anno
+            (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
+            (Lam "x" (Get "foo" (Var "x")))
+        )
+        (Anno (RecordTy [("foo", BoolTy), ("bar", UnitTy), ("baz", UnitTy)]) (Record [("foo", Tru), ("bar", Unit), ("baz", Unit)]))
+    )
+  putStrLn ""
+
+  -- Constructor tests
+  section "Construction"
+  test
+    "Nil"
+    (Cnstr "Nil" [])
+  test
+    "Cons True Nil"
+    (Cnstr "Cons" [Tru, Cnstr "Nil" []])
+  test
+    "Cons True (Cons False Nil)"
+    (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]])
+  test
+    "Nothing"
+    (Cnstr "Nothing" [])
+  test
+    "Just True"
+    (Cnstr "Just" [Tru])
+  putStrLn ""
+
+  -- Partial application of constructors
+  section "Partial Application"
+  test
+    "Cons (partially applied, returns function)"
+    (Cnstr "Cons" [])
+  test
+    "Cons True (partially applied, returns function)"
+    (Cnstr "Cons" [Tru])
+  test
+    "Just (partially applied, returns function)"
+    (Cnstr "Just" [])
+  putStrLn ""
+
+  -- Case elimination
+  -- NOTE: caseTactic has a known bug — it pattern matches on SCnstr in the
+  -- elaborated syntax, but fully-applied constructors elaborate to nested SAp,
+  -- not SCnstr. Only nullary constructors (Nil, Nothing) work as scrutinees.
+  section "Case Elimination"
+  test
+    "case Nil of Nil -> True | Cons x xs -> False ==> True"
+    ( Anno
+        BoolTy
+        ( Case
+            (Cnstr "Nil" [])
+            [("Nil", [], Tru), ("Cons", ["x", "xs"], Fls)]
+        )
+    )
+  test
+    "case (Cons True Nil) of Nil -> False | Cons x xs -> x ==> True"
+    ( Anno
+        BoolTy
+        ( Case
+            (Cnstr "Cons" [Tru, Cnstr "Nil" []])
+            [("Nil", [], Fls), ("Cons", ["x", "xs"], Var "x")]
+        )
+    )
+  test
+    "case (Cons False Nil) of Nil -> True | Cons x xs -> x ==> False"
+    ( Anno
+        BoolTy
+        ( Case
+            (Cnstr "Cons" [Fls, Cnstr "Nil" []])
+            [("Nil", [], Tru), ("Cons", ["x", "xs"], Var "x")]
+        )
+    )
+  test
+    "case Nothing of Nothing -> True | Just x -> x ==> True"
+    ( Anno
+        BoolTy
+        ( Case
+            (Cnstr "Nothing" [])
+            [("Nothing", [], Tru), ("Just", ["x"], Var "x")]
+        )
+    )
+  test
+    "case (Just False) of Nothing -> True | Just x -> x ==> False"
+    ( Anno
+        BoolTy
+        ( Case
+            (Cnstr "Just" [Fls])
+            [("Nothing", [], Tru), ("Just", ["x"], Var "x")]
+        )
+    )
+  putStrLn ""
+
+  -- Nested case
+  section "Nested / Recursive"
+  test
+    "case (Cons True (Cons False Nil)) of Nil -> Nil | Cons x xs -> xs ==> Cons False Nil"
+    ( Anno
+        (AdtTy "ListBool")
+        ( Case
+            (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]])
+            [("Nil", [], Cnstr "Nil" []), ("Cons", ["x", "xs"], Var "xs")]
+        )
+    )
+  test
+    "case (case (Cons True (Cons False Nil)) of ... -> xs) of ... -> x ==> False"
+    ( Anno
+        BoolTy
+        ( Case
+            ( Anno
+                (AdtTy "ListBool")
+                ( Case
+                    (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]])
+                    [("Nil", [], Cnstr "Nil" []), ("Cons", ["x", "xs"], Var "xs")]
+                )
+            )
+            [("Nil", [], Tru), ("Cons", ["x", "xs"], Var "x")]
+        )
+    )
+  putStrLn ""
+
+  -- Holes
+  section "Holes"
+  test
+    "identity with hole body"
+    ( Anno
+        (UnitTy `FuncTy` UnitTy)
+        (Lam "x" Hole)
+    )
+  test
+    "Cons ? Nil (hole in constructor arg)"
+    (Cnstr "Cons" [Hole, Cnstr "Nil" []])
+  putStrLn ""
+
+  -- Error cases
+  section "Error Cases (expected failures)"
+  testErr
+    "Too many args: Cons True False Nil"
+    (Cnstr "Cons" [Tru, Fls, Cnstr "Nil" []])
+  testErr
+    "Unknown constructor"
+    (Cnstr "Bogus" [])
+  testErr
+    "Type mismatch in constructor arg"
+    (Cnstr "Just" [Unit])
+  testErr
+    "Case on non-ADT type"
+    ( Anno
+        BoolTy
+        (Case (Anno BoolTy Tru) [("Nil", [], Fls)])
+    )
+  testErr
+    "Cannot synthesize lambda"
+    (Lam "x" (Var "x"))
+  testErr
+    "Absurd on non-Void"
+    ( Anno
+        BoolTy
+        (Absurd (Anno BoolTy Tru))
+    )

@@ -20,6 +20,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String
 import Data.These (These (..))
+import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -709,7 +710,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
@@ -717,78 +718,172 @@ run term =
       let result = flip runEvalM Nil $ do
             value <- eval syntax
             quote initLevel type' value
-      pure (result, holes)
+      pure (RunResult syntax type' result, holes)
 
 main :: IO ()
-main =
-  case run caseTestR of
-    Left err -> print err
-    Right result -> print result
+main = do
+  let test = runTest run
+      testErr = runTestErr run
 
-getTest :: Term
-getTest =
-  Ap
+  putStrLn "=== Sum Types ==="
+  putStrLn ""
+
+  -- InL / InR introduction
+  section "Sum Introduction"
+  test
+    "InL True : Bool + Nat"
+    (Anno (SumTy BoolTy NatTy) (InL Tru))
+  test
+    "InR Zero : Bool + Nat"
+    (Anno (SumTy BoolTy NatTy) (InR Zero))
+  test
+    "InL () : Unit + Bool"
+    (Anno (SumTy UnitTy BoolTy) (InL Unit))
+  test
+    "InR (InL True) : Nat + (Bool + Unit) — nested sum"
+    (Anno (SumTy NatTy (SumTy BoolTy UnitTy)) (InR (InL Tru)))
+  putStrLn ""
+
+  -- Case elimination
+  section "Case Elimination"
+  test
+    "case (InL True : Bool + Nat) of InL x -> x | InR n -> False ==> True"
     ( Anno
-        (RecordTy [("foo", BoolTy), ("bar", NatTy)] `FuncTy` BoolTy)
-        (Lam "x" (Get "foo" (Var "x")))
+        BoolTy
+        ( Case
+            (Anno (SumTy BoolTy NatTy) (InL Tru))
+            ("x", Var "x")
+            ("n", Fls)
+        )
     )
-    recordT
+  test
+    "case (InR 0 : Bool + Nat) of InL b -> Succ Zero | InR n -> n ==> Zero"
+    ( Anno
+        NatTy
+        ( Case
+            (Anno (SumTy BoolTy NatTy) (InR Zero))
+            ("b", Succ Zero)
+            ("n", Var "n")
+        )
+    )
+  test
+    "case (InL True : Bool + Nat) of InL b -> if b then 1 else 0 | InR n -> n ==> 1"
+    ( Anno
+        NatTy
+        ( Case
+            (Anno (SumTy BoolTy NatTy) (InL Tru))
+            ("b", If (Var "b") (Succ Zero) Zero)
+            ("n", Var "n")
+        )
+    )
+  test
+    "case (InR (Succ (Succ Zero)) : Bool + Nat) of InL b -> ... | InR n -> n ==> 2"
+    ( Anno
+        NatTy
+        ( Case
+            (Anno (SumTy BoolTy NatTy) (InR (Succ (Succ Zero))))
+            ("b", If (Var "b") (Succ Zero) Zero)
+            ("n", Var "n")
+        )
+    )
+  putStrLn ""
 
-recordT :: Term
-recordT = Record [("foo", Tru), ("bar", Zero)]
+  -- Case as a function (lambda wrapping case)
+  section "Case in Lambda"
+  test
+    "(\\x. case x of InL b -> if b then 1 else 0 | InR n -> n) (InL True) ==> 1"
+    ( Ap
+        ( Anno
+            (SumTy BoolTy NatTy `FuncTy` NatTy)
+            (Lam "x" (Case (Var "x") ("b", If (Var "b") (Succ Zero) Zero) ("n", Var "n")))
+        )
+        (Anno (SumTy BoolTy NatTy) (InL Tru))
+    )
+  test
+    "(\\x. case x of InL b -> ... | InR n -> n) (InR 2) ==> 2"
+    ( Ap
+        ( Anno
+            (SumTy BoolTy NatTy `FuncTy` NatTy)
+            (Lam "x" (Case (Var "x") ("b", If (Var "b") (Succ Zero) Zero) ("n", Var "n")))
+        )
+        (Anno (SumTy BoolTy NatTy) (InR (Succ (Succ Zero))))
+    )
+  putStrLn ""
 
-addT :: Term
-addT =
-  Anno
-    (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
-    (Lam "n" (Lam "m" (NatRec (Var "m") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "n"))))
+  -- Nested case
+  section "Nested Case"
+  test
+    "case (InL (InL True)) of InL x -> case x of InL b -> b | InR _ -> False | InR _ -> False"
+    ( Anno
+        BoolTy
+        ( Case
+            (Anno (SumTy (SumTy BoolTy NatTy) UnitTy) (InL (InL Tru)))
+            ("x", Case (Var "x") ("b", Var "b") ("_", Fls))
+            ("_", Fls)
+        )
+    )
+  putStrLn ""
 
--- λp. if p then False else True
-notT :: Term
-notT =
-  Anno
-    (BoolTy `FuncTy` BoolTy)
-    (Lam "x" (If (Var "x") Fls Tru))
+  -- Sum with richer payload types
+  section "Sums with Compound Payloads"
+  test
+    "InL (True, Zero) : (Bool * Nat) + Unit"
+    (Anno (SumTy (PairTy BoolTy NatTy) UnitTy) (InL (Pair Tru Zero)))
+  test
+    "case InL (True, Zero) of InL p -> fst p | InR _ -> False ==> True"
+    ( Anno
+        BoolTy
+        ( Case
+            (Anno (SumTy (PairTy BoolTy NatTy) UnitTy) (InL (Pair Tru Zero)))
+            ("p", Fst (Var "p"))
+            ("_", Fls)
+        )
+    )
+  test
+    "InR (\\x. x) : Bool + (Nat -> Nat)"
+    (Anno (SumTy BoolTy (NatTy `FuncTy` NatTy)) (InR (Lam "x" (Var "x"))))
+  putStrLn ""
 
--- λx. x
-idenT :: Term
-idenT =
-  Anno
-    (UnitTy `FuncTy` UnitTy)
-    (Lam "x" Hole)
+  -- Void / Absurd
+  section "Void Elimination"
+  test
+    "\\x. absurd x : Void -> Bool"
+    ( Anno
+        (VoidTy `FuncTy` BoolTy)
+        (Lam "x" (Absurd (Var "x")))
+    )
+  test
+    "\\x. absurd x : Void -> Nat"
+    ( Anno
+        (VoidTy `FuncTy` NatTy)
+        (Lam "x" (Absurd (Var "x")))
+    )
+  putStrLn ""
 
--- λf. f
-idenT' :: Term
-idenT' =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "f" (Var "f"))
-
--- λx. λy. x
-constT :: Term
-constT =
-  Anno
-    (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "x" (Lam (Name "_") (Var "x")))
-
--- λf. λx. f x
-applyT :: Term
-applyT =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))
-
--- λx. case x of inl b -> if b then 1 else 0 | inr n -> n
-caseTest :: Term
-caseTest =
-  Anno
-    (SumTy BoolTy NatTy `FuncTy` NatTy)
-    (Lam "x" (Case (Var "x") ("b", If (Var "b") (Succ Zero) Zero) ("n", Var "n")))
-
--- caseTest (inl True) : Nat
-caseTestL :: Term
-caseTestL = Ap caseTest (Anno (SumTy BoolTy NatTy) (InL Tru))
-
--- caseTest (inr 2) : Nat
-caseTestR :: Term
-caseTestR = Ap caseTest (Anno (SumTy BoolTy NatTy) (InR (Succ (Succ Zero))))
+  -- Error cases
+  section "Error Cases (expected failures)"
+  testErr
+    "InL True checked at non-sum type Nat"
+    (Anno NatTy (InL Tru))
+  testErr
+    "InR True checked at non-sum type Bool"
+    (Anno BoolTy (InR Tru))
+  testErr
+    "Case on non-sum scrutinee"
+    ( Anno
+        BoolTy
+        ( Case
+            (Anno BoolTy Tru)
+            ("x", Var "x")
+            ("y", Var "y")
+        )
+    )
+  testErr
+    "Absurd on non-Void type"
+    ( Anno
+        BoolTy
+        (Absurd (Anno BoolTy Tru))
+    )
+  testErr
+    "InL type mismatch: InL Zero at Bool + Nat"
+    (Anno (SumTy BoolTy NatTy) (InL Zero))

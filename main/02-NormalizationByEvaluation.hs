@@ -12,6 +12,7 @@ import Control.Monad.Reader (MonadReader (..))
 import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Data.String
+import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -356,41 +357,124 @@ quoteFrame l tm = \case
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either Error Term
-run term = do
-  type' <- runTypecheckM (runSynth $ synth term) initEnv
-  pure $ flip runEvalM Nil $ (eval >=> quote initLevel type') term
+run :: Term -> Either (Error, ()) (RunResult () Type Term, ())
+run term =
+  case runTypecheckM (runSynth $ synth term) initEnv of
+    Left err -> Left (err, ())
+    Right type' -> do
+      let result = flip runEvalM Nil $ (eval >=> quote initLevel type') term
+      pure (RunResult () type' result, ())
 
 main :: IO ()
-main =
-  case run (Ap idenT Unit) of
-    Left err -> print err
-    Right val -> print val
+main = do
+  let test = runTest run
+      testErr = runTestErr run
 
--- λx. x
-idenT :: Term
-idenT =
-  Anno
-    (UnitTy `FuncTy` UnitTy)
-    (Lam (Name "x") (Var (Ix 0)))
+  putStrLn "=== Normalization by Evaluation ==="
+  putStrLn ""
 
--- λf. f
-idenT' :: Term
-idenT' =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "f") (Var (Ix 0)))
+  -- Beta reduction — (λx. body) arg normalizes by substitution
+  section "Beta Reduction"
+  test
+    "(\\x. x) () ==> ()"
+    ( Ap
+        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+        Unit
+    )
+  test
+    "(\\x. \\y. x) () () ==> ()"
+    ( Ap
+        ( Ap
+            ( Anno
+                (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
+                (Lam "x" (Lam "_" (Var (Ix 1))))
+            )
+            Unit
+        )
+        Unit
+    )
+  test
+    "(\\f. \\x. f x) (\\x. x) () ==> ()"
+    ( Ap
+        ( Ap
+            ( Anno
+                ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+                (Lam "f" (Lam "x" (Ap (Var (Ix 1)) (Var (Ix 0)))))
+            )
+            (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+        )
+        Unit
+    )
+  putStrLn ""
 
--- λx. λy. x
-constT :: Term
-constT =
-  Anno
-    (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "x") (Lam (Name "_") (Var (Ix 1))))
+  -- Eta expansion — λf. f at (A -> B) -> (A -> B) normalizes to λf. λx. f x
+  section "Eta Expansion"
+  test
+    "\\f. f : (U->U) -> (U->U) normalizes to \\f. \\x. f x"
+    ( Anno
+        ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+        (Lam "f" (Var (Ix 0)))
+    )
+  test
+    "\\x. x : U -> U stays as \\x. x (no expansion at base return type)"
+    ( Anno
+        (UnitTy `FuncTy` UnitTy)
+        (Lam "x" (Var (Ix 0)))
+    )
+  test
+    "\\f. f : ((U->U)->U) -> ((U->U)->U) eta-expands inner arg"
+    ( Anno
+        (((UnitTy `FuncTy` UnitTy) `FuncTy` UnitTy) `FuncTy` ((UnitTy `FuncTy` UnitTy) `FuncTy` UnitTy))
+        (Lam "f" (Var (Ix 0)))
+    )
+  putStrLn ""
 
--- λf. λx. f x
-applyT :: Term
-applyT =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "f") (Lam (Name "x") (Ap (Var (Ix 1)) (Var (Ix 0)))))
+  -- Pair normalization
+  section "Pair Normalization"
+  test
+    "((), ()) : U * U"
+    (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit))
+  test
+    "fst ((), ()) ==> ()"
+    (Fst (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
+  test
+    "snd ((), ()) ==> ()"
+    (Snd (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
+  test
+    "\\x. (x, x) : U -> U * U"
+    ( Anno
+        (UnitTy `FuncTy` PairTy UnitTy UnitTy)
+        (Lam "x" (Pair (Var (Ix 0)) (Var (Ix 0))))
+    )
+  putStrLn ""
+
+  -- Beta + eta combined
+  section "Beta and Eta Combined"
+  test
+    "(\\f. f) (\\x. x) : (U->U) -> (U->U) normalizes to \\x. x"
+    ( Ap
+        ( Anno
+            ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+            (Lam "f" (Var (Ix 0)))
+        )
+        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+    )
+  putStrLn ""
+
+  -- Error cases
+  section "Error Cases (expected failures)"
+  testErr
+    "Cannot synthesize lambda"
+    (Lam "x" (Var (Ix 0)))
+  testErr
+    "Cannot synthesize pair"
+    (Pair Unit Unit)
+  testErr
+    "Cannot synthesize unit"
+    Unit
+  testErr
+    "Apply non-function"
+    (Ap (Anno UnitTy Unit) Unit)
+  testErr
+    "Type mismatch: pair checked at function type"
+    (Anno (UnitTy `FuncTy` UnitTy) (Pair Unit Unit))

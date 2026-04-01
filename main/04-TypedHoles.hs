@@ -16,6 +16,7 @@ import Control.Monad.Writer.Strict (MonadWriter (..))
 import Data.Foldable (find)
 import Data.Maybe (fromMaybe)
 import Data.String
+import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -428,7 +429,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
@@ -436,38 +437,125 @@ run term =
       let result = flip runEvalM Nil $ do
             value <- eval syntax
             quote initLevel type' value
-      pure (result, holes)
+      pure (RunResult syntax type' result, holes)
 
 main :: IO ()
-main =
-  case run (Ap idenT Hole) of
-    Left err -> print err
-    Right result -> print result
+main = do
+  let test = runTest run
+      testErr = runTestErr run
 
--- λx. x
-idenT :: Term
-idenT =
-  Anno
-    (UnitTy `FuncTy` UnitTy)
-    (Lam (Name "x") Hole)
+  putStrLn "=== Typed Holes ==="
+  putStrLn ""
 
--- λf. f
-idenT' :: Term
-idenT' =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "f") (Var "f"))
+  -- Hole in checked position — takes on the expected type
+  section "Hole in Checked Position"
+  test
+    "? checked at Unit — hole takes type Unit"
+    (Anno UnitTy Hole)
+  test
+    "? checked at Unit -> Unit — hole takes function type"
+    (Anno (UnitTy `FuncTy` UnitTy) Hole)
+  test
+    "? checked at (Unit * Unit) — hole takes pair type"
+    (Anno (PairTy UnitTy UnitTy) Hole)
+  putStrLn ""
 
--- λx. λy. x
-constT :: Term
-constT =
-  Anno
-    (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "x") (Lam (Name "_") (Var "f")))
+  -- Hole in lambda body — infers type from context
+  section "Hole in Lambda Body"
+  test
+    "\\x. ? : Unit -> Unit — hole gets type Unit"
+    ( Anno
+        (UnitTy `FuncTy` UnitTy)
+        (Lam "x" Hole)
+    )
+  test
+    "\\x. ? : Unit -> (Unit * Unit) — hole gets pair type"
+    ( Anno
+        (UnitTy `FuncTy` PairTy UnitTy UnitTy)
+        (Lam "x" Hole)
+    )
+  test
+    "\\f. \\x. ? : (Unit -> Unit) -> Unit -> Unit — hole gets Unit"
+    ( Anno
+        ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+        (Lam "f" (Lam "x" Hole))
+    )
+  putStrLn ""
 
--- λf. λx. f x
-applyT :: Term
-applyT =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "f") (Lam (Name "x") (Ap (Var "f") (Var "x"))))
+  -- Hole in pair components
+  section "Hole in Pair"
+  test
+    "(?, ()) : Unit * Unit — hole in fst"
+    ( Anno
+        (PairTy UnitTy UnitTy)
+        (Pair Hole Unit)
+    )
+  test
+    "((), ?) : Unit * Unit — hole in snd"
+    ( Anno
+        (PairTy UnitTy UnitTy)
+        (Pair Unit Hole)
+    )
+  test
+    "(?, ?) : Unit * Unit — holes in both"
+    ( Anno
+        (PairTy UnitTy UnitTy)
+        (Pair Hole Hole)
+    )
+  putStrLn ""
+
+  -- Holes at complex types
+  section "Holes at Complex Types"
+  test
+    "\\f. ? : (Unit -> Unit) -> Unit — hole at Unit in higher-order context"
+    ( Anno
+        ((UnitTy `FuncTy` UnitTy) `FuncTy` UnitTy)
+        (Lam "f" Hole)
+    )
+  test
+    "\\f. (f ?, ?) : (Unit -> Unit) -> Unit * Unit — holes at different positions"
+    ( Anno
+        ((UnitTy `FuncTy` UnitTy) `FuncTy` PairTy UnitTy UnitTy)
+        (Lam "f" (Pair (Ap (Var "f") Hole) Hole))
+    )
+  test
+    "(?, ((), ?)) : Unit * (Unit * Unit) — holes in nested pair"
+    ( Anno
+        (PairTy UnitTy (PairTy UnitTy UnitTy))
+        (Pair Hole (Pair Unit Hole))
+    )
+  test
+    "\\x. \\y. ? : Unit -> (Unit -> Unit) -> Unit * Unit — hole gets pair type under two binders"
+    ( Anno
+        (UnitTy `FuncTy` ((UnitTy `FuncTy` UnitTy) `FuncTy` PairTy UnitTy UnitTy))
+        (Lam "x" (Lam "y" Hole))
+    )
+  putStrLn ""
+
+  -- Hole as function argument — goes through sub tactic
+  section "Hole as Function Argument"
+  test
+    "(\\x. x : Unit -> Unit) ? — hole elaborated as argument"
+    ( Ap
+        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+        (Anno UnitTy Hole)
+    )
+  test
+    "(\\f. f : (Unit -> Unit) -> (Unit -> Unit)) ? — hole at function type as argument"
+    ( Ap
+        ( Anno
+            ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+            (Lam "f" (Var "f"))
+        )
+        (Anno (UnitTy `FuncTy` UnitTy) Hole)
+    )
+  putStrLn ""
+
+  -- Hole in synthesized position — cannot synthesize
+  section "Hole in Synth Position (expected failure)"
+  testErr
+    "bare ? — cannot synthesize hole"
+    Hole
+  testErr
+    "? applied to () — cannot synthesize function hole"
+    (Ap Hole Unit)

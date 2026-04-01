@@ -14,6 +14,7 @@ import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Data.Foldable (find)
 import Data.Maybe (fromMaybe)
 import Data.String
+import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -401,44 +402,151 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either Error Syntax
-run term = do
-  (type', syntax) <- runTypecheckM (runSynth $ synth term) initEnv
-  let result = flip runEvalM Nil $ do
-        value <- eval syntax
-        quote initLevel type' value
-  pure result
+run :: Term -> Either (Error, ()) (RunResult Syntax Type Syntax, ())
+run term =
+  case runTypecheckM (runSynth $ synth term) initEnv of
+    Left err -> Left (err, ())
+    Right (type', syntax) -> do
+      let result = flip runEvalM Nil $ do
+            value <- eval syntax
+            quote initLevel type' value
+      pure (RunResult syntax type' result, ())
 
 main :: IO ()
-main =
-  case run (Ap idenT Unit) of
-    Left err -> print err
-    Right result -> print result
+main = do
+  let test = runTest run
+      testErr = runTestErr run
 
--- λx. x
-idenT :: Term
-idenT =
-  Anno
-    (UnitTy `FuncTy` UnitTy)
-    (Lam (Name "x") (Var "x"))
+  putStrLn "=== Elaboration ==="
+  putStrLn ""
 
--- λf. f
-idenT' :: Term
-idenT' =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "f") (Var "f"))
+  -- Elaboration of variables — names become de Bruijn indices
+  section "Variable Elaboration"
+  test
+    "\\x. x : Unit -> Unit — Var \"x\" elaborates to SVar 0"
+    ( Anno
+        (UnitTy `FuncTy` UnitTy)
+        (Lam "x" (Var "x"))
+    )
+  test
+    "\\x. \\y. x : Unit -> Unit -> Unit — Var \"x\" elaborates to SVar 1"
+    ( Anno
+        (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
+        (Lam "x" (Lam "y" (Var "x")))
+    )
+  test
+    "\\x. \\y. y : Unit -> Unit -> Unit — Var \"y\" elaborates to SVar 0"
+    ( Anno
+        (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
+        (Lam "x" (Lam "y" (Var "y")))
+    )
+  putStrLn ""
 
--- λx. λy. x
-constT :: Term
-constT =
-  Anno
-    (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "x") (Lam (Name "_") (Var "f")))
+  -- Elaboration of application
+  section "Application Elaboration"
+  test
+    "(\\x. x : Unit -> Unit) () ==> ()"
+    ( Ap
+        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+        Unit
+    )
+  test
+    "(\\f. f : (U->U) -> U->U) (\\x. x : U->U) — higher-order"
+    ( Ap
+        ( Anno
+            ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+            (Lam "f" (Var "f"))
+        )
+        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+    )
+  test
+    "(\\f. \\x. f x) (\\x. x) () ==> ()"
+    ( Ap
+        ( Ap
+            ( Anno
+                ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+                (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))
+            )
+            (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+        )
+        Unit
+    )
+  putStrLn ""
 
--- λf. λx. f x
-applyT :: Term
-applyT =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "f") (Lam (Name "x") (Ap (Var "f") (Var "x"))))
+  -- Elaboration of pairs — checked, not synthesized
+  section "Pair Elaboration"
+  test
+    "((), ()) : Unit * Unit"
+    ( Anno
+        (PairTy UnitTy UnitTy)
+        (Pair Unit Unit)
+    )
+  test
+    "fst ((), ()) ==> ()"
+    (Fst (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
+  test
+    "snd ((), ()) ==> ()"
+    (Snd (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
+  test
+    "nested pair (((), ()), ()) : (Unit * Unit) * Unit"
+    ( Anno
+        (PairTy (PairTy UnitTy UnitTy) UnitTy)
+        (Pair (Pair Unit Unit) Unit)
+    )
+  putStrLn ""
+
+  -- NbE through elaboration — shows Term -> Syntax -> Value -> Syntax pipeline
+  section "NbE Through Elaboration"
+  test
+    "eta-expansion: \\f. f elaborates and normalizes to \\f. \\x. f x"
+    ( Anno
+        ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+        (Lam "f" (Var "f"))
+    )
+  test
+    "beta reduction through elaboration: (\\x. x) () ==> ()"
+    ( Ap
+        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+        Unit
+    )
+  test
+    "pair in function: \\x. (x, x) : Unit -> Unit * Unit"
+    ( Anno
+        (UnitTy `FuncTy` PairTy UnitTy UnitTy)
+        (Lam "x" (Pair (Var "x") (Var "x")))
+    )
+  putStrLn ""
+
+  -- Sub tactic — synthesized terms used in checked positions
+  section "Sub Tactic (Synth in Check Position)"
+  test
+    "Anno used in checked position: (\\x. x : U -> U) checked at U -> U"
+    ( Anno
+        (UnitTy `FuncTy` UnitTy)
+        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+    )
+  putStrLn ""
+
+  -- Error cases
+  section "Error Cases (expected failures)"
+  testErr
+    "Cannot synthesize lambda"
+    (Lam "x" (Var "x"))
+  testErr
+    "Cannot synthesize pair"
+    (Pair Unit Unit)
+  testErr
+    "Cannot synthesize unit"
+    Unit
+  testErr
+    "Out of scope variable"
+    (Anno UnitTy (Var "x"))
+  testErr
+    "Type mismatch: Unit checked at function type"
+    (Anno (UnitTy `FuncTy` UnitTy) Unit)
+  testErr
+    "Apply non-function"
+    ( Ap
+        (Anno UnitTy Unit)
+        Unit
+    )

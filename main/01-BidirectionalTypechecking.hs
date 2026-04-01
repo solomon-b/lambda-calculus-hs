@@ -10,6 +10,7 @@ import Control.Monad.Reader (MonadReader (..))
 import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Data.String
+import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -292,40 +293,157 @@ instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either Error Value
+run :: Term -> Either (Error, ()) (RunResult () Type Value, ())
 run term =
-  flip runEvalM Nil . eval . const term <$> runTypecheckM (runSynth $ synth term) initEnv
+  case runTypecheckM (runSynth $ synth term) initEnv of
+    Left err -> Left (err, ())
+    Right type' -> do
+      let value = flip runEvalM Nil $ eval term
+      pure (RunResult () type' value, ())
 
 main :: IO ()
-main =
-  case run (Ap idenT Unit) of
-    Left err -> print err
-    Right val -> print val
+main = do
+  let test = runTest run
+      testErr = runTestErr run
 
--- λx. x
-idenT :: Term
-idenT =
-  Anno
-    (UnitTy `FuncTy` UnitTy)
-    (Lam (Name "x") (Var (Ix 0)))
+  putStrLn "=== Bidirectional Typechecking ==="
+  putStrLn ""
 
--- λf. f
-idenT' :: Term
-idenT' =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "f") (Var (Ix 0)))
+  -- Synth: Anno pushes type info in, enabling check of the body
+  section "Anno (Synth)"
+  test
+    "() : Unit"
+    (Anno UnitTy Unit)
+  test
+    "\\x. x : Unit -> Unit"
+    (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+  test
+    "((), ()) : Unit * Unit"
+    (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit))
+  putStrLn ""
 
--- λx. λy. x
-constT :: Term
-constT =
-  Anno
-    (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "x") (Lam (Name "_") (Var (Ix 1))))
+  -- Synth: Var
+  section "Var (Synth)"
+  test
+    "(\\x. x : U -> U) () — Var 0 synthesizes from context"
+    ( Ap
+        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+        Unit
+    )
+  test
+    "(\\x. \\y. x : U -> U -> U) () () — Var 1 reaches outer binder"
+    ( Ap
+        ( Ap
+            ( Anno
+                (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
+                (Lam "x" (Lam "_" (Var (Ix 1))))
+            )
+            Unit
+        )
+        Unit
+    )
+  putStrLn ""
 
--- λf. λx. f x
-applyT :: Term
-applyT =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam (Name "f") (Lam (Name "x") (Ap (Var (Ix 1)) (Var (Ix 0)))))
+  -- Synth: Ap
+  section "Application (Synth)"
+  test
+    "(\\f. \\x. f x : (U->U) -> U -> U) (\\x. x) () ==> ()"
+    ( Ap
+        ( Ap
+            ( Anno
+                ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+                (Lam "f" (Lam "x" (Ap (Var (Ix 1)) (Var (Ix 0)))))
+            )
+            (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+        )
+        Unit
+    )
+  putStrLn ""
+
+  -- Synth: Fst / Snd
+  section "Fst / Snd (Synth)"
+  test
+    "fst ((), ()) ==> ()"
+    (Fst (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
+  test
+    "snd ((), ()) ==> ()"
+    (Snd (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
+  putStrLn ""
+
+  -- Check: Lam — checks body against return type
+  section "Lambda (Check)"
+  test
+    "\\x. x checked at U -> U"
+    (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+  test
+    "\\x. \\y. x checked at U -> U -> U"
+    ( Anno
+        (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
+        (Lam "x" (Lam "y" (Var (Ix 1))))
+    )
+  test
+    "\\f. \\x. f x checked at (U->U) -> U -> U"
+    ( Anno
+        ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+        (Lam "f" (Lam "x" (Ap (Var (Ix 1)) (Var (Ix 0)))))
+    )
+  putStrLn ""
+
+  -- Check: Pair — checks each component
+  section "Pair (Check)"
+  test
+    "nested pair (((), ()), ()) : (U * U) * U"
+    ( Anno
+        (PairTy (PairTy UnitTy UnitTy) UnitTy)
+        (Pair (Pair Unit Unit) Unit)
+    )
+  putStrLn ""
+
+  -- Sub tactic: synth term used in check position
+  section "Sub Tactic (Synth in Check Position)"
+  test
+    "fst used in check position: \\x. fst x checked at (U*U) -> U"
+    ( Anno
+        (PairTy UnitTy UnitTy `FuncTy` UnitTy)
+        (Lam "x" (Fst (Var (Ix 0))))
+    )
+  test
+    "anno in check position: (\\x. x : U -> U) inside anno"
+    ( Anno
+        (UnitTy `FuncTy` UnitTy)
+        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+    )
+  putStrLn ""
+
+  -- Error cases
+  section "Error Cases (expected failures)"
+  testErr
+    "Cannot synthesize lambda"
+    (Lam "x" (Var (Ix 0)))
+  testErr
+    "Cannot synthesize pair"
+    (Pair Unit Unit)
+  testErr
+    "Cannot synthesize unit"
+    Unit
+  testErr
+    "Out of scope variable (Ix 0 in empty context)"
+    (Anno UnitTy (Var (Ix 0)))
+  testErr
+    "Lambda checked at non-function type"
+    (Anno UnitTy (Lam "x" (Var (Ix 0))))
+  testErr
+    "Unit checked at function type"
+    (Anno (UnitTy `FuncTy` UnitTy) Unit)
+  testErr
+    "Apply non-function"
+    (Ap (Anno UnitTy Unit) Unit)
+  testErr
+    "Pair checked at non-pair type"
+    (Anno UnitTy (Pair Unit Unit))
+  testErr
+    "Type mismatch via sub tactic"
+    ( Anno
+        (PairTy UnitTy UnitTy)
+        (Anno UnitTy Unit)
+    )

@@ -16,6 +16,7 @@ import Control.Monad.Writer.Strict (MonadWriter (..))
 import Data.Foldable (find)
 import Data.Maybe (fromMaybe)
 import Data.String
+import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -553,7 +554,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
@@ -561,51 +562,169 @@ run term =
       let result = flip runEvalM Nil $ do
             value <- eval syntax
             quote initLevel type' value
-      pure (result, holes)
+      pure (RunResult syntax type' result, holes)
 
 main :: IO ()
-main =
-  case run addT of
-    Left err -> print err
-    Right result -> print result
+main = do
+  let test = runTest run
+      testErr = runTestErr run
 
-addT :: Term
-addT =
-  Anno
-    (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
-    (Lam "n" (Lam "m" (NatRec (Var "m") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "n"))))
+  putStrLn "=== System T ==="
+  putStrLn ""
 
--- λp. if p then False else True
-notT :: Term
-notT =
-  Anno
-    (BoolTy `FuncTy` BoolTy)
-    (Lam "x" (If (Var "x") Fls Tru))
+  -- Nat introduction
+  section "Nat Introduction"
+  test
+    "Zero"
+    (Anno NatTy Zero)
+  test
+    "Succ Zero (1)"
+    (Anno NatTy (Succ Zero))
+  test
+    "Succ (Succ (Succ Zero)) (3)"
+    (Anno NatTy (Succ (Succ (Succ Zero))))
+  putStrLn ""
 
--- λx. x
-idenT :: Term
-idenT =
-  Anno
-    (UnitTy `FuncTy` UnitTy)
-    (Lam "x" Hole)
+  -- NatRec — base case
+  section "NatRec Base Case"
+  test
+    "natrec True (\\x.\\y. False) Zero ==> True"
+    ( Anno
+        BoolTy
+        (NatRec Tru (Lam "x" (Lam "y" Fls)) Zero)
+    )
+  test
+    "natrec Zero (\\x.\\y. Succ y) Zero ==> Zero"
+    ( Anno
+        NatTy
+        (NatRec Zero (Lam "x" (Lam "y" (Succ (Var "y")))) Zero)
+    )
+  putStrLn ""
 
--- λf. f
-idenT' :: Term
-idenT' =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "f" (Var "f"))
+  -- NatRec — successor cases
+  section "NatRec Successor Cases"
+  test
+    "natrec Zero (\\x.\\y. Succ y) (Succ Zero) ==> Succ Zero (add 1 0)"
+    ( Anno
+        NatTy
+        (NatRec Zero (Lam "x" (Lam "y" (Succ (Var "y")))) (Succ Zero))
+    )
+  test
+    "natrec Zero (\\x.\\y. Succ y) (Succ (Succ Zero)) ==> Succ (Succ Zero) (add 2 0)"
+    ( Anno
+        NatTy
+        (NatRec Zero (Lam "x" (Lam "y" (Succ (Var "y")))) (Succ (Succ Zero)))
+    )
+  putStrLn ""
 
--- λx. λy. x
-constT :: Term
-constT =
-  Anno
-    (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "x" (Lam (Name "_") (Var "x")))
+  -- NatRec — addition via lambda
+  section "NatRec as Addition"
+  test
+    "add 2 1 ==> 3"
+    ( Ap
+        ( Ap
+            ( Anno
+                (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
+                (Lam "n" (Lam "m" (NatRec (Var "m") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "n"))))
+            )
+            (Anno NatTy (Succ (Succ Zero)))
+        )
+        (Anno NatTy (Succ Zero))
+    )
+  test
+    "add 0 3 ==> 3"
+    ( Ap
+        ( Ap
+            ( Anno
+                (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
+                (Lam "n" (Lam "m" (NatRec (Var "m") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "n"))))
+            )
+            (Anno NatTy Zero)
+        )
+        (Anno NatTy (Succ (Succ (Succ Zero))))
+    )
+  putStrLn ""
 
--- λf. λx. f x
-applyT :: Term
-applyT =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))
+  -- NatRec — using the predecessor argument
+  section "NatRec Using Predecessor"
+  test
+    "isZero: natrec True (\\x.\\y. False) 0 ==> True"
+    ( Anno
+        BoolTy
+        (NatRec Tru (Lam "_" (Lam "_" Fls)) Zero)
+    )
+  test
+    "isZero: natrec True (\\x.\\y. False) 1 ==> False"
+    ( Anno
+        BoolTy
+        (NatRec Tru (Lam "_" (Lam "_" Fls)) (Succ Zero))
+    )
+  test
+    "isZero: natrec True (\\x.\\y. False) 3 ==> False"
+    ( Anno
+        BoolTy
+        (NatRec Tru (Lam "_" (Lam "_" Fls)) (Succ (Succ (Succ Zero))))
+    )
+  putStrLn ""
+
+  -- NatRec — step function uses predecessor
+  section "NatRec Using Predecessor Argument"
+  test
+    "predecessor: natrec Zero (\\pred.\\acc. pred) 3 ==> 2"
+    ( Anno
+        NatTy
+        (NatRec Zero (Lam "pred" (Lam "_" (Var "pred"))) (Succ (Succ (Succ Zero))))
+    )
+  test
+    "predecessor: natrec Zero (\\pred.\\acc. pred) 1 ==> 0"
+    ( Anno
+        NatTy
+        (NatRec Zero (Lam "pred" (Lam "_" (Var "pred"))) (Succ Zero))
+    )
+  test
+    "predecessor of Zero: natrec Zero (\\pred.\\acc. pred) 0 ==> 0"
+    ( Anno
+        NatTy
+        (NatRec Zero (Lam "pred" (Lam "_" (Var "pred"))) Zero)
+    )
+  putStrLn ""
+
+  -- NatRec — returning non-Nat type
+  section "NatRec with Non-Nat Motive"
+  test
+    "natrec () (\\x.\\y. ()) 2 ==> () (motive is Unit)"
+    ( Anno
+        UnitTy
+        (NatRec Unit (Lam "_" (Lam "_" Unit)) (Succ (Succ Zero)))
+    )
+  test
+    "natrec (True, False) (\\x.\\y. (False, True)) 1 ==> (False, True) (motive is Pair)"
+    ( Anno
+        (PairTy BoolTy BoolTy)
+        (NatRec (Pair Tru Fls) (Lam "_" (Lam "_" (Pair Fls Tru))) (Succ Zero))
+    )
+  putStrLn ""
+
+  -- Error cases
+  section "Error Cases (expected failures)"
+  testErr
+    "Zero checked at Bool"
+    (Anno BoolTy Zero)
+  testErr
+    "Succ Zero checked at Bool"
+    (Anno BoolTy (Succ Zero))
+  testErr
+    "Succ True (non-Nat under Succ)"
+    (Anno NatTy (Succ Tru))
+  testErr
+    "NatRec with non-Nat scrutinee"
+    ( Anno
+        BoolTy
+        (NatRec Tru (Lam "_" (Lam "_" Fls)) Tru)
+    )
+  testErr
+    "NatRec step function wrong type (expects Nat -> T -> T)"
+    ( Anno
+        BoolTy
+        (NatRec Tru (Lam "_" Fls) Zero)
+    )

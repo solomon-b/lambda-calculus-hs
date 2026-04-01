@@ -23,6 +23,7 @@ import Data.Scientific (Scientific)
 import Data.Semialign (Semialign (..))
 import Data.String
 import Data.These (These (..))
+import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
 -- Utils
@@ -780,7 +781,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
@@ -788,66 +789,134 @@ run term =
       let result = flip runEvalM Nil $ do
             value <- eval syntax
             quote initLevel type' value
-      pure (result, holes)
+      pure (RunResult syntax type' result, holes)
 
 main :: IO ()
-main =
-  case run subTypeAp of
-    Left err -> print err
-    Right result -> print result
+main = do
+  let test = runTest run
+      testErr = runTestErr run
 
-subTypeAp :: Term
-subTypeAp =
-  Ap
-    ( Anno
-        (RealTy `FuncTy` RealTy)
-        (Lam "x" (Var "x"))
+  putStrLn "=== Subtyping ==="
+  putStrLn ""
+
+  -- Numeric subtyping: Nat <: Int <: Real
+  section "Numeric Subtyping"
+  test
+    "Natural 42 checked at IntegerTy"
+    (Anno IntegerTy (Natural 42))
+  test
+    "Natural 42 checked at RealTy"
+    (Anno RealTy (Natural 42))
+  test
+    "Integer -3 checked at RealTy"
+    (Anno RealTy (Integer (-3)))
+  test
+    "Natural 1 passed to (Real -> Real)"
+    ( Ap
+        (Anno (RealTy `FuncTy` RealTy) (Lam "x" (Var "x")))
+        (Anno NaturalTy (Natural 1))
     )
-    (Natural 1)
-
-subTypeApRecordT :: Term
-subTypeApRecordT =
-  Ap
-    ( Anno
-        (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
-        (Lam "x" (Get "foo" (Var "x")))
+  test
+    "Integer 5 passed to (Real -> Real)"
+    ( Ap
+        (Anno (RealTy `FuncTy` RealTy) (Lam "x" (Var "x")))
+        (Anno IntegerTy (Integer 5))
     )
-    recordT
+  putStrLn ""
 
-recordT :: Term
-recordT = Record [("foo", Tru), ("bar", Unit), ("baz", Unit)]
+  -- Numeric subtyping through the sub tactic (synth then check)
+  section "Numeric Subtyping via Sub Tactic"
+  test
+    "Nat synth'd, checked at Int via sub tactic"
+    ( Anno
+        IntegerTy
+        (Ap (Anno (NaturalTy `FuncTy` NaturalTy) (Lam "x" (Var "x"))) (Anno NaturalTy (Natural 10)))
+    )
+  test
+    "if True then (Nat 1) else (Nat 2) checked at Real"
+    (Anno RealTy (If Tru (Natural 1) (Natural 2)))
+  putStrLn ""
 
--- λp. if p then False else True
-notT :: Term
-notT =
-  Anno
-    (BoolTy `FuncTy` BoolTy)
-    (Lam "x" (If (Var "x") Fls Tru))
+  -- Function subtyping: contravariant args, covariant return
+  section "Function Subtyping"
+  test
+    "(Int -> Nat) passed where (Nat -> Int) expected — contravariant arg, covariant return"
+    ( Ap
+        ( Anno
+            ((NaturalTy `FuncTy` IntegerTy) `FuncTy` IntegerTy)
+            (Lam "f" (Ap (Var "f") (Anno NaturalTy (Natural 0))))
+        )
+        (Anno (IntegerTy `FuncTy` NaturalTy) (Lam "x" (Natural 42)))
+    )
+  test
+    "(Real -> Nat) passed where (Nat -> Real) expected"
+    ( Ap
+        ( Anno
+            ((NaturalTy `FuncTy` RealTy) `FuncTy` RealTy)
+            (Lam "f" (Ap (Var "f") (Anno NaturalTy (Natural 0))))
+        )
+        (Anno (RealTy `FuncTy` NaturalTy) (Lam "x" (Natural 99)))
+    )
+  putStrLn ""
 
--- λx. x
-idenT :: Term
-idenT =
-  Anno
-    (UnitTy `FuncTy` UnitTy)
-    (Lam "x" Hole)
+  section "Function Subtyping Failures (expected)"
+  testErr
+    "(Nat -> Int) cannot be subtype of (Int -> Nat) — variance reversed"
+    ( Ap
+        ( Anno
+            ((IntegerTy `FuncTy` NaturalTy) `FuncTy` NaturalTy)
+            (Lam "f" (Ap (Var "f") (Anno IntegerTy (Integer 0))))
+        )
+        (Anno (NaturalTy `FuncTy` IntegerTy) (Lam "x" (Integer 42)))
+    )
+  putStrLn ""
 
--- λf. f
-idenT' :: Term
-idenT' =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "f" (Var "f"))
+  -- Record subtyping
+  -- NOTE: module header says "Record subtyping isn't currently working"
+  section "Record Width Subtyping"
+  test
+    "wider record {foo, bar, baz} passed where {foo} expected"
+    ( Ap
+        ( Anno
+            (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
+            (Lam "x" (Get "foo" (Var "x")))
+        )
+        ( Anno
+            (RecordTy [("foo", BoolTy), ("bar", UnitTy), ("baz", UnitTy)])
+            (Record [("foo", Tru), ("bar", Unit), ("baz", Unit)])
+        )
+    )
+  putStrLn ""
 
--- λx. λy. x
-constT :: Term
-constT =
-  Anno
-    (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "x" (Lam (Name "_") (Var "x")))
+  section "Record Depth Subtyping (currently broken)"
+  test
+    "{foo : Nat} passed where {foo : Int} expected"
+    ( Ap
+        ( Anno
+            (RecordTy [("foo", IntegerTy)] `FuncTy` IntegerTy)
+            (Lam "x" (Get "foo" (Var "x")))
+        )
+        (Anno (RecordTy [("foo", NaturalTy)]) (Record [("foo", Natural 7)]))
+    )
+  putStrLn ""
 
--- λf. λx. f x
-applyT :: Term
-applyT =
-  Anno
-    ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-    (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))
+  -- Subtyping failures
+  section "Subtyping Failures (expected)"
+  testErr
+    "Real cannot be subtype of NaturalTy"
+    (Anno NaturalTy (Real 3.14))
+  testErr
+    "Integer cannot be subtype of NaturalTy"
+    (Anno NaturalTy (Integer (-1)))
+  testErr
+    "Real cannot be subtype of IntegerTy"
+    (Anno IntegerTy (Real 1.5))
+  testErr
+    "Bool is not a subtype of UnitTy"
+    (Anno UnitTy Tru)
+  testErr
+    "Unit is not a subtype of BoolTy"
+    (Anno BoolTy Unit)
+  testErr
+    "Nat is not a subtype of BoolTy (cross-tower)"
+    (Anno BoolTy (Natural 1))

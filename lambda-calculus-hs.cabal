@@ -114,55 +114,55 @@ executable 01-BidirectionalTypechecking
   import:              common-settings
   main-is:             01-BidirectionalTypechecking.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness
 
 executable 02-NormalizationByEvaluation
   import:              common-settings
   main-is:             02-NormalizationByEvaluation.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness
 
 executable 03-Elaboration
   import:              common-settings
   main-is:             03-Elaboration.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness
 
 executable 04-TypedHoles
   import:              common-settings
   main-is:             04-TypedHoles.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness
 
 executable 05-SystemT
   import:              common-settings
   main-is:             05-SystemT.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness
 
 executable 06-Records
   import:              common-settings
   main-is:             06-Records.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, test-harness
 
 executable 07-SumTypes
   import:              common-settings
   main-is:             07-SumTypes.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, test-harness
 
 executable 08-Subtyping
   import:              common-settings
   main-is:             08-Subtyping.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness
 
 executable 09-NominalInductiveTypes
   import:              common-settings
   main-is:             09-NominalInductiveTypes.hs
   hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness
 
 executable 10-IsoRecursiveTypes
   import:              common-settings
