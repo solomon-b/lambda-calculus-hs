@@ -53,6 +53,7 @@ data Term
   = Var Name
   | Lam Name Term
   | Ap Term Term
+  | Let Name Term Term
   | Pair Term Term
   | Fst Term
   | Snd Term
@@ -221,6 +222,7 @@ synth = \case
 
 check :: Term -> Check
 check (Lam bndr body) = lamTactic bndr (check body)
+check (Let bndr e body) = letTactic bndr (synth e) (check body)
 check Unit = unitTactic
 check (Pair tm1 tm2) = pairTactic (check tm1) (check tm2)
 check Hole = holeTactic
@@ -299,6 +301,31 @@ applyTactic (Synth funcTac) (Check argTac) =
         arg <- argTac a
         pure (b, SAp f arg)
       (ty, _) -> throwError $ TypeError $ "Expected a function type but got " <> show ty
+
+-- | Let Tactic
+--
+--  Γ ⊢ e ⇒ A    Γ, x : A ⊢ body ⇐ B
+--  ──────────────────────────────────── Let⇐
+--        Γ ⊢ let x = e in body ⇐ B
+--
+-- @let x = e in body@ elaborates to @(λx. body') e'@ — there is no
+-- dedicated @SLet@ in the core syntax. The let is fully dissolved by
+-- NbE: the beta redex reduces and the bound value is inlined into
+-- the normal form.
+--
+-- Unlike 'lamTactic', which binds a fresh neutral variable (since the
+-- argument is unknown), the let tactic evaluates @e@ and stores the
+-- resulting value in the context cell. This means references to @x@
+-- in the body see the actual value during elaboration, not a stuck
+-- variable.
+letTactic :: Name -> Synth -> Check -> Check
+letTactic bndr (Synth synth) (Check bodyTac) = Check $ \ty -> do
+  (ty1, tm1) <- synth
+  ctx <- ask
+  let val = runEvalM (eval tm1) (locals ctx)
+      var = Cell bndr ty1 val
+  fiber <- local (bindCell var) $ bodyTac ty
+  pure $ SAp (SLam bndr fiber) tm1
 
 -- | Pair Introduction Tactic
 --

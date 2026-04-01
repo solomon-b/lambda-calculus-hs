@@ -19,10 +19,10 @@ might want to include in your custom language in one place.
 - [X] Nominal Inductive Types
 - [X] Iso-Inductive Types
 - [ ] System F
-- [ ] Case-Trees
-- [ ] Row Polymorphism
-- [ ] System Omega
-- [ ] Linear Types
 - [ ] Martin-Lof Type Theory (Pi and Sigma Types)
+- [ ] Universes
 - [ ] Indexed Inductive Types
 - [ ] Equality
+- [ ] Case-Trees
+- [ ] Row Polymorphism
+- [ ] Linear Types

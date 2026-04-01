@@ -51,6 +51,7 @@ data Term
   = Var Name
   | Lam Name Term
   | Ap Term Term
+  | Let Name Term Term
   | Pair Term Term
   | Fst Term
   | Snd Term
@@ -207,6 +208,7 @@ synth = \case
 
 check :: Term -> Check
 check (Lam bndr body) = lamTactic bndr (check body)
+check (Let bndr e body) = letTactic bndr (synth e) (check body)
 check Unit = unitTactic
 check (Pair tm1 tm2) = pairTactic (check tm1) (check tm2)
 check tm = subTactic (synth tm)
@@ -274,7 +276,7 @@ lamTactic bndr (Check bodyTac) = Check $ \case
 -- | Lambda Elination Tactic
 --
 -- Γ ⊢ e₁ ⇒ A → B  Γ ⊢ e₂ ⇐ A
--- ────────────────────────── LamElim⇐
+-- ────────────────────────── LamElim⇒
 --       Γ ⊢ e₁ e₂ ⇒ B
 applyTactic :: Synth -> Check -> Synth
 applyTactic (Synth funcTac) (Check argTac) =
@@ -284,6 +286,31 @@ applyTactic (Synth funcTac) (Check argTac) =
         arg <- argTac a
         pure (b, SAp f arg)
       (ty, _) -> throwError $ TypeError $ "Expected a function type but got " <> show ty
+
+-- | Let Tactic
+--
+--  Γ ⊢ e ⇒ A    Γ, x : A ⊢ body ⇐ B
+--  ──────────────────────────────────── Let⇐
+--        Γ ⊢ let x = e in body ⇐ B
+--
+-- @let x = e in body@ elaborates to @(λx. body') e'@ — there is no
+-- dedicated @SLet@ in the core syntax. The let is fully dissolved by
+-- NbE: the beta redex reduces and the bound value is inlined into
+-- the normal form.
+--
+-- Unlike 'lamTactic', which binds a fresh neutral variable (since the
+-- argument is unknown), the let tactic evaluates @e@ and stores the
+-- resulting value in the context cell. This means references to @x@
+-- in the body see the actual value during elaboration, not a stuck
+-- variable.
+letTactic :: Name -> Synth -> Check -> Check
+letTactic bndr (Synth synth) (Check bodyTac) = Check $ \ty -> do
+  (ty1, tm1) <- synth
+  ctx <- ask
+  let val = runEvalM (eval tm1) (locals ctx)
+      var = Cell bndr ty1 val
+  fiber <- local (bindCell var) $ bodyTac ty
+  pure $ SAp (SLam bndr fiber) tm1
 
 -- | Pair Introduction Tactic
 --
@@ -522,6 +549,52 @@ main = do
     ( Anno
         (UnitTy `FuncTy` PairTy UnitTy UnitTy)
         (Lam "x" (Pair (Var "x") (Var "x")))
+    )
+  putStrLn ""
+
+  -- Let bindings
+  section "Let Bindings"
+  test
+    "let x = () in x : Unit — basic let"
+    ( Anno
+        UnitTy
+        (Let "x" (Anno UnitTy Unit) (Var "x"))
+    )
+  test
+    "let f = (\\x. x : U -> U) in f () — let-bound function applied"
+    ( Anno
+        UnitTy
+        (Let "f" (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x"))) (Ap (Var "f") Unit))
+    )
+  test
+    "let x = () in let y = () in (x, y) — nested lets"
+    ( Anno
+        (PairTy UnitTy UnitTy)
+        (Let "x" (Anno UnitTy Unit) (Let "y" (Anno UnitTy Unit) (Pair (Var "x") (Var "y"))))
+    )
+  test
+    "let x = () in (x, x) — bound var used multiple times"
+    ( Anno
+        (PairTy UnitTy UnitTy)
+        (Let "x" (Anno UnitTy Unit) (Pair (Var "x") (Var "x")))
+    )
+  test
+    "let x = ((), ()) in fst x — let-bound pair projected"
+    ( Anno
+        UnitTy
+        (Let "x" (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)) (Fst (Var "x")))
+    )
+  test
+    "let x = () in \\y. x — let in lambda body, x is free in the lambda"
+    ( Anno
+        (UnitTy `FuncTy` UnitTy)
+        (Let "x" (Anno UnitTy Unit) (Lam "y" (Var "x")))
+    )
+  test
+    "\\y. let x = y in x — let inside lambda, binding the lambda arg"
+    ( Anno
+        (UnitTy `FuncTy` UnitTy)
+        (Lam "y" (Let "x" (Var "y") (Var "x")))
     )
   putStrLn ""
 
