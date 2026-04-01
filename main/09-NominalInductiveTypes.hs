@@ -9,8 +9,8 @@ module Main where
 
 --------------------------------------------------------------------------------
 
-import Control.Monad (foldM, when, zipWithM)
 import Control.Arrow ((&&&))
+import Control.Monad (foldM, when, zipWithM)
 import Control.Monad.Except (MonadError (..))
 import Control.Monad.Identity
 import Control.Monad.Reader (MonadReader (..), asks)

@@ -60,7 +60,7 @@ data TypeErr = TypeError | KindError deriving (Show, Eq)
 --- Pretty Printer ---
 ----------------------
 
-class Show a => Pretty a where
+class (Show a) => Pretty a where
   pretty :: a -> String
   pretty = show
 

@@ -43,7 +43,7 @@ lookupValue name gamma = snd =<< lookup name gamma
 --- Pretty Printer ---
 ----------------------
 
-class Show a => Pretty a where
+class (Show a) => Pretty a where
   pretty :: a -> String
   pretty = show
 

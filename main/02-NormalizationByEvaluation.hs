@@ -5,7 +5,7 @@ module Main where
 
 --------------------------------------------------------------------------------
 
-import Control.Monad ((>=>), foldM)
+import Control.Monad (foldM, (>=>))
 import Control.Monad.Except (MonadError (..))
 import Control.Monad.Identity
 import Control.Monad.Reader (MonadReader (..))
