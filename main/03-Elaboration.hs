@@ -1,6 +1,14 @@
 {-# LANGUAGE DerivingVia #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
+-- | Elaboration — surface syntax to core IR.
+--
+-- Introduces a separation between 'Term' (surface syntax with named
+-- variables) and 'Syntax' (core IR with de Bruijn indices). Typechecking
+-- now doubles as elaboration: it resolves names to indices and translates
+-- each 'Term' into a 'Syntax' suitable for evaluation. The full pipeline
+-- is Term -> Syntax -> Value -> Syntax, where the final 'Syntax' is the
+-- beta-eta normal form.
 module Main where
 
 --------------------------------------------------------------------------------

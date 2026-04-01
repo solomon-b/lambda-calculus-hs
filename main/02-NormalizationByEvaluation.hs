@@ -1,6 +1,14 @@
 {-# LANGUAGE DerivingVia #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
+-- | Normalization by Evaluation (NbE).
+--
+-- Adds the ability to normalize terms by evaluating them into a semantic
+-- domain ('Value') and quoting back to syntax. Neutral terms ('VNeutral')
+-- represent stuck computations — variables that can't reduce further.
+-- Quoting is type-directed: at function types it eta-expands, ensuring
+-- every normal form is fully eta-long. The result is a normalizer that
+-- decides beta-eta equality for the simply typed lambda calculus.
 module Main where
 
 --------------------------------------------------------------------------------

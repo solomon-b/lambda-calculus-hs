@@ -1,6 +1,14 @@
 {-# LANGUAGE DerivingVia #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
+-- | Typed Holes.
+--
+-- Adds hole support: a 'Hole' in the surface syntax can stand for any
+-- missing subterm. During checking, a hole accepts whatever type is pushed
+-- into it and records that type via a 'Writer' effect, producing an 'SHole'
+-- in the core IR. Holes evaluate to neutral terms so they propagate through
+-- NbE without crashing — the normal form still contains the hole annotated
+-- with its expected type.
 module Main where
 
 --------------------------------------------------------------------------------

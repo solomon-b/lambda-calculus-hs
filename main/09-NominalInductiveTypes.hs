@@ -2,9 +2,18 @@
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
--- | TODO:
--- - Case on Records
--- - Case Trees
+-- | Nominal Inductive Types.
+--
+-- Adds user-defined algebraic data types with named constructors. Each
+-- 'DataTypeSpec' declares a type name and a list of 'DataConstructorSpec's
+-- with typed fields (including recursive references via 'Rec'). Constructors
+-- are introduced by 'Cnstr' and eliminated by 'Case', which pattern-matches
+-- on the constructor name and binds the fields. Constructors support partial
+-- application via eta-expansion around the constructor's function type.
+--
+-- Note: the 'caseTactic' currently only works when the scrutinee elaborates
+-- to an 'SCnstr' (nullary constructors). Fully-applied constructors elaborate
+-- to nested 'SAp' and are not yet matched.
 module Main where
 
 --------------------------------------------------------------------------------

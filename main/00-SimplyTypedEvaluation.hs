@@ -1,5 +1,12 @@
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
+-- | Simply Typed Lambda Calculus — evaluation only.
+--
+-- The baseline implementation. Terms use de Bruijn indices for variables and
+-- evaluation produces closures that capture their environment in a 'SnocList'.
+-- Types are functions, pairs, and unit. There is no typechecker here — this
+-- module focuses purely on the evaluation model that all subsequent modules
+-- build on.
 module Main where
 
 --------------------------------------------------------------------------------

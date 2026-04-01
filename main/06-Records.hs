@@ -1,6 +1,14 @@
 {-# LANGUAGE DerivingVia #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
+-- | Record Types.
+--
+-- Adds named record types ('RecordTy') with labeled fields. Records are
+-- introduced by providing a value for each field and eliminated by
+-- projection ('Get'). The typechecker uses 'alignWithM' over maps to
+-- verify that the term's fields match the type's fields exactly — catching
+-- missing fields, extra fields, and per-field type mismatches. Field order
+-- in the source is irrelevant.
 module Main where
 
 --------------------------------------------------------------------------------

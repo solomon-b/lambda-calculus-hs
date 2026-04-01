@@ -2,9 +2,17 @@
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
--- | TODO:
--- - Case on Records
--- - Case Trees
+-- | Iso-Recursive Types — structural ADTs via fold\/unfold.
+--
+-- Replaces the nominal ADT representation from module 09 with a structural
+-- encoding using iso-recursive types (@mu a. T@). Data type specs are
+-- compiled into mu-types over nested sums of products: e.g.
+-- @data ListBool = Nil | Cons Bool ListBool@ becomes @mu L. Unit + (Bool * L)@.
+-- Constructor names are retained in the surface syntax for ergonomics, but the
+-- core IR is purely structural — constructors implicitly fold and case
+-- expressions implicitly unfold, using explicit 'SFold' and 'SUnfold'.
+-- Type-level substitution ('substTy') handles unrolling by replacing the bound
+-- variable with the mu-type itself.
 module Main where
 
 --------------------------------------------------------------------------------

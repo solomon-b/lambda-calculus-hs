@@ -1,7 +1,15 @@
 {-# LANGUAGE DerivingVia #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
--- | NOTE: Record subtyping isn't currently working
+-- | Subtyping.
+--
+-- Replaces the equality check in the sub tactic with a subtyping relation.
+-- The numeric tower has @Nat <: Int <: Real@. Function subtyping is
+-- contravariant in the argument and covariant in the return
+-- (@(Int -> Nat) <: (Nat -> Int)@). Record width subtyping allows passing a
+-- record with extra fields where fewer are expected. Record depth subtyping
+-- (replacing a field with its subtype) is defined but not yet wired through
+-- the sub tactic.
 module Main where
 
 --------------------------------------------------------------------------------

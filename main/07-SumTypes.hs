@@ -1,6 +1,13 @@
 {-# LANGUAGE DerivingVia #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
+-- | Sum Types and Void.
+--
+-- Adds binary sum types ('SumTy') with injections 'InL' and 'InR', eliminated
+-- by 'Case' which binds a variable in each branch. Also adds the empty type
+-- 'VoidTy' with its eliminator 'Absurd', which can produce any type from a
+-- value of type 'Void' — since no such value exists, the branch is unreachable.
+-- Sums and void together give us the coproduct structure dual to pairs and unit.
 module Main where
 
 --------------------------------------------------------------------------------

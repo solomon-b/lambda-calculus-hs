@@ -1,6 +1,14 @@
 {-# LANGUAGE DerivingVia #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
+-- | System T — natural numbers and primitive recursion.
+--
+-- Extends the type system with natural numbers ('NatTy') and booleans
+-- ('BoolTy'). Natural numbers are introduced by 'Zero' and 'Succ', and
+-- eliminated by 'NatRec' (Gödel's primitive recursor), which takes a base
+-- case, a step function of type @Nat -> T -> T@ (receiving the predecessor
+-- and the recursive result), and a scrutinee. This gives us a total language
+-- where every well-typed program terminates.
 module Main where
 
 --------------------------------------------------------------------------------

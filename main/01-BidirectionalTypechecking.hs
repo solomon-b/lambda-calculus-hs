@@ -1,5 +1,13 @@
 {-# LANGUAGE DerivingVia #-}
 
+-- | Bidirectional Typechecking.
+--
+-- Adds a typechecker split into two mutually recursive judgements: 'Synth'
+-- (type synthesis, where the term tells us its type) and 'Check' (type
+-- checking, where we push an expected type into the term). Lambdas, pairs,
+-- and unit are checked; variables, application, projections, and annotations
+-- are synthesized. The 'subTactic' bridges the two: a synthesizable term can
+-- be used in a checked position if the types match.
 module Main where
 
 --------------------------------------------------------------------------------
