@@ -33,6 +33,8 @@
             [
               cabal-install
               cabal2nix
+              fzf
+              just
               hsPkgs.haskell-language-server
               haskellPackages.ghcid
               haskellPackages.fourmolu
