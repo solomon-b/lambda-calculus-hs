@@ -26,7 +26,7 @@ common common-settings
     OverloadedStrings
     RecordWildCards
     StrictData
-  
+
   ghc-options:
     -Wall
     -Wcpp-undef
@@ -154,5 +154,11 @@ executable 08-Subtyping
 executable 09-NominalInductiveTypes
   import:              common-settings
   main-is:             09-NominalInductiveTypes.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific
+
+executable 10-IsoRecursiveTypes
+  import:              common-settings
+  main-is:             10-IsoRecursiveTypes.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific
