@@ -2,7 +2,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
--- | Iso-Recursive Types — structural ADTs via fold\/unfold.
+-- | Iso-Inductive Types — structural ADTs via fold\/unfold.
 --
 -- Replaces the nominal ADT representation from module 09 with a structural
 -- encoding using iso-recursive types (@mu a. T@). Data type specs are
@@ -1052,7 +1052,7 @@ main = do
   let test = runTest run
       testErr = runTestErr run
 
-  putStrLn "=== Iso-Recursive Types ==="
+  putStrLn "=== Iso-Inductive Types ==="
   putStrLn ""
 
   -- Construction tests
