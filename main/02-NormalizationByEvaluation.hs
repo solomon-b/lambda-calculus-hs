@@ -3,12 +3,15 @@
 
 -- | Normalization by Evaluation (NbE).
 --
--- Adds the ability to normalize terms by evaluating them into a semantic
--- domain ('Value') and quoting back to syntax. Neutral terms ('VNeutral')
--- represent stuck computations — variables that can't reduce further.
--- Quoting is type-directed: at function types it eta-expands, ensuring
--- every normal form is fully eta-long. The result is a normalizer that
--- decides beta-eta equality for the simply typed lambda calculus.
+-- Adds the ability to normalize terms by evaluating them into a semantic domain
+-- ('Value') and quoting back to syntax.
+--
+-- Neutral terms ('VNeutral') represent stuck computations, variables that can't
+-- reduce further.
+--
+-- Quoting is type-directed: at function types it eta-expands, ensuring every
+-- normal form is fully eta-long. The result is a normalizer that decides
+-- beta-eta equality for the simply typed lambda calculus.
 module Main where
 
 --------------------------------------------------------------------------------
@@ -25,11 +28,20 @@ import TestHarness (RunResult (..), runTest, runTestErr, section)
 --------------------------------------------------------------------------------
 -- Utils
 
+-- | A list that grows on the right. We use this as our environment
+-- representation because it matches the structure of de Bruijn indices: the
+-- most recently bound variable is at the end (index 0), and older bindings are
+-- further left (higher indices).
+--
+-- A regular list would work too, but snoc lists make the correspondence between
+-- binding order and index explicit.
 data SnocList a
   = Snoc (SnocList a) a
   | Nil
   deriving (Show, Eq, Ord, Functor, Foldable)
 
+-- | Look up a value by de Bruijn index, counting from the right (most recent
+-- binding).
 nth :: SnocList a -> Int -> Maybe a
 nth xs i
   | i < 0 = Nothing
@@ -41,40 +53,86 @@ nth xs i
        in go (xs, i)
 
 --------------------------------------------------------------------------------
--- Types
-
--- | 'Term' represents the concrete syntax of our langage generated
--- from text by a parser.
-data Term
-  = Var Ix
-  | Lam Name Term
-  | Ap Term Term
-  | Pair Term Term
-  | Fst Term
-  | Snd Term
-  | Unit
-  | Anno Type Term
-  deriving stock (Show, Eq, Ord)
-
-data Type
-  = FuncTy Type Type
-  | PairTy Type Type
-  | UnitTy
-  deriving stock (Show, Eq, Ord)
-
--- | 'Value' is the evaluated form of expressions in our language.
-data Value
-  = VNeutral Type Neutral
-  | VLam Name Closure
-  | VPair Value Value
-  | VUnit
-  deriving stock (Show, Eq, Ord)
-
--- | Debruijn Indices
+-- Syntax
 --
--- 'Ix' is used to reference lambda bound terms with respect to
--- α-conversion. The index 'n' represents the value bound by the 'n'
--- lambda counting outward from the site of the index.
+-- Our language has two representations:
+--
+--   - 'Term' - what the programmer writes.
+--   - 'Value' - what evaluation produces.
+--
+-- A 'Lam' in the syntax becomes a 'VLam' closure that captures its environment,
+-- deferring substitution until thefunction is applied.
+
+-- In this module 'Value' gains a 'VNeutral' for stuck computations. This
+-- represents a variable applied to arguments that can't reduce. Neutrals are
+-- what make NbE work. They let us evaluate under binders by introducing fresh
+-- variables that block reduction, then quote the result back to syntax.
+
+-- | The abstract syntax tree of our language.
+--
+-- Variables use de Bruijn indices ('Ix') rather than names, which makes
+-- alpha-equivalence trivial (syntactic equality) at the cost of human
+-- readability.
+data Term
+  = -- | A variable reference by de Bruijn index. @x@
+    Var Ix
+  | -- | Lambda abstraction. @\x. body@
+    Lam Name Term
+  | -- | Function application. @f x@
+    Ap Term Term
+  | -- | Pair introduction. @(a, b)@
+    Pair Term Term
+  | -- | First projection of a pair. @fst p@
+    Fst Term
+  | -- | Second projection of a pair. @snd p@
+    Snd Term
+  | -- | The unit value. @()@
+    Unit
+  | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
+    Anno Type Term
+  deriving stock (Show, Eq, Ord)
+
+-- | The type language.
+--
+-- At this point we have no type inference, so every lambda needs an annotation
+-- (via 'Anno') to tell us its type. We have function types, pair types, and the
+-- unit type.
+data Type
+  = -- | Function type. @A -> B@.
+    FuncTy Type Type
+  | -- | Pair type. @A * B@.
+    PairTy Type Type
+  | -- | Unit type. @Unit@.
+    UnitTy
+  deriving stock (Show, Eq, Ord)
+
+-- | The result of evaluation.
+--
+-- The key difference from 'Term' is that lambdas become 'VLam' closures that
+-- pair the function body with the environment it was defined in.
+--
+-- This is how we avoid substitution, instead of replacing variables in the
+-- body, we record what they should evaluate to in the closure's environment and
+-- look them up at use sites.
+data Value
+  = -- | A stuck computation, a variable applied to arguments that can't reduce.
+    -- The 'Type' annotation is needed so quoting knows how to eta-expand (e.g.,
+    -- a neutral at function type gets wrapped in a lambda).
+    VNeutral Type Neutral
+  | -- | A closure: the lambda body paired with its defining environment.
+    -- Application triggers beta reduction by extending this environment.
+    VLam Name Closure
+  | -- | A fully evaluated pair of values.
+    VPair Value Value
+  | -- | The unit value.
+    VUnit
+  deriving stock (Show, Eq, Ord)
+
+-- | De Bruijn Indices.
+--
+-- 'Ix' is used to reference lambda-bound terms with respect to α-conversion.
+-- The index @n@ represents the value bound by the @n@th lambda counting outward
+-- from the site of the index.
 --
 -- λ.λ.λ.2
 -- ^-----^
@@ -82,17 +140,16 @@ newtype Ix
   = Ix Int
   deriving newtype (Show, Eq, Ord)
 
--- | Debruijn Levels
+-- | De Bruijn Levels.
 --
--- Similar to Debruijn Indices but counting inward from the outermost
--- lambda.
+-- Similar to de Bruijn indices but counting inward from the outermost lambda.
 --
 -- λ.λ.λ.0
 -- ^-----^
 --
--- Levels eliminate the need to reindex free variables when weakening
--- the context. This is useful in our 'Value' representation of
--- lambdas where we have a 'Closure' holding a stack of free variables.
+-- Levels eliminate the need to reindex free variables when weakening the
+-- context. This is useful in our 'Value' representation of lambdas where we
+-- have a 'Closure' holding a stack of free variables.
 newtype Lvl
   = Lvl Int
   deriving newtype (Show, Eq, Ord)
@@ -106,13 +163,21 @@ incLevel (Lvl n) = Lvl (1 + n)
 newtype Name = Name {getName :: String}
   deriving newtype (Show, Eq, Ord, IsString)
 
+-- | A neutral term is a head (a variable) applied to a spine of eliminators. We
+-- can't reduce it because the head is a variable, we don't know what it is. For
+-- example, @x (λy. y) ()@ is a neutral with head @x@ and spine @[VApp (λy. y),
+-- VApp ()]@.
 data Neutral = Neutral {head :: Head, spine :: SnocList Frame}
   deriving stock (Show, Eq, Ord)
 
+-- | The head of a neutral is always a variable, represented as a de Bruijn
+-- level (not index) so it stays stable under context extension.
 newtype Head
   = VVar Lvl
   deriving (Show, Eq, Ord)
 
+-- | A frame is a single eliminator waiting to be applied to a neutral. The
+-- spine of a neutral is a sequence of these.
 data Frame
   = VApp Type Value
   | VFst
@@ -122,11 +187,20 @@ data Frame
 pushFrame :: Neutral -> Frame -> Neutral
 pushFrame Neutral {..} frame = Neutral {head = head, spine = Snoc spine frame}
 
+-- | A closure pairs a function body with the environment it was defined in.
+-- Instantiation extends the captured environment with the argument rather than
+-- substituting. Closures also appear inside neutrals (as arguments in 'VApp'
+-- frames).
 data Closure = Closure {env :: SnocList Value, body :: Term}
   deriving stock (Show, Eq, Ord)
 
 --------------------------------------------------------------------------------
 -- Environment
+--
+-- The typechecker environment maps de Bruijn indices to their types. This is
+-- separate from the evaluator's environment (which maps indices to values). the
+-- typechecker only needs to know what type each variable has, not what value it
+-- holds.
 
 newtype Env = Env {getEnv :: SnocList Type}
   deriving stock (Show, Eq, Ord)
@@ -142,6 +216,15 @@ resolveVar ctx (Ix ix) = nth (getEnv ctx) ix
 
 --------------------------------------------------------------------------------
 -- Typechecker
+--
+-- The typechecker is split into two mutually recursive judgements:
+--
+--   - 'Synth': The term tells us its type.
+--   - 'Check': We push an expected type into the term.
+--
+-- Terms that introduce a type former (lambdas, pairs, unit) are checked. Terms
+-- that eliminate one (application, projection) or carry an annotation are
+-- synthesized. The 'subTactic' bridges the two directions.
 
 data Error
   = TypeError String
@@ -174,6 +257,9 @@ check tm = subTactic (synth tm)
 
 -- | Var Tactic
 --
+-- Look up a variable's type in the context by its de Bruijn index. This is a
+-- synth rule, the context tells us the type, we don't need it pushed in.
+--
 -- (x : A) ∈ Γ
 -- ─────────── Var⇒
 --  Γ ⊢ x ⇒ A
@@ -183,6 +269,11 @@ varTactic ix = Synth $ do
   maybe (throwError $ OutOfScopeError ix) pure $ resolveVar ctx ix
 
 -- | Sub Tactic
+--
+-- The bridge between synth and check. Synthesize a type for the term, then
+-- verify it matches the expected type. This is how a synthesizable term (like a
+-- variable or annotation) can appear in a checked position. Every term that
+-- doesn't have its own check rule falls through to this.
 --
 -- Γ ⊢ e ⇒ A  A ≡ B
 -- ──────────────── Sub⇐
@@ -196,6 +287,10 @@ subTactic (Synth synth') = Check $ \ty1 -> do
 
 -- | Anno Tactic
 --
+-- The annotation provides a type, switching from synth to check mode. We check
+-- the body against the annotated type, then synthesize that type as the result.
+-- This is the primary way to give a type to check-only terms like lambdas.
+--
 --    Γ ⊢ e ⇐ A
 -- ─────────────── Anno⇒
 -- Γ ⊢ (e : A) ⇒ A
@@ -206,6 +301,9 @@ annoTactic ty (Check checkAnno) = Synth $ do
 
 -- | Unit Introduction Tactic
 --
+-- Unit is a check rule, we verify the expected type is 'UnitTy'. There's
+-- nothing to synthesize since @()@ doesn't carry type information.
+--
 -- ───────────── Unit⇐
 -- Γ ⊢ () ⇐ Unit
 unitTactic :: Check
@@ -214,6 +312,11 @@ unitTactic = Check $ \case
   ty -> throwError $ TypeError $ "Expected Unit type but got: " <> show ty
 
 -- | Lambda Introduction Tactic
+--
+-- A lambda is checked against a function type. The expected type @A₁ → A₂@
+-- tells us what type the parameter has (@A₁@), so we extend the context and
+-- check the body against the return type (@A₂@). This is why lambdas can't
+-- synthesize. Without the expected function type, we wouldn't know @A₁@.
 --
 --  Γ, x : A₁ ⊢ e ⇐ A₂
 -- ──────────────────── LamIntro⇐
@@ -225,10 +328,15 @@ lamTactic (Check bodyTac) = Check $ \case
     pure ()
   _ -> throwError $ TypeError "Tried to introduce a lambda at a non-function type"
 
--- | Lambda Elination Tactic
+-- | Lambda Elimination Tactic
+--
+-- Application is a synth rule. Synthesize the function's type to get @A → B@,
+-- then check the argument against @A@, and return @B@. The function type tells
+-- us what to check the argument against. Information flows from the function to
+-- the argument.
 --
 -- Γ ⊢ e₁ ⇒ A → B  Γ ⊢ e₂ ⇐ A
--- ────────────────────────── LamElim⇐
+-- ────────────────────────── LamElim⇒
 --       Γ ⊢ e₁ e₂ ⇒ B
 applyTactic :: Synth -> Check -> Synth
 applyTactic (Synth funcTac) (Check argTac) =
@@ -240,6 +348,9 @@ applyTactic (Synth funcTac) (Check argTac) =
       ty -> throwError $ TypeError $ "Expected a function type but got " <> show ty
 
 -- | Pair Introduction Tactic
+--
+-- Like lambdas, pairs are checked. the expected pair type @A × B@ tells us what
+-- to check each component against.
 --
 -- Γ ⊢ a ⇐ A   Γ ⊢ b ⇐ B
 -- ───────────────────── Pair⇐
@@ -254,6 +365,9 @@ pairTactic (Check checkFst) (Check checkSnd) = Check $ \case
 
 -- | Pair Fst Elimination Tactic
 --
+-- Projection is a synth rule. Synthesize the pair's type to learn what the
+-- components are, then return the appropriate one.
+--
 -- Γ ⊢ (t₁ , t₂) ⇒ A × B
 -- ───────────────────── Fst⇒
 --       Γ ⊢ t₁ ⇒ A
@@ -266,9 +380,11 @@ fstTactic (Synth synthPair) =
 
 -- | Pair Snd Elimination Tactic
 --
+-- Same as fst, but returns the second component.
+--
 -- Γ ⊢ (t₁ , t₂) ⇒ A × B
 -- ───────────────────── Snd⇒
---       Γ ⊢ t₂ ⇒ A
+--       Γ ⊢ t₂ ⇒ B
 sndTactic :: Synth -> Synth
 sndTactic (Synth synthPair) =
   Synth $
@@ -278,6 +394,16 @@ sndTactic (Synth synthPair) =
 
 --------------------------------------------------------------------------------
 -- Evaluator
+--
+-- Evaluation maps 'Term' to 'Value' under an environment. The interesting cases
+-- are:
+--
+-- - 'Var': look up the value in the environment by de Bruijn index.
+-- - 'Lam': capture the current environment in a closure (don't evaluate the
+--          body yet, since we don't know the argument).
+-- - 'Ap': evaluate both sides, then apply. This is where beta reduction
+--         happens, by instantiating the closure with the argument.
+--
 
 newtype EvalM a = EvalM {runEvalM :: SnocList Value -> a}
   deriving
@@ -305,6 +431,15 @@ eval = \case
   Anno _ty tm -> eval tm
   Unit -> pure VUnit
 
+-- | Apply a function value to an argument.
+--
+-- 'doApply' has two cases:
+--   1. Lambda reduces (beta)
+--   2. A neutral accumulates the argument onto its spine (stuck).
+--
+-- This is what lets us evaluate under binders. We apply a closure to a fresh
+-- neutral variable, and the result is a value with neutrals wherever the
+-- variable appeared.
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = instantiateClosure clo arg
 doApply (VNeutral (FuncTy ty1 ty2) neu) arg = pure $ VNeutral ty2 (pushFrame neu (VApp ty1 arg))
@@ -323,7 +458,20 @@ instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 
 --------------------------------------------------------------------------------
 -- Quoting
+--
+-- Quoting reads back a 'Value' into a 'Term' (normal form). It is
+-- type-directed, the type tells us how to handle each value.
+--
+-- At function types quoting eta-expands, so even a neutral gets wrapped in a
+-- lambda. This ensures normal forms are fully eta-long, which means two terms
+-- are beta-eta equal iff their normal forms are syntactically identical.
+--
+-- The 'Lvl' parameter tracks how many binders we've gone under, so we can
+-- convert de Bruijn levels (stable under extension) back to de Bruijn indices
+-- (what syntax uses).
 
+-- | Quote a value back to a term, producing a beta-normal eta-long form. The
+-- first 'Lvl' argument tracks the current binding depth.
 quote :: Lvl -> Type -> Value -> EvalM Term
 quote l (FuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) = do
   body <- bindVar ty1 l $ \v l' -> do
@@ -342,14 +490,23 @@ quote l _ (VNeutral _ neu) = quoteNeutral l neu
 quote _ _ VUnit = pure Unit
 quote _ _ _ = error "impossible case in quote"
 
+-- | Create a fresh neutral variable at the current level and pass it to the
+-- continuation with an incremented level. This is how we go under a binder
+-- during quoting. We apply the closure to a fresh variable and quote the
+-- result.
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
   let v = VNeutral ty $ Neutral (VVar lvl) Nil
    in f v $ incLevel lvl
 
+-- | Convert a de Bruijn level to a de Bruijn index given the current depth.
+-- Levels count from the outermost binder, indices count from the innermost, so
+-- the conversion is @index = depth - level - 1@.
 quoteLevel :: Lvl -> Lvl -> Ix
 quoteLevel (Lvl l) (Lvl x) = Ix (l - (x + 1))
 
+-- | Quote a neutral by quoting the head, then folding over the spine, quoting
+-- each frame and applying it.
 quoteNeutral :: Lvl -> Neutral -> EvalM Term
 quoteNeutral l Neutral {..} = foldM (quoteFrame l) (quoteHead l head) spine
 
