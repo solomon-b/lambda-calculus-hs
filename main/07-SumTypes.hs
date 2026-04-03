@@ -661,7 +661,7 @@ caseTactic (Synth synth) (Check checkT1) (Check checkT2) = Check $ \ty -> do
     SumTy a b -> do
       f <- checkT1 (FuncTy a ty)
       g <- checkT2 (FuncTy b ty)
-      pure $ SCase scrut scrutTy f g
+      pure $ SCase scrut ty f g
     _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
 
 -- | Void Elimination Tactic
@@ -896,7 +896,7 @@ eval = \case
   SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
 
 doApply :: Value -> Value -> EvalM Value
-doApply (VLam _ clo) arg = instantiateClosure clo arg
+doApply (VLam _ clo) arg = appTermClosure clo arg
 doApply (VNeutral (FuncTy ty1 ty2) neu) arg = pure $ VNeutral ty2 (pushFrame neu (VApp ty1 arg))
 doApply _ _ = error "impossible case in doApply"
 

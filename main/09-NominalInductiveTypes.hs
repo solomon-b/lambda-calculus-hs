@@ -752,7 +752,7 @@ sumCaseTactic (Synth synth) (Check checkT1) (Check checkT2) = Check $ \ty -> do
     SumTy a b -> do
       f <- checkT1 (FuncTy a ty)
       g <- checkT2 (FuncTy b ty)
-      pure $ SSumCase scrut scrutTy f g
+      pure $ SSumCase scrut ty f g
     _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
 
 -- | Void Elimination Tactic
