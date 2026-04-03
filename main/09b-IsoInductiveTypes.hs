@@ -230,7 +230,7 @@ data Syntax
   | -- | Boolean false.
     SFls
   | -- | Conditional. @if scrut then t else f@.
-    SIf Syntax Syntax Syntax
+    SIf Syntax Type Syntax Syntax
   | -- | Record introduction. A list of named fields.
     SRecord [(Name, Syntax)]
   | -- | Record field projection. @r.field@.
@@ -516,7 +516,7 @@ weakenSyntax = go 0
     go _ SUnit = SUnit
     go _ STru = STru
     go _ SFls = SFls
-    go d (SIf p t f) = SIf (go d p) (go d t) (go d f)
+    go d (SIf p motive t f) = SIf (go d p) motive (go d t) (go d f)
     go d (SRecord fs) = SRecord (fmap (fmap (go d)) fs)
     go d (SGet n s) = SGet n (go d s)
     go _ (SInteger z) = SInteger z
@@ -1002,7 +1002,7 @@ ifTactic (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
   tm1 <- checkT1 BoolTy
   tm2 <- checkT2 ty
   tm3 <- checkT3 ty
-  pure (SIf tm1 tm2 tm3)
+  pure (SIf tm1 ty tm2 tm3)
 
 -- | Record Introduction Tactic
 --
@@ -1240,11 +1240,11 @@ eval = \case
   SUnit -> pure VUnit
   STru -> pure VTru
   SFls -> pure VFls
-  SIf p t1 t2 -> do
+  SIf p motive t1 t2 -> do
     p' <- eval p
     t1' <- eval t1
     t2' <- eval t2
-    doIf p' t1' t2'
+    doIf p' motive t1' t2'
   SRecord fields -> doRecord fields
   SGet name tm -> eval tm >>= doGet name
   SInteger z -> pure $ VInteger z
@@ -1278,11 +1278,11 @@ doSumAbsurd :: Value -> Type -> EvalM Value
 doSumAbsurd (VNeutral _ neu) ty = pure $ VNeutral ty (pushFrame neu (VAbsurd ty))
 doSumAbsurd _ _ = error "impossible case in doSumAbsurd"
 
-doIf :: Value -> Value -> Value -> EvalM Value
-doIf VTru t1 _ = pure t1
-doIf VFls _ t2 = pure t2
-doIf (VNeutral ty neu) t1 t2 = pure $ VNeutral BoolTy (pushFrame neu (VIf ty t1 t2))
-doIf _ _ _ = error "impossible case in doIf"
+doIf :: Value -> Type -> Value -> Value -> EvalM Value
+doIf VTru _ t1 _ = pure t1
+doIf VFls _ _ t2 = pure t2
+doIf (VNeutral _ neu) motive t1 t2 = pure $ VNeutral motive (pushFrame neu (VIf motive t1 t2))
+doIf _ _ _ _ = error "impossible case in doIf"
 
 doRecord :: [(Name, Syntax)] -> EvalM Value
 doRecord fields = VRecord <$> traverse (traverse eval) fields
@@ -1369,7 +1369,7 @@ quoteFrame l tm = \case
     g' <- quote l tyG g
     pure $ SSumCase tm mot f' g'
   VAbsurd ty -> pure $ SAbsurd ty tm
-  VIf ty t1 t2 -> liftA2 (SIf tm) (quote l ty t1) (quote l ty t2)
+  VIf ty t1 t2 -> liftA2 (SIf tm ty) (quote l ty t1) (quote l ty t2)
   -- NOTE: This never get constructed. Do I need them in STLC?
   VGet name -> pure $ SGet name tm
   VUnfold ty -> pure $ SUnfold tm ty
