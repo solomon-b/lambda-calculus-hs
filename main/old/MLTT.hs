@@ -215,7 +215,7 @@ synth ctx = \case
   CSSnd a -> do
     synth ctx a >>= \case
       (VSigma _ _ clo, tm) ->
-        let fiber = instantiateClosure clo $ doFst (eval (locals ctx) tm)
+        let fiber = appTermClosure clo $ doFst (eval (locals ctx) tm)
          in pure (fiber, SSnd tm)
       _ -> Left $ TypeError "Expected element of Σ."
   CSTrue -> pure (VBoolTy, STrue)
@@ -252,7 +252,7 @@ synth ctx = \case
 synAp :: Env -> (Value, Syntax) -> ConcreteSyntax -> Either Error (Value, Syntax)
 synAp ctx (VPi _ a clo, f) arg = do
   arg' <- check ctx arg a
-  let fiber = instantiateClosure clo (eval (locals ctx) arg')
+  let fiber = appTermClosure clo (eval (locals ctx) arg')
   pure (fiber, SApp f arg')
 synAp _ ty _ = Left $ TypeError $ "Not a function type: " <> show ty
 
@@ -261,7 +261,7 @@ check ctx (CSAbs bndr body) ty =
   case ty of
     VPi _ a clo -> do
       let var = freshCell ctx bndr a
-      let fiber = instantiateClosure clo a
+      let fiber = appTermClosure clo a
       body <- check (bindVar ctx var) body fiber
       pure $ SAbs bndr body
     ty' -> Left $ TypeError $ "Abs requires a function type, but got a: " <> show ty'
@@ -269,7 +269,7 @@ check ctx (CSPair a b) ty =
   case ty of
     VSigma _ a' clo -> do
       t1 <- check ctx a a'
-      t2 <- check ctx b $ instantiateClosure clo (eval (locals ctx) t1)
+      t2 <- check ctx b $ appTermClosure clo (eval (locals ctx) t1)
       pure $ SPair t1 t2
     _ -> Left $ TypeError "Expected element of Σ."
 check ctx CSHole ty = do
@@ -309,18 +309,18 @@ equate env _ (VNeutral _ neu1) (VNeutral _ neu2) = equateNeu env neu1 neu2
 equate env _ (VPi _ a1 clo1) (VPi _ a2 clo2) = do
   equate env VUniv a1 a2
   let v = freshVar env a1
-  equate (1 + env) VUniv (instantiateClosure clo1 v) (instantiateClosure clo2 v)
+  equate (1 + env) VUniv (appTermClosure clo1 v) (appTermClosure clo2 v)
 equate env (VPi _ a clo) v1 v2 = do
   let x = freshVar env a
-      fiber = instantiateClosure clo x
+      fiber = appTermClosure clo x
   equate env fiber (doApply v1 x) (doApply v2 x)
 equate env _ (VSigma _ a1 clo1) (VSigma _ a2 clo2) = do
   equate env VUniv a1 a2
   let v = freshVar env a1
-  equate (1 + env) VUniv (instantiateClosure clo1 v) (instantiateClosure clo2 v)
+  equate (1 + env) VUniv (appTermClosure clo1 v) (appTermClosure clo2 v)
 equate env (VSigma _ a clo) v1 v2 = do
   equate env a (doFst v1) (doFst v2)
-  let fiber = instantiateClosure clo v1
+  let fiber = appTermClosure clo v1
   equate env fiber (doSnd v1) (doSnd v2)
 equate _ _ VUnit VUnit = pure ()
 equate _ _ VTrue VTrue = pure ()
@@ -375,14 +375,14 @@ eval env = \case
 
 doApply :: Value -> Value -> Value
 doApply (VLam _ clo) arg =
-  instantiateClosure clo arg
+  appTermClosure clo arg
 doApply (VNeutral (VPi _ a clo) neu) arg =
-  let fiber = instantiateClosure clo arg
+  let fiber = appTermClosure clo arg
    in VNeutral fiber (pushFrame neu (VApp a arg))
 doApply _ _ = error "Internal Error: impossible case in doApply"
 
-instantiateClosure :: Closure -> Value -> Value
-instantiateClosure (Closure env body) v = eval (Snoc env v) body
+appTermClosure :: Closure -> Value -> Value
+appTermClosure (Closure env body) v = eval (Snoc env v) body
 
 doIf :: Value -> Value -> Value -> Value -> Value
 doIf motive scrut t1 t2 =
@@ -403,7 +403,7 @@ doFst _ = error "Internal Error: impossible case in doFst"
 doSnd :: Value -> Value
 doSnd (VPair _a b) = b
 doSnd v@(VNeutral (VSigma _ _a clo) neu) =
-  let fiber = instantiateClosure clo (doFst v)
+  let fiber = appTermClosure clo (doFst v)
    in VNeutral fiber (pushFrame neu VSnd)
 doSnd _ = error "Internal Error: impossible case in doSnd"
 
@@ -413,30 +413,30 @@ quote _ VBoolTy VTrue = STrue
 quote _ VBoolTy VFalse = SFalse
 quote l (VPi _ a cloTy) (VLam bndr clo) =
   let arg = VNeutral a $ Neutral (VVar l) Nil
-      body = quote (incLevel l) (instantiateClosure cloTy arg) (instantiateClosure clo arg)
+      body = quote (incLevel l) (appTermClosure cloTy arg) (appTermClosure clo arg)
    in SAbs bndr body
 quote l (VPi bndr a clo) v =
   let arg = VNeutral a $ Neutral (VVar l) Nil
-      body = quote (incLevel l) (instantiateClosure clo arg) $ doApply v arg
+      body = quote (incLevel l) (appTermClosure clo arg) $ doApply v arg
    in SAbs bndr body
 quote l _ (VPi bndr a clo) =
   let qa = quote l VUniv a
       arg = VNeutral a $ Neutral (VVar l) Nil
-      b = quote (incLevel l) VUniv (instantiateClosure clo arg)
+      b = quote (incLevel l) VUniv (appTermClosure clo arg)
    in SPi bndr qa b
 quote l _ (VSigma bndr a clo) =
   let qa = quote l VUniv a
       arg = VNeutral a $ Neutral (VVar l) Nil
-      b = quote (incLevel l) VUniv (instantiateClosure clo arg)
+      b = quote (incLevel l) VUniv (appTermClosure clo arg)
    in SSigma bndr qa b
 quote l (VSigma _bndr a clo) (VPair v1 v2) =
   let t1 = quote l a v1
-      t2 = quote l (instantiateClosure clo v1) v2
+      t2 = quote l (appTermClosure clo v1) v2
    in SPair t1 t2
 quote l (VSigma _bndr a clo) v =
   let v1 = doFst v
       t1 = quote l a v1
-      t2 = quote l (instantiateClosure clo v1) (doSnd v)
+      t2 = quote l (appTermClosure clo v1) (doSnd v)
    in SPair t1 t2
 quote l ty1 (VNeutral ty2 neu) =
   if ty1 == ty2

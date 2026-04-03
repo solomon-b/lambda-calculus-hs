@@ -383,7 +383,7 @@ eval = \case
 -- arg@ becomes @body@ evaluated in the closure's captured environment extended
 -- with @arg@.
 doApply :: Value -> Value -> EvalM Value
-doApply (VLam _ clo) arg = instantiateClosure clo arg
+doApply (VLam _ clo) arg = appTermClosure clo arg
 doApply _ _ = error "impossible case in doApply"
 
 doFst :: Value -> EvalM Value
@@ -400,8 +400,8 @@ doSnd _ = error "impossible case in doSnd"
 -- This is the key operation: substitution is replaced by a constant-time
 -- 'Snoc', and the actual lookup happens lazily when we hit a 'Var' during
 -- evaluation of the body.
-instantiateClosure :: Closure -> Value -> EvalM Value
-instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
+appTermClosure :: Closure -> Value -> EvalM Value
+appTermClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 
 --------------------------------------------------------------------------------
 -- Main

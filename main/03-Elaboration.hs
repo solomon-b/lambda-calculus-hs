@@ -541,7 +541,7 @@ eval = \case
   SUnit -> pure VUnit
 
 doApply :: Value -> Value -> EvalM Value
-doApply (VLam _ clo) arg = instantiateClosure clo arg
+doApply (VLam _ clo) arg = appTermClosure clo arg
 doApply (VNeutral (FuncTy ty1 ty2) neu) arg = pure $ VNeutral ty2 (pushFrame neu (VApp ty1 arg))
 doApply _ _ = error "impossible case in doApply"
 
@@ -553,8 +553,8 @@ doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
 doSnd _ = error "impossible case in doSnd"
 
-instantiateClosure :: Closure -> Value -> EvalM Value
-instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
+appTermClosure :: Closure -> Value -> EvalM Value
+appTermClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 
 --------------------------------------------------------------------------------
 -- Quoting
@@ -577,7 +577,7 @@ instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 quote :: Lvl -> Type -> Value -> EvalM Syntax
 quote l (FuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) = do
   body <- bindVar ty1 l $ \v l' -> do
-    clo <- instantiateClosure clo v
+    clo <- appTermClosure clo v
     quote l' ty2 clo
   pure $ SLam bndr body
 quote l (FuncTy ty1 ty2) f = do

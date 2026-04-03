@@ -948,8 +948,8 @@ doGet name (VRecord fields) =
     Just field -> pure field
 doGet _ _ = error "impossible case in doGet"
 
-instantiateClosure :: Closure -> Value -> EvalM Value
-instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
+appTermClosure :: Closure -> Value -> EvalM Value
+appTermClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 
 --------------------------------------------------------------------------------
 -- Quoting
@@ -974,7 +974,7 @@ instantiateClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 quote :: Lvl -> Type -> Value -> EvalM Syntax
 quote l (FuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) = do
   body <- bindVar ty1 l $ \v l' -> do
-    clo <- instantiateClosure clo v
+    clo <- appTermClosure clo v
     quote l' ty2 clo
   pure $ SLam bndr body
 quote l (FuncTy ty1 ty2) f = do

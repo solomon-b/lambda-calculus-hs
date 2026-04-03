@@ -255,13 +255,13 @@ eval env@(EvalEnv (locals, size)) = \case
 
 doApply :: Value -> Value -> Value
 doApply (VLam _ clo) arg =
-  instantiateClosure clo arg
+  appTermClosure clo arg
 doApply (VNeutral (ty1 :-> ty2) neu) arg =
   VNeutral ty2 (pushFrame neu (VApp ty1 arg))
 doApply t1 t2 = error "Internal error: impossible case in doApply"
 
-instantiateClosure :: Closure -> Value -> Value
-instantiateClosure (Closure env body) v = eval (extendEvalEnv env v) body
+appTermClosure :: Closure -> Value -> Value
+appTermClosure (Closure env body) v = eval (extendEvalEnv env v) body
 
 doIf :: Value -> Value -> Value -> Value
 doIf VTrue t2 t3 = t2
@@ -273,7 +273,7 @@ quote _ BoolT VTrue = STrue
 quote _ BoolT VFalse = SFalse
 quote l ty@(tyA :-> tyB) v@(VLam bndr clo@(Closure env body)) =
   let xVal = VNeutral tyA $ Neutral (VVar l) Nil
-   in SAbs bndr $ quote (incLevel l) tyB $ instantiateClosure clo xVal
+   in SAbs bndr $ quote (incLevel l) tyB $ appTermClosure clo xVal
 quote l ty@(tyA :-> tyB) v =
   let xVal = VNeutral tyA $ Neutral (VVar l) Nil
    in SAbs (Name "_") $ quote (incLevel l) tyB $ doApply v xVal

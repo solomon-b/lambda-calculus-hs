@@ -173,13 +173,13 @@ eval env = \case
 
 doApply :: Value -> Value -> Value
 doApply (VLam _ clo) arg =
-  instantiateClosure clo arg
+  appTermClosure clo arg
 doApply (VNeutral (ty1 :-> ty2) neu) arg =
   VNeutral ty2 (pushFrame neu (VApp ty1 arg))
 doApply _ _ = error "impossible case in doApply"
 
-instantiateClosure :: Closure -> Value -> Value
-instantiateClosure (Closure env body) v = eval (extend env v) body
+appTermClosure :: Closure -> Value -> Value
+appTermClosure (Closure env body) v = eval (extend env v) body
 
 doIf :: Value -> Value -> Value -> Value
 doIf VTrue t2 _t3 = t2
@@ -192,7 +192,7 @@ quote _ BoolT VTrue = T
 quote _ BoolT VFalse = F
 quote l (tyA :-> tyB) (VLam bndr clo@(Closure _env _body)) =
   let body = bindVar tyA l $ \v l' ->
-        quote l' tyB $ instantiateClosure clo v
+        quote l' tyB $ appTermClosure clo v
    in Abs bndr body
 quote l (tyA :-> tyB) f =
   let body = bindVar tyA l $ \v l' ->
