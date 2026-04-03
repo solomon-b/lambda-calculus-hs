@@ -18,7 +18,7 @@ might want to include in your custom language in one place.
 - [X] Subtyping
 - [X] Nominal Inductive Types
 - [X] Iso-Inductive Types
-- [ ] System F
+- [X] System F
 - [ ] Martin-Lof Type Theory (Pi and Sigma Types)
 - [ ] Universes
 - [ ] Indexed Inductive Types
