@@ -288,33 +288,6 @@ prettyType _ (AdtTy n) = PP.pretty (getName n)
 instance PP.Pretty Type where
   pretty = prettyType lamPrec
 
--- | Specifies the type of a single constructor argument. 'Term' means a
--- concrete type, 'Rec' means a recursive reference to the enclosing data type.
-data ArgSpec
-  = Term Type
-  | -- | A recursive reference to the enclosing data type.
-    Rec
-  deriving stock (Show, Eq, Ord)
-
--- | A single data constructor: a name and a list of argument specs. For
--- example, @Constr "Cons" [Term BoolTy, Rec]@ is the @Cons@ constructor taking
--- a @Bool@ and a recursive list.
-data DataConstructorSpec
-  = Constr Name [ArgSpec]
-  deriving stock (Show, Eq, Ord)
-
-getCnstrName :: DataConstructorSpec -> Name
-getCnstrName (Constr nm _) = nm
-
--- | A complete data type definition: a type name and its constructors.
---
--- For example, @DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [Term
--- BoolTy, Rec]]@. Currently monomorphic. With polymorphism, this would carry
--- type parameters.
-data DataTypeSpec
-  = DataTypeSpec Name [DataConstructorSpec]
-  deriving stock (Show, Eq, Ord)
-
 -- | Core IR with de Bruijn indices.
 --
 -- This is what the evaluator operates on. Elaboration translates 'Term' into
@@ -487,6 +460,45 @@ data Closure = Closure {env :: SnocList Value, body :: Syntax}
   deriving stock (Show, Eq, Ord)
 
 --------------------------------------------------------------------------------
+-- ADTs
+
+-- | A complete data type definition: a type name and its constructors.
+--
+-- For example, @DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [Term
+-- BoolTy, Rec]]@. Currently monomorphic. With polymorphism, this would carry
+-- type parameters.
+data DataTypeSpec
+  = DataTypeSpec Name [DataConstructorSpec]
+  deriving stock (Show, Eq, Ord)
+
+-- | A single data constructor: a name and a list of argument specs. For
+-- example, @Constr "Cons" [Term BoolTy, Rec]@ is the @Cons@ constructor taking
+-- a @Bool@ and a recursive list.
+data DataConstructorSpec
+  = Constr Name [ArgSpec]
+  deriving stock (Show, Eq, Ord)
+
+getCnstrName :: DataConstructorSpec -> Name
+getCnstrName (Constr nm _) = nm
+
+-- | Specifies the type of a single constructor argument. 'Term' means a
+-- concrete type, 'Rec' means a recursive reference to the enclosing data type.
+data ArgSpec
+  = Term Type
+  | -- | A recursive reference to the enclosing data type.
+    Rec
+  deriving stock (Show, Eq, Ord)
+
+-- | We predefine a few ADTs here for demonstration purposes. In a complete
+-- language these would be defined using 'data' declarations in a module.
+stockADTs :: Map Name DataTypeSpec
+stockADTs =
+  Map.fromList
+    [ ("MaybeBool", DataTypeSpec "MaybeBool" [Constr "Nothing" [], Constr "Just" [Term BoolTy]]),
+      ("ListBool", DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [Term BoolTy, Rec]])
+    ]
+
+--------------------------------------------------------------------------------
 -- Environment
 --
 -- The typechecker's context. Elaboration needs to track names (for resolving
@@ -518,15 +530,6 @@ data Env = Env
     adtConstructors :: Map Name DataTypeSpec
   }
   deriving stock (Show, Eq, Ord)
-
--- | We predefine a few ADTs here for demonstration purposes. In a complete
--- language these would be defined using 'data' declarations in a module.
-stockADTs :: Map Name DataTypeSpec
-stockADTs =
-  Map.fromList
-    [ ("MaybeBool", DataTypeSpec "MaybeBool" [Constr "Nothing" [], Constr "Just" [Term BoolTy]]),
-      ("ListBool", DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [Term BoolTy, Rec]])
-    ]
 
 adtConstructorsMap :: Map Name DataTypeSpec
 adtConstructorsMap = Map.fromList $ foldr (\d@(DataTypeSpec _ cs) acc -> fmap ((,d) . getCnstrName) cs <> acc) [] stockADTs
@@ -629,7 +632,6 @@ synth = \case
   Snd tm -> sndTactic (synth tm)
   Anno ty tm -> annoTactic ty (check tm)
   Get name tm -> getTactic name (synth tm)
-  Cnstr nm args -> constructorTactic nm (fmap check args)
   Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
   tm -> Synth $ throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
@@ -650,7 +652,7 @@ check (Integer z) = integerTactic z
 check (Natural n) = naturalTactic n
 check (Real r) = realTactic r
 check (Record fields) = recordTactic (fmap (fmap (id &&& check)) fields)
--- check (Cnstr nm args) = constructorTactic nm (fmap check args)
+check (Cnstr nm args) = constructorTactic nm (fmap check args)
 check (Case scrut cases) = caseTactic (synth scrut) (fmap (\(x, y, z) -> (x, check (foldr Lam z y))) cases)
 check tm = subTactic (synth tm)
 
@@ -1041,50 +1043,46 @@ realTactic r = Check $ \case
 -- | ADT Introduction Tactic
 --
 -- The basic concept here is that we:
--- 1. Lookup the Data Constructor Spec from the environment.
--- 2. Derive a Function Type from the spec. For example:
+-- 1. Decompose the expected type through function arrows to find the ADT
+--    return type.
+-- 2. Match the return type against @AdtTy tyName@.
+-- 3. Lookup the constructor spec and build the full constructor function type.
+-- 4. Eta-expand the constructor, check applied arguments against parameter
+--    types, and fold applications over the expanded constructor.
 --
---      data Pair = Pair Bool Bool
---      type PairTy = Bool → Bool → Pair
+-- Supports partial application: if fewer arguments are provided than
+-- parameters, the unapplied suffix remains as function arrows in the
+-- expected type. For example:
 --
--- 3. Use the Params of the derived function type to Check the Construtor's
---    params.
--- 4. If we have the correct number of Checks and they pass then we use the
---    param 'Syntax' to build our 'SCnstr' syntax.
+-- @Cons : Bool → ListBool → ListBool@ checks @Cons True@ against
+-- @Bool → ListBool@ by eta-expanding to @λ.λ. Cons 1 0@ and applying
+-- @True@ to the first parameter.
 --
--- We also want to handle partial application of type constructors which adds a
--- little bit more complexity.
---
--- To do this we need to Eta Expand around the constructor and then 'SAp' the
--- param 'Syntax' to the lambda expression.
---
--- For example:
--- data Pair = Pair Bool Bool
---
--- Pair            ⇒ λ.λ. Pair 1 0        : Bool → Bool → Pair
--- Pair True       ⇒ (λ.λ. Pair 1 0) True : Bool → Pair
--- Pair True False ⇒ (λ.λ. Pair 1 0) True False  : Pair
---
--- Thus our final typing judgement becomes:
---
--- Γ ⊢ 𝐶 : T₁ → ... → Tₙ → T   Γ ⊢ 𝑡ᵢ ⇐ Tᵢ (i ∈ 1 ... m, m ≤ n)
--- ──────────────────────────────────────────────────── Cnstr⇒
---    Γ ⊢ (λ[𝑥₁ ... 𝑥ₙ] → 𝐶 𝑥₁ ... 𝑥ₙ) 𝑡ᵢ ... 𝑡ₘ ⇒ T
-constructorTactic :: Name -> [Check] -> Synth
-constructorTactic nm chks = Synth $ do
-  lookupDataTypeSpec nm $ \(DataTypeSpec tyName _) ->
-    lookupDataCnstrSpec nm $ \dataConstrSpec -> do
-      let fullTy = buildConstrType tyName dataConstrSpec
-          (tyCnstr, paramTys) = decomposeFunction fullTy
-          scnstr = etaExpandCnstr (length paramTys) (SCnstr nm [])
-          returnTy = foldr FuncTy tyCnstr $ drop (length chks) paramTys
-
-      when (length chks > length paramTys) $
-        throwError $
-          TypeError $
-            "Data Constructor '" <> show nm <> "' is applied to " <> show (length chks) <> " value arguments, but it's type only expects " <> show (length paramTys)
-      params <- zipWithM runCheck chks paramTys
-      pure (returnTy, foldl' SAp scnstr params)
+--   Γ ⊢ C : T₁ → ... → Tₙ → T   Γ ⊢ tᵢ ⇐ Tᵢ (i ∈ 1...m, m ≤ n)
+-- ──────────────────────────────────────────────── Cnstr⇐
+--   Γ ⊢ (λ[x₁...xₙ]. C x₁...xₙ) t₁...tₘ
+--     ⇐ Tₘ₊₁ → ... → Tₙ → T
+constructorTactic :: Name -> [Check] -> Check
+constructorTactic nm chks = Check $ \expectedTy -> do
+  let (returnTy, _) = decomposeFunction expectedTy
+  case returnTy of
+    AdtTy tyName ->
+      lookupDataCnstrSpec nm $ \dataConstrSpec -> do
+        let constrTy = buildConstrType tyName dataConstrSpec
+            (_returnTy, paramTys) = decomposeFunction constrTy
+        when (length chks > length paramTys) $
+          throwError $
+            TypeError $
+              "Data Constructor '"
+                <> show nm
+                <> "' expects "
+                <> show (length paramTys)
+                <> " arguments but got "
+                <> show (length chks)
+        let scnstr = etaExpandCnstr (length paramTys) (SCnstr nm [])
+        params <- zipWithM runCheck chks paramTys
+        pure $ foldl' SAp scnstr params
+    ty -> throwError $ TypeError $ "Expected an ADT type but got: " <> show ty
 
 -- | Build a function type from a 'DataConstructorSpec'
 buildConstrType :: Name -> DataConstructorSpec -> Type
@@ -1595,32 +1593,32 @@ main = do
   section "Construction"
   test
     "Nil"
-    (Cnstr "Nil" [])
+    (Anno (AdtTy "ListBool") (Cnstr "Nil" []))
   test
     "Cons True Nil"
-    (Cnstr "Cons" [Tru, Cnstr "Nil" []])
+    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
   test
     "Cons True (Cons False Nil)"
-    (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]])
+    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]]))
   test
     "Nothing"
-    (Cnstr "Nothing" [])
+    (Anno (AdtTy "MaybeBool") (Cnstr "Nothing" []))
   test
     "Just True"
-    (Cnstr "Just" [Tru])
+    (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Tru]))
   putStrLn ""
 
   -- Partial application of constructors
   section "Partial Application"
   test
-    "Cons (partially applied, returns function)"
-    (Cnstr "Cons" [])
+    "fully unapplied Cons"
+    (Anno (FuncTy BoolTy (FuncTy (AdtTy "ListBool") (AdtTy "ListBool"))) (Cnstr "Cons" []))
   test
-    "Cons True (partially applied, returns function)"
-    (Cnstr "Cons" [Tru])
+    "partially applied Cons"
+    (Anno (FuncTy (AdtTy "ListBool") (AdtTy "ListBool")) (Cnstr "Cons" [Tru]))
   test
-    "Just (partially applied, returns function)"
-    (Cnstr "Just" [])
+    "partially applied Just"
+    (Anno (FuncTy BoolTy (AdtTy "MaybeBool")) (Cnstr "Just" []))
   putStrLn ""
 
   -- Case elimination
@@ -1630,7 +1628,7 @@ main = do
     ( Anno
         BoolTy
         ( Case
-            (Cnstr "Nil" [])
+            (Anno (AdtTy "ListBool") (Cnstr "Nil" []))
             [("Nil", [], Tru), ("Cons", ["x", "xs"], Fls)]
         )
     )
@@ -1639,7 +1637,7 @@ main = do
     ( Anno
         BoolTy
         ( Case
-            (Cnstr "Cons" [Tru, Cnstr "Nil" []])
+            (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
             [("Nil", [], Fls), ("Cons", ["x", "xs"], Var "x")]
         )
     )
@@ -1648,7 +1646,7 @@ main = do
     ( Anno
         BoolTy
         ( Case
-            (Cnstr "Cons" [Fls, Cnstr "Nil" []])
+            (Anno (AdtTy "ListBool") (Cnstr "Cons" [Fls, Cnstr "Nil" []]))
             [("Nil", [], Tru), ("Cons", ["x", "xs"], Var "x")]
         )
     )
@@ -1657,7 +1655,7 @@ main = do
     ( Anno
         BoolTy
         ( Case
-            (Cnstr "Nothing" [])
+            (Anno (AdtTy "MaybeBool") (Cnstr "Nothing" []))
             [("Nothing", [], Tru), ("Just", ["x"], Var "x")]
         )
     )
@@ -1666,7 +1664,7 @@ main = do
     ( Anno
         BoolTy
         ( Case
-            (Cnstr "Just" [Fls])
+            (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Fls]))
             [("Nothing", [], Tru), ("Just", ["x"], Var "x")]
         )
     )
@@ -1679,7 +1677,7 @@ main = do
     ( Anno
         (AdtTy "ListBool")
         ( Case
-            (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]])
+            (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]]))
             [("Nil", [], Cnstr "Nil" []), ("Cons", ["x", "xs"], Var "xs")]
         )
     )
@@ -1691,7 +1689,7 @@ main = do
             ( Anno
                 (AdtTy "ListBool")
                 ( Case
-                    (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]])
+                    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]]))
                     [("Nil", [], Cnstr "Nil" []), ("Cons", ["x", "xs"], Var "xs")]
                 )
             )
@@ -1710,20 +1708,20 @@ main = do
     )
   test
     "Cons ? Nil (hole in constructor arg)"
-    (Cnstr "Cons" [Hole, Cnstr "Nil" []])
+    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Hole, Cnstr "Nil" []]))
   putStrLn ""
 
   -- Error cases
   section "Error Cases (expected failures)"
   testErr
     "Too many args: Cons True False Nil"
-    (Cnstr "Cons" [Tru, Fls, Cnstr "Nil" []])
+    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Fls, Cnstr "Nil" []]))
   testErr
     "Unknown constructor"
-    (Cnstr "Bogus" [])
+    (Anno (AdtTy "ListBool") (Cnstr "Bogus" []))
   testErr
     "Type mismatch in constructor arg"
-    (Cnstr "Just" [Unit])
+    (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Unit]))
   testErr
     "Case on non-ADT type"
     ( Anno
