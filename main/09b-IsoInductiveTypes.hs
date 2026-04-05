@@ -297,39 +297,6 @@ prettyType _ (TVar n) = PP.pretty (getName n)
 instance PP.Pretty Type where
   pretty = prettyType lamPrec
 
--- | A single data constructor: a name and a list of field types. Unlike module
--- 09, field types are plain 'Type' values (recursive references use 'TVar'
--- rather than a separate 'Rec' tag).
-data DataConstructorSpec
-  = Constr Name [Type]
-  deriving stock (Show, Eq, Ord)
-
-getCnstrName :: DataConstructorSpec -> Name
-getCnstrName (Constr nm _) = nm
-
-getCnstrTypes :: DataConstructorSpec -> [Type]
-getCnstrTypes (Constr _ xs) = xs
-
--- | A complete data type definition. 'dataTypeSpecToMuTy' compiles this into an
--- iso-recursive mu-type over nested sums of products.
-data DataTypeSpec = DataTypeSpec Name [DataConstructorSpec]
-  deriving stock (Show, Eq, Ord)
-
--- | Compile a data type spec into a mu-type. Each constructor becomes a branch
--- of a nested sum, and its fields become a nested product. For example,
--- @ListBool@ with @Nil | Cons Bool ListBool@ becomes @mu L. Unit + (Bool * L)@.
-dataTypeSpecToMuTy :: DataTypeSpec -> Type
-dataTypeSpecToMuTy (DataTypeSpec tyName cnstrs) =
-  MuTy tyName $ foldSums $ fmap (foldProducts . getCnstrTypes) cnstrs
-  where
-    foldProducts [] = UnitTy
-    foldProducts [x] = x
-    foldProducts (x : xs) = PairTy x (foldProducts xs)
-
-    foldSums [] = VoidTy
-    foldSums [x] = x
-    foldSums (x : xs) = SumTy x (foldSums xs)
-
 -- | Core IR with de Bruijn indices.
 --
 -- This is what the evaluator operates on. Elaboration translates 'Term' into
@@ -502,6 +469,51 @@ data Closure = Closure {env :: SnocList Value, body :: Syntax}
   deriving stock (Show, Eq, Ord)
 
 --------------------------------------------------------------------------------
+-- ADTs
+
+-- | A single data constructor: a name and a list of field types. Unlike module
+-- 09, field types are plain 'Type' values (recursive references use 'TVar'
+-- rather than a separate 'Rec' tag).
+data DataConstructorSpec
+  = Constr Name [Type]
+  deriving stock (Show, Eq, Ord)
+
+getCnstrName :: DataConstructorSpec -> Name
+getCnstrName (Constr nm _) = nm
+
+getCnstrTypes :: DataConstructorSpec -> [Type]
+getCnstrTypes (Constr _ xs) = xs
+
+-- | A complete data type definition. 'dataTypeSpecToMuTy' compiles this into an
+-- iso-recursive mu-type over nested sums of products.
+data DataTypeSpec = DataTypeSpec Name [DataConstructorSpec]
+  deriving stock (Show, Eq, Ord)
+
+-- | Compile a data type spec into a mu-type. Each constructor becomes a branch
+-- of a nested sum, and its fields become a nested product. For example,
+-- @ListBool@ with @Nil | Cons Bool ListBool@ becomes @mu L. Unit + (Bool * L)@.
+dataTypeSpecToMuTy :: DataTypeSpec -> Type
+dataTypeSpecToMuTy (DataTypeSpec tyName cnstrs) =
+  MuTy tyName $ foldSums $ fmap (foldProducts . getCnstrTypes) cnstrs
+  where
+    foldProducts [] = UnitTy
+    foldProducts [x] = x
+    foldProducts (x : xs) = PairTy x (foldProducts xs)
+
+    foldSums [] = VoidTy
+    foldSums [x] = x
+    foldSums (x : xs) = SumTy x (foldSums xs)
+
+-- | We predefine a few ADTs here for demonstration purposes. In a complete
+-- language these would be defined using 'data' declarations in a module.
+stockADTs :: Map Name DataTypeSpec
+stockADTs =
+  Map.fromList
+    [ ("MaybeBool", DataTypeSpec "MaybeBool" [Constr "Nothing" [], Constr "Just" [BoolTy]]),
+      ("ListBool", DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [BoolTy, TVar "ListBool"]])
+    ]
+
+--------------------------------------------------------------------------------
 -- Environment
 --
 -- The typechecker's context. Elaboration needs to track names (for resolving
@@ -533,15 +545,6 @@ data Env = Env
     adtConstructors :: Map Name DataTypeSpec
   }
   deriving stock (Show, Eq, Ord)
-
--- | We predefine a few ADTs here for demonstration purposes. In a complete
--- language these would be defined using 'data' declarations in a module.
-stockADTs :: Map Name DataTypeSpec
-stockADTs =
-  Map.fromList
-    [ ("MaybeBool", DataTypeSpec "MaybeBool" [Constr "Nothing" [], Constr "Just" [BoolTy]]),
-      ("ListBool", DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [BoolTy, TVar "ListBool"]])
-    ]
 
 adtConstructorsMap :: Map Name DataTypeSpec
 adtConstructorsMap = Map.fromList $ foldr (\d@(DataTypeSpec _ cs) acc -> fmap ((,d) . getCnstrName) cs <> acc) [] stockADTs
