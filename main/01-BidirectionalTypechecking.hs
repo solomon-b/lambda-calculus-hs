@@ -23,33 +23,7 @@ import Data.String
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf)
 import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), runTest, runTestErr, section)
-
---------------------------------------------------------------------------------
--- Utils
-
--- | A list that grows on the right. We use this as our environment
--- representation because it matches the structure of de Bruijn indices: the
--- most recently bound variable is at the end (index 0), and older bindings are
--- further left (higher indices).
---
--- A regular list would work too, but snoc lists make the correspondence between
--- binding order and index explicit.
-data SnocList a
-  = Snoc (SnocList a) a
-  | Nil
-  deriving (Show, Eq, Ord, Functor, Foldable)
-
--- | Look up a value by de Bruijn index, counting from the right (most recent
--- binding).
-nth :: SnocList a -> Int -> Maybe a
-nth xs i
-  | i < 0 = Nothing
-  | otherwise =
-      let go = \case
-            (Nil, _) -> Nothing
-            (Snoc _ x, 0) -> Just x
-            (Snoc xs' _, i') -> go (xs', i' - 1)
-       in go (xs, i)
+import Utils (SnocList (..), nth)
 
 --------------------------------------------------------------------------------
 -- Syntax
