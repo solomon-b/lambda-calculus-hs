@@ -325,34 +325,6 @@ prettyType p (AdtTy n tys) =
 instance PP.Pretty Type where
   pretty = prettyType lamPrec
 
--- | A complete data type definition: a type name and its constructors.
---
--- For example, @DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [Term
--- BoolTy, Rec]]@. Currently monomorphic. With polymorphism, this would carry
--- type parameters.
-data DataTypeSpec
-  = DataTypeSpec Name Int [DataConstructorSpec]
-  deriving stock (Show, Eq, Ord)
-
--- | Specifies the type of a single constructor argument. 'Term' means a
--- concrete type, 'Rec' means a recursive reference to the enclosing data type.
-data ArgSpec
-  = Term SType
-  | -- | A recursive reference to the enclosing data type.
-    Rec
-  | TyParam Int
-  deriving stock (Show, Eq, Ord)
-
--- | A single data constructor: a name and a list of argument specs. For
--- example, @Constr "Cons" [Term BoolTy, Rec]@ is the @Cons@ constructor taking
--- a @Bool@ and a recursive list.
-data DataConstructorSpec
-  = Constr Name [ArgSpec]
-  deriving stock (Show, Eq, Ord)
-
-getCnstrName :: DataConstructorSpec -> Name
-getCnstrName (Constr nm _) = nm
-
 -- | Core IR with de Bruijn indices.
 --
 -- This is what the evaluator operates on. Elaboration translates 'Term' into
@@ -628,6 +600,46 @@ data Closure var a = Closure EvalEnv a
   deriving stock (Show, Eq, Ord)
 
 --------------------------------------------------------------------------------
+-- ADTs
+
+-- | A complete data type definition: a type name and its constructors.
+--
+-- For example, @DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [Term
+-- BoolTy, Rec]]@. Currently monomorphic. With polymorphism, this would carry
+-- type parameters.
+data DataTypeSpec
+  = DataTypeSpec Name Int [DataConstructorSpec]
+  deriving stock (Show, Eq, Ord)
+
+-- | A single data constructor: a name and a list of argument specs. For
+-- example, @Constr "Cons" [Term BoolTy, Rec]@ is the @Cons@ constructor taking
+-- a @Bool@ and a recursive list.
+data DataConstructorSpec
+  = Constr Name [ArgSpec]
+  deriving stock (Show, Eq, Ord)
+
+getCnstrName :: DataConstructorSpec -> Name
+getCnstrName (Constr nm _) = nm
+
+-- | Specifies the type of a single constructor argument. 'Term' means a
+-- concrete type, 'Rec' means a recursive reference to the enclosing data type.
+data ArgSpec
+  = Term SType
+  | -- | A recursive reference to the enclosing data type.
+    Rec
+  | TyParam Int
+  deriving stock (Show, Eq, Ord)
+
+-- | We predefine a few ADTs here for demonstration purposes. In a complete
+-- language these would be defined using 'data' declarations in a module.
+stockADTs :: Map Name DataTypeSpec
+stockADTs =
+  Map.fromList
+    [ ("Maybe", DataTypeSpec "Maybe" 1 [Constr "Nothing" [], Constr "Just" [TyParam 0]]),
+      ("List", DataTypeSpec "List" 1 [Constr "Nil" [], Constr "Cons" [TyParam 0, Rec]])
+    ]
+
+--------------------------------------------------------------------------------
 -- Environment
 --
 -- The typechecker's context. Elaboration needs to track names (for resolving
@@ -707,15 +719,6 @@ toEvalEnv env =
       envValues = env.localValues,
       envValuesLen = env.localValuesSize
     }
-
--- | We predefine a few ADTs here for demonstration purposes. In a complete
--- language these would be defined using 'data' declarations in a module.
-stockADTs :: Map Name DataTypeSpec
-stockADTs =
-  Map.fromList
-    [ ("Maybe", DataTypeSpec "Maybe" 1 [Constr "Nothing" [], Constr "Just" [TyParam 0]]),
-      ("List", DataTypeSpec "List" 1 [Constr "Nil" [], Constr "Cons" [TyParam 0, Rec]])
-    ]
 
 adtConstructorsMap :: Map Name DataTypeSpec
 adtConstructorsMap = Map.fromList $ foldr (\d@(DataTypeSpec _ _ cs) acc -> fmap ((,d) . getCnstrName) cs <> acc) [] stockADTs
