@@ -10,6 +10,8 @@ module TestHarness
   )
 where
 
+import PrettyTerm (Pretty, pretty, render)
+
 -- | A field that is present and should be displayed.
 class ShowField a where
   showField :: a -> Maybe String
@@ -28,7 +30,7 @@ data RunResult elab ty norm = RunResult
   deriving stock (Show)
 
 runTest ::
-  (Show term, Show ty, ShowField elab, ShowField norm, Show err) =>
+  (Pretty term, Show term, Show ty, ShowField elab, ShowField norm, Show err) =>
   (term -> Either (err, holes) (RunResult elab ty norm, holes)) ->
   String ->
   term ->
@@ -38,7 +40,8 @@ runTest run label term =
     Left (err, _) -> putStrLn $ "  FAIL: " <> label <> "\n        " <> show err
     Right (RunResult {..}, _) -> do
       putStrLn $ "  OK:   " <> label
-      putStrLn $ "        Term:   " <> show term
+      putStrLn $ "        Term:   " <> render (pretty term)
+      putStrLn $ "        Show:   " <> show term
       putStrLn $ "        Type:   " <> show elaboratedType
       mapM_ (\s -> putStrLn $ "        Elab:   " <> s) (showField elaborated)
       mapM_ (\s -> putStrLn $ "        Normal: " <> s) (showField normalForm)

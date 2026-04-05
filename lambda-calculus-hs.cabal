@@ -46,9 +46,9 @@ common common-settings
 library test-harness
   import:              common-settings
   visibility:          private
-  exposed-modules:     TestHarness
+  exposed-modules:     TestHarness, PrettyTerm
   hs-source-dirs:      lib
-  build-depends:       base >= 2 && <5
+  build-depends:       base >= 2 && <5, prettyprinter
 
 executable Untyped
   import:              common-settings

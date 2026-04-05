@@ -30,6 +30,8 @@ import Data.Scientific (Scientific)
 import Data.Semialign (Semialign (..))
 import Data.String
 import Data.These (These (..))
+import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
+import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
@@ -130,6 +132,83 @@ data Term
     Real Scientific
   deriving stock (Show, Eq, Ord)
 
+prettyTerm :: Prec -> Term -> PP.Doc ann
+prettyTerm _ (Var n) = PP.pretty (getName n)
+prettyTerm p (Lam n body) =
+  parensIf (p > lamPrec) $
+    lambdaSym <> PP.pretty (getName n) <> "." PP.<+> prettyTerm lamPrec body
+prettyTerm p (Ap f x) =
+  parensIf (p > appPrec) $
+    prettyTerm appPrec f PP.<+> prettyTerm atomPrec x
+prettyTerm p (Let n rhs body) =
+  parensIf (p > lamPrec) $
+    "let"
+      PP.<+> PP.pretty (getName n)
+      PP.<+> "="
+      PP.<+> prettyTerm lamPrec rhs
+      PP.<+> "in"
+      PP.<+> prettyTerm lamPrec body
+prettyTerm _ (Pair a b) =
+  PP.tupled [prettyTerm lamPrec a, prettyTerm lamPrec b]
+prettyTerm p (Fst e) =
+  parensIf (p > appPrec) $
+    "fst" PP.<+> prettyTerm atomPrec e
+prettyTerm p (Snd e) =
+  parensIf (p > appPrec) $
+    "snd" PP.<+> prettyTerm atomPrec e
+prettyTerm _ Unit = "()"
+prettyTerm p (Anno ty e) =
+  parensIf (p > lamPrec) $
+    prettyTerm (lamPrec + 1) e PP.<+> ":" PP.<+> prettyType lamPrec ty
+prettyTerm _ Hole = "_"
+prettyTerm _ Tru = "True"
+prettyTerm _ Fls = "False"
+prettyTerm p (If scrut t f) =
+  parensIf (p > lamPrec) $
+    "if"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "then"
+      PP.<+> prettyTerm lamPrec t
+      PP.<+> "else"
+      PP.<+> prettyTerm lamPrec f
+prettyTerm _ (Record fields) =
+  PP.braces $
+    PP.sep $
+      PP.punctuate PP.comma $
+        map (\(n, e) -> PP.pretty (getName n) PP.<+> "=" PP.<+> prettyTerm lamPrec e) fields
+prettyTerm p (Get n e) =
+  parensIf (p > appPrec) $
+    prettyTerm atomPrec e <> "." <> PP.pretty (getName n)
+prettyTerm p (Absurd e) =
+  parensIf (p > appPrec) $
+    "absurd" PP.<+> prettyTerm atomPrec e
+prettyTerm p (InL e) =
+  parensIf (p > appPrec) $
+    "inl" PP.<+> prettyTerm atomPrec e
+prettyTerm p (InR e) =
+  parensIf (p > appPrec) $
+    "inr" PP.<+> prettyTerm atomPrec e
+prettyTerm p (Case scrut (ln, l) (rn, r)) =
+  parensIf (p > lamPrec) $
+    "case"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "of"
+      PP.<+> "inl"
+      PP.<+> PP.pretty (getName ln)
+      PP.<+> arrowSym
+      PP.<+> prettyTerm lamPrec l
+      <> ";"
+        PP.<+> "inr"
+        PP.<+> PP.pretty (getName rn)
+        PP.<+> arrowSym
+        PP.<+> prettyTerm lamPrec r
+prettyTerm _ (Integer n) = PP.pretty n
+prettyTerm _ (Natural n) = PP.pretty n
+prettyTerm _ (Real n) = PP.pretty (show n)
+
+instance PP.Pretty Term where
+  pretty = prettyTerm lamPrec
+
 -- | The type language. Functions, pairs, unit, booleans, natural numbers, and
 -- record types.
 data Type
@@ -154,6 +233,31 @@ data Type
   | -- | Real numbers. @Real@. Top of the numeric tower.
     RealTy
   deriving stock (Show, Eq, Ord)
+
+prettyType :: Prec -> Type -> PP.Doc ann
+prettyType p (FuncTy a b) =
+  parensIf (p > arrowPrec) $
+    prettyType (arrowPrec + 1) a PP.<+> arrowSym PP.<+> prettyType arrowPrec b
+prettyType p (PairTy a b) =
+  parensIf (p > arrowPrec) $
+    prettyType (arrowPrec + 1) a PP.<+> "*" PP.<+> prettyType arrowPrec b
+prettyType _ UnitTy = "Unit"
+prettyType _ BoolTy = "Bool"
+prettyType _ (RecordTy fields) =
+  PP.braces $
+    PP.sep $
+      PP.punctuate PP.comma $
+        map (\(n, ty) -> PP.pretty (getName n) <> ":" PP.<+> prettyType lamPrec ty) fields
+prettyType p (SumTy a b) =
+  parensIf (p > sumPrec) $
+    prettyType (sumPrec + 1) a PP.<+> "+" PP.<+> prettyType sumPrec b
+prettyType _ VoidTy = "Void"
+prettyType _ NaturalTy = "Nat"
+prettyType _ IntegerTy = "Int"
+prettyType _ RealTy = "Real"
+
+instance PP.Pretty Type where
+  pretty = prettyType lamPrec
 
 -- | Core IR with de Bruijn indices.
 --

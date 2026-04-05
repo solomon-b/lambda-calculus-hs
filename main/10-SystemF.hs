@@ -42,6 +42,8 @@ import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific)
 import Data.String
 import Data.These
+import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, bigLambdaSym, forallSym, lamPrec, lambdaSym, parensIf, sumPrec)
+import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
@@ -153,6 +155,110 @@ data Term
     Case Term [(Name, [Name], Term)]
   deriving stock (Show, Eq, Ord)
 
+prettyTerm :: Prec -> Term -> PP.Doc ann
+prettyTerm _ (Var n) = PP.pretty (getName n)
+prettyTerm p (Lam n body) =
+  parensIf (p > lamPrec) $
+    lambdaSym <> PP.pretty (getName n) <> "." PP.<+> prettyTerm lamPrec body
+prettyTerm p (Ap f x) =
+  parensIf (p > appPrec) $
+    prettyTerm appPrec f PP.<+> prettyTerm atomPrec x
+prettyTerm p (TyLam n body) =
+  parensIf (p > lamPrec) $
+    bigLambdaSym <> PP.pretty (getName n) <> "." PP.<+> prettyTerm lamPrec body
+prettyTerm p (TyAp e ty) =
+  parensIf (p > appPrec) $
+    prettyTerm appPrec e PP.<+> PP.brackets (prettyType lamPrec ty)
+prettyTerm p (Let n rhs body) =
+  parensIf (p > lamPrec) $
+    "let"
+      PP.<+> PP.pretty (getName n)
+      PP.<+> "="
+      PP.<+> prettyTerm lamPrec rhs
+      PP.<+> "in"
+      PP.<+> prettyTerm lamPrec body
+prettyTerm p (Pair a b) =
+  parensIf (p > lamPrec) $
+    PP.tupled [prettyTerm lamPrec a, prettyTerm lamPrec b]
+prettyTerm p (Fst e) =
+  parensIf (p > appPrec) $
+    "fst" PP.<+> prettyTerm atomPrec e
+prettyTerm p (Snd e) =
+  parensIf (p > appPrec) $
+    "snd" PP.<+> prettyTerm atomPrec e
+prettyTerm _ Unit = "()"
+prettyTerm p (Anno ty e) =
+  parensIf (p > lamPrec) $
+    prettyTerm (lamPrec + 1) e PP.<+> ":" PP.<+> prettyType lamPrec ty
+prettyTerm _ Hole = "_"
+prettyTerm _ Tru = "True"
+prettyTerm _ Fls = "False"
+prettyTerm p (If scrut t f) =
+  parensIf (p > lamPrec) $
+    "if"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "then"
+      PP.<+> prettyTerm lamPrec t
+      PP.<+> "else"
+      PP.<+> prettyTerm lamPrec f
+prettyTerm _ (Record fields) =
+  PP.braces $
+    PP.sep $
+      PP.punctuate PP.comma $
+        map (\(n, e) -> PP.pretty (getName n) PP.<+> "=" PP.<+> prettyTerm lamPrec e) fields
+prettyTerm p (Get n e) =
+  parensIf (p > appPrec) $
+    prettyTerm atomPrec e <> "." <> PP.pretty (getName n)
+prettyTerm p (Absurd e) =
+  parensIf (p > appPrec) $
+    "absurd" PP.<+> prettyTerm atomPrec e
+prettyTerm p (InL e) =
+  parensIf (p > appPrec) $
+    "inl" PP.<+> prettyTerm atomPrec e
+prettyTerm p (InR e) =
+  parensIf (p > appPrec) $
+    "inr" PP.<+> prettyTerm atomPrec e
+prettyTerm p (SumCase scrut (ln, l) (rn, r)) =
+  parensIf (p > lamPrec) $
+    "case"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "of"
+      PP.<+> "inl"
+      PP.<+> PP.pretty (getName ln)
+      PP.<+> arrowSym
+      PP.<+> prettyTerm lamPrec l
+      <> ";"
+        PP.<+> "inr"
+        PP.<+> PP.pretty (getName rn)
+        PP.<+> arrowSym
+        PP.<+> prettyTerm lamPrec r
+prettyTerm _ (Integer n) = PP.pretty n
+prettyTerm _ (Natural n) = PP.pretty n
+prettyTerm _ (Real n) = PP.pretty (show n)
+prettyTerm _ (Cnstr n []) = PP.pretty (getName n)
+prettyTerm p (Cnstr n args) =
+  parensIf (p > appPrec) $
+    PP.pretty (getName n) PP.<+> PP.hsep (map (prettyTerm atomPrec) args)
+prettyTerm p (Case scrut branches) =
+  parensIf (p > lamPrec) $
+    "case"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "of"
+      PP.<+> PP.sep
+        ( PP.punctuate ";" $
+            map
+              ( \(cn, binds, body) ->
+                  PP.pretty (getName cn)
+                    PP.<+> PP.hsep (map (PP.pretty . getName) binds)
+                    PP.<+> arrowSym
+                    PP.<+> prettyTerm lamPrec body
+              )
+              branches
+        )
+
+instance PP.Pretty Term where
+  pretty = prettyTerm lamPrec
+
 -- | The type language. Functions, pairs, unit, booleans, natural numbers, and
 -- record types.
 data Type
@@ -185,6 +291,39 @@ data Type
   | -- | A nominal inductive type, referenced by name.
     AdtTy Name [Type]
   deriving stock (Show, Eq, Ord)
+
+prettyType :: Prec -> Type -> PP.Doc ann
+prettyType _ (TVar n) = PP.pretty (getName n)
+prettyType p (Forall n ty) =
+  parensIf (p > lamPrec) $
+    forallSym <> PP.pretty (getName n) <> "." PP.<+> prettyType lamPrec ty
+prettyType p (FuncTy a b) =
+  parensIf (p > arrowPrec) $
+    prettyType (arrowPrec + 1) a PP.<+> arrowSym PP.<+> prettyType arrowPrec b
+prettyType p (PairTy a b) =
+  parensIf (p > arrowPrec) $
+    prettyType (arrowPrec + 1) a PP.<+> "*" PP.<+> prettyType arrowPrec b
+prettyType _ UnitTy = "Unit"
+prettyType _ BoolTy = "Bool"
+prettyType _ (RecordTy fields) =
+  PP.braces $
+    PP.sep $
+      PP.punctuate PP.comma $
+        map (\(n, ty) -> PP.pretty (getName n) <> ":" PP.<+> prettyType lamPrec ty) fields
+prettyType p (SumTy a b) =
+  parensIf (p > sumPrec) $
+    prettyType (sumPrec + 1) a PP.<+> "+" PP.<+> prettyType sumPrec b
+prettyType _ VoidTy = "Void"
+prettyType _ NaturalTy = "Nat"
+prettyType _ IntegerTy = "Int"
+prettyType _ RealTy = "Real"
+prettyType _ (AdtTy n []) = PP.pretty (getName n)
+prettyType p (AdtTy n tys) =
+  parensIf (p > appPrec) $
+    PP.pretty (getName n) PP.<+> PP.hsep (map (prettyType atomPrec) tys)
+
+instance PP.Pretty Type where
+  pretty = prettyType lamPrec
 
 -- | A complete data type definition: a type name and its constructors.
 --
@@ -1844,7 +1983,7 @@ main = do
   -- Polymorphic identity
   section "Type Abstraction & Application"
   test
-    "(\\a. \\x. x) [Bool] True ==> True"
+    "poly id applied to Bool"
     ( Ap
         ( TyAp
             (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
@@ -1853,7 +1992,7 @@ main = do
         (Anno BoolTy Tru)
     )
   test
-    "(\\a. \\x. x) [Unit] () ==> ()"
+    "poly id applied to Unit"
     ( Ap
         ( TyAp
             (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
@@ -1862,13 +2001,13 @@ main = do
         Unit
     )
   test
-    "poly id unapplied: (\\a. \\x. x) : forall a. a -> a"
+    "poly id unapplied"
     ( Anno
         (Forall "a" (TVar "a" `FuncTy` TVar "a"))
         (TyLam "a" (Lam "x" (Var "x")))
     )
   test
-    "poly id instantiated: (\\a. \\x. x) [Bool] : Bool -> Bool"
+    "poly id instantiated at Bool"
     ( TyAp
         (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
         BoolTy
@@ -1878,7 +2017,7 @@ main = do
   -- Polymorphic const
   section "Polymorphic Const"
   test
-    "(\\a. \\b. \\x. \\y. x) [Bool] [Unit] True () ==> True"
+    "poly const applied to Bool and Unit"
     ( Ap
         ( Ap
             ( TyAp
@@ -1900,7 +2039,7 @@ main = do
   -- Nested forall
   section "Nested Forall"
   test
-    "(\\a. \\b. \\f. \\x. f x) [Bool] [Bool] not True ==> False"
+    "poly apply with not"
     ( Ap
         ( Ap
             ( TyAp
@@ -1922,7 +2061,7 @@ main = do
   -- Impredicative polymorphism
   section "Impredicative Polymorphism"
   test
-    "id [forall b. b -> b] id ==> id"
+    "impredicative: id applied to id"
     ( Ap
         ( TyAp
             (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
@@ -1954,28 +2093,28 @@ main = do
   -- Polymorphic ADTs
   section "Polymorphic ADTs - Maybe"
   test
-    "(Nothing : Maybe Bool)"
+    "Nothing at Maybe Bool"
     (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Nothing" []))
   test
-    "(Just True : Maybe Bool)"
+    "Just True at Maybe Bool"
     (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
   test
-    "(Just () : Maybe Unit)"
+    "Just unit at Maybe Unit"
     (Anno (AdtTy "Maybe" [UnitTy]) (Cnstr "Just" [Unit]))
   putStrLn ""
 
   section "Polymorphic ADTs - List"
   test
-    "(Nil : List Bool)"
+    "Nil at List Bool"
     (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
   test
-    "(Cons True Nil : List Bool)"
+    "singleton list"
     ( Anno
         (AdtTy "List" [BoolTy])
         (Cnstr "Cons" [Tru, Cnstr "Nil" []])
     )
   test
-    "(Cons False (Cons True Nil) : List Bool)"
+    "two-element list"
     ( Anno
         (AdtTy "List" [BoolTy])
         (Cnstr "Cons" [Fls, Cnstr "Cons" [Tru, Cnstr "Nil" []]])
@@ -1984,7 +2123,7 @@ main = do
 
   section "Polymorphic ADTs - Case"
   test
-    "case (Just True : Maybe Bool) of Nothing -> False; Just x -> x"
+    "case on Just"
     ( Anno
         BoolTy
         ( Case
@@ -1995,7 +2134,7 @@ main = do
         )
     )
   test
-    "case (Nil : List Bool) of Nil -> True; Cons x xs -> x"
+    "case on Nil"
     ( Anno
         BoolTy
         ( Case
@@ -2009,10 +2148,10 @@ main = do
 
   section "Polymorphic ADTs - Partial Application"
   test
-    "(Just : Bool -> Maybe Bool)"
+    "partially applied Just"
     (Anno (FuncTy BoolTy (AdtTy "Maybe" [BoolTy])) (Cnstr "Just" []))
   test
-    "(Cons : Bool -> List Bool -> List Bool)"
+    "fully unapplied Cons"
     ( Anno
         (FuncTy BoolTy (FuncTy (AdtTy "List" [BoolTy]) (AdtTy "List" [BoolTy])))
         (Cnstr "Cons" [])

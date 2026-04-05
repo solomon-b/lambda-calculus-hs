@@ -24,6 +24,8 @@ import Control.Monad.Writer.Strict (MonadWriter (..))
 import Data.Foldable (find)
 import Data.Maybe (fromMaybe)
 import Data.String
+import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf)
+import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), runTest, runTestErr, section)
 
 --------------------------------------------------------------------------------
@@ -97,6 +99,39 @@ data Term
     Hole
   deriving stock (Show, Eq, Ord)
 
+prettyTerm :: Prec -> Term -> PP.Doc ann
+prettyTerm _ (Var n) = PP.pretty (getName n)
+prettyTerm p (Lam n body) =
+  parensIf (p > lamPrec) $
+    lambdaSym <> PP.pretty (getName n) <> "." PP.<+> prettyTerm lamPrec body
+prettyTerm p (Ap f x) =
+  parensIf (p > appPrec) $
+    prettyTerm appPrec f PP.<+> prettyTerm atomPrec x
+prettyTerm p (Let n rhs body) =
+  parensIf (p > lamPrec) $
+    "let"
+      PP.<+> PP.pretty (getName n)
+      PP.<+> "="
+      PP.<+> prettyTerm lamPrec rhs
+      PP.<+> "in"
+      PP.<+> prettyTerm lamPrec body
+prettyTerm _ (Pair a b) =
+  PP.tupled [prettyTerm lamPrec a, prettyTerm lamPrec b]
+prettyTerm p (Fst e) =
+  parensIf (p > appPrec) $
+    "fst" PP.<+> prettyTerm atomPrec e
+prettyTerm p (Snd e) =
+  parensIf (p > appPrec) $
+    "snd" PP.<+> prettyTerm atomPrec e
+prettyTerm _ Unit = "()"
+prettyTerm p (Anno ty e) =
+  parensIf (p > lamPrec) $
+    prettyTerm (lamPrec + 1) e PP.<+> ":" PP.<+> prettyType lamPrec ty
+prettyTerm _ Hole = "_"
+
+instance PP.Pretty Term where
+  pretty = prettyTerm lamPrec
+
 -- | The type language. Functions, pairs, and unit.
 data Type
   = -- | Function type. @A -> B@.
@@ -106,6 +141,18 @@ data Type
   | -- | Unit type. @Unit@.
     UnitTy
   deriving stock (Show, Eq, Ord)
+
+prettyType :: Prec -> Type -> PP.Doc ann
+prettyType p (FuncTy a b) =
+  parensIf (p > arrowPrec) $
+    prettyType (arrowPrec + 1) a PP.<+> arrowSym PP.<+> prettyType arrowPrec b
+prettyType p (PairTy a b) =
+  parensIf (p > arrowPrec) $
+    prettyType (arrowPrec + 1) a PP.<+> "*" PP.<+> prettyType arrowPrec b
+prettyType _ UnitTy = "Unit"
+
+instance PP.Pretty Type where
+  pretty = prettyType lamPrec
 
 -- | Core IR with de Bruijn indices.
 --
