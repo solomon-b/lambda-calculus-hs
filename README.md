@@ -19,7 +19,7 @@ might want to include in your custom language in one place.
 - [X] Nominal Inductive Types
 - [X] Iso-Inductive Types
 - [X] System F
-- [ ] Martin-Lof Type Theory (Pi and Sigma Types)
+- [X] Martin-Lof Type Theory (Pi and Sigma Types)
 - [ ] Universes
 - [ ] Indexed Inductive Types
 - [ ] Equality

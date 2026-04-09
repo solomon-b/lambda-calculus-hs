@@ -182,3 +182,9 @@ executable 10-SystemF
   main-is:             10-SystemF.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
+
+executable 11-MLTT
+  import:              common-settings
+  main-is:             11-MLTT.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils

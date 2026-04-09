@@ -1,7 +1,10 @@
+{-# LANGUAGE DeriveTraversable #-}
+
 module Utils
   ( SnocList (..),
     nth,
     alignWithM,
+    allM,
   )
 where
 
@@ -18,7 +21,7 @@ import Data.These (These)
 data SnocList a
   = Snoc (SnocList a) a
   | Nil
-  deriving (Show, Eq, Ord, Functor, Foldable)
+  deriving (Show, Eq, Ord, Functor, Foldable, Traversable)
 
 -- | Look up a value by de Bruijn index, counting from the right
 -- (most recent binding).
@@ -44,3 +47,10 @@ alignWithM ::
   t b1 ->
   f (t b2)
 alignWithM f as = traverse f . align as
+
+allM :: (Monad m) => (a -> m Bool) -> [a] -> m Bool
+allM _ [] = pure True
+allM f (x : xs) =
+  f x >>= \case
+    False -> pure False
+    True -> allM f xs
