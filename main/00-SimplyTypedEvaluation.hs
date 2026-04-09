@@ -40,6 +40,8 @@ data Term
     Lam Name Term
   | -- | Function application. @f x@
     Ap Term Term
+  | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
+    Anno Type Term
   | -- | Pair introduction. @(a, b)@
     Pair Term Term
   | -- | First projection of a pair. @fst p@
@@ -48,8 +50,6 @@ data Term
     Snd Term
   | -- | The unit value. @()@
     Unit
-  | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
-    Anno Type Term
   deriving stock (Show, Eq, Ord)
 
 -- | The type language.
@@ -132,13 +132,13 @@ eval env = \case
     let fun = eval env tm1
         arg = eval env tm2
      in doApply fun arg
+  Anno _ty tm -> eval env tm
   Pair tm1 tm2 ->
     let tm1' = eval env tm1
         tm2' = eval env tm2
      in VPair tm1' tm2'
   Fst tm -> doFst $ eval env tm
   Snd tm -> doSnd $ eval env tm
-  Anno _ty tm -> eval env tm
   Unit -> VUnit
 
 -- | Apply a function value to an argument. This is beta reduction: @(λx. body)

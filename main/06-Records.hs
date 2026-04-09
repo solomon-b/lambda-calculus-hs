@@ -58,25 +58,25 @@ data Term
     Ap Term Term
   | -- | Let binding. @let x = t1 in t2@
     Let Name Term Term
+  | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
+    Anno Type Term
+  | -- | A missing subterm. Can only appear in check position (where the
+    -- expected type is known). In synth position it's an error.
+    Hole
   | -- | Pair introduction. @(a, b)@
     Pair Term Term
   | -- | First projection of a pair. @fst p@
     Fst Term
   | -- | Second projection of a pair. @snd p@
     Snd Term
-  | -- | The unit value. @()@
-    Unit
-  | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
-    Anno Type Term
-  | -- | A missing subterm. Can only appear in check position (where the
-    -- expected type is known). In synth position it's an error.
-    Hole
   | -- | Boolean true. @true@
     Tru
   | -- | Boolean false. @false@
     Fls
   | -- | Conditional. @if scrut then t else f@
     If Term Term Term
+  | -- | The unit value. @()@
+    Unit
   | -- | Zero, the base case for natural numbers.
     Zero
   | -- | Successor of a natural number.
@@ -107,6 +107,10 @@ prettyTerm p (Let n rhs body) =
       PP.<+> prettyTerm lamPrec rhs
       PP.<+> "in"
       PP.<+> prettyTerm lamPrec body
+prettyTerm p (Anno ty e) =
+  parensIf (p > lamPrec) $
+    prettyTerm (lamPrec + 1) e PP.<+> ":" PP.<+> prettyType lamPrec ty
+prettyTerm _ Hole = "_"
 prettyTerm _ (Pair a b) =
   PP.tupled [prettyTerm lamPrec a, prettyTerm lamPrec b]
 prettyTerm p (Fst e) =
@@ -115,11 +119,6 @@ prettyTerm p (Fst e) =
 prettyTerm p (Snd e) =
   parensIf (p > appPrec) $
     "snd" PP.<+> prettyTerm atomPrec e
-prettyTerm _ Unit = "()"
-prettyTerm p (Anno ty e) =
-  parensIf (p > lamPrec) $
-    prettyTerm (lamPrec + 1) e PP.<+> ":" PP.<+> prettyType lamPrec ty
-prettyTerm _ Hole = "_"
 prettyTerm _ Tru = "True"
 prettyTerm _ Fls = "False"
 prettyTerm p (If scrut t f) =
@@ -130,6 +129,7 @@ prettyTerm p (If scrut t f) =
       PP.<+> prettyTerm lamPrec t
       PP.<+> "else"
       PP.<+> prettyTerm lamPrec f
+prettyTerm _ Unit = "()"
 prettyTerm _ Zero = "0"
 prettyTerm p (Succ e) =
   parensIf (p > appPrec) $
@@ -156,10 +156,10 @@ data Type
     FuncTy Type Type
   | -- | Pair type. @A * B@.
     PairTy Type Type
-  | -- | Unit type. @Unit@.
-    UnitTy
   | -- | Bool Type. @Bool@.
     BoolTy
+  | -- | Unit type. @Unit@.
+    UnitTy
   | -- | Natural Numbers Type. @Nat@.
     NatTy
   | -- | A record type: a list of named fields with their types.
@@ -173,8 +173,8 @@ prettyType p (FuncTy a b) =
 prettyType p (PairTy a b) =
   parensIf (p > arrowPrec) $
     prettyType (arrowPrec + 1) a PP.<+> "*" PP.<+> prettyType arrowPrec b
-prettyType _ UnitTy = "Unit"
 prettyType _ BoolTy = "Bool"
+prettyType _ UnitTy = "Unit"
 prettyType _ NatTy = "Nat"
 prettyType _ (RecordTy fields) =
   PP.braces $
@@ -197,23 +197,23 @@ data Syntax
     SLam Name Syntax
   | -- | Function application.
     SAp Syntax Syntax
+  | -- | A hole carrying the expected type. Evaluates to a
+    -- neutral so it propagates through NbE.
+    SHole Type
   | -- | Pair introduction.
     SPair Syntax Syntax
   | -- | First projection of a pair.
     SFst Syntax
   | -- | Second projection of a pair.
     SSnd Syntax
-  | -- | The unit value.
-    SUnit
-  | -- | A hole carrying the expected type. Evaluates to a
-    -- neutral so it propagates through NbE.
-    SHole Type
   | -- | Boolean true.
     STru
   | -- | Boolean false.
     SFls
   | -- | Conditional. @if scrut then t else f@.
     SIf Syntax Type Syntax Syntax
+  | -- | The unit value.
+    SUnit
   | -- | Zero, the base case for natural numbers.
     SZero
   | -- | Successor of a natural number.
@@ -247,12 +247,12 @@ data Value
     VLam Name Closure
   | -- | A fully evaluated pair of values.
     VPair Value Value
-  | -- | The unit value.
-    VUnit
   | -- | Boolean true.
     VTru
   | -- | Boolean false.
     VFls
+  | -- | The unit value.
+    VUnit
   | -- | The natural number zero.
     VZero
   | -- | Successor of a natural number value.
@@ -435,30 +435,30 @@ newtype Synth = Synth {runSynth :: TypecheckM (Type, Syntax)}
 synth :: Term -> Synth
 synth = \case
   Var bndr -> varTactic bndr
-  Ap tm1 tm2 -> applyTactic (synth tm1) (check tm2)
-  Fst tm -> fstTactic (synth tm)
-  Snd tm -> sndTactic (synth tm)
+  Ap tm1 tm2 -> lamElim (synth tm1) (check tm2)
   Anno ty tm -> annoTactic ty (check tm)
-  Get name tm -> getTactic name (synth tm)
   Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
+  Fst tm -> pairElimFst (synth tm)
+  Snd tm -> pairElimSnd (synth tm)
+  Get name tm -> recordElim name (synth tm)
   tm -> Synth $ throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
 check :: Term -> Check
-check (Lam bndr body) = lamTactic bndr (check body)
+check (Lam bndr body) = lamIntro bndr (check body)
 check (Let bndr e body) = letTactic bndr (synth e) (check body)
-check Unit = unitTactic
-check (Pair tm1 tm2) = pairTactic (check tm1) (check tm2)
 check Hole = holeTactic
-check (If tm1 tm2 tm3) = ifTactic (check tm1) (check tm2) (check tm3)
-check Tru = trueTactic
-check Fls = falseTactic
-check Zero = zeroTactic
-check (Succ tm) = succTactic (check tm)
-check (NatRec tm1 tm2 n) = natRecTactic (check tm1) (check tm2) (check n)
-check (Record fields) = recordTactic (fmap (fmap (id &&& check)) fields)
+check (Pair tm1 tm2) = pairIntro (check tm1) (check tm2)
+check Tru = boolIntroTrue
+check Fls = boolIntroFalse
+check (If tm1 tm2 tm3) = boolElim (check tm1) (check tm2) (check tm3)
+check Unit = unitIntro
+check Zero = natIntroZero
+check (Succ tm) = natIntroSucc (check tm)
+check (NatRec tm1 tm2 n) = natElim (check tm1) (check tm2) (check n)
+check (Record fields) = recordIntro (fmap (fmap (id &&& check)) fields)
 check tm = subTactic (synth tm)
 
--- | Var Tactic
+-- | Variable Resolution
 --
 -- Resolve a named variable to its type and elaborated form. This is where name
 -- resolution happens.
@@ -482,7 +482,7 @@ varTactic bndr = Synth $ do
       pure (cellType, quoted)
     Nothing -> throwError $ OutOfScopeError bndr
 
--- | Sub Tactic
+-- | Subsumption
 --
 -- The bridge between synth and check. Synthesize a type for the term, then
 -- verify it matches the expected type. This is how a synthesizable term (like a
@@ -499,7 +499,7 @@ subTactic (Synth synth) = Check $ \ty1 -> do
     then pure tm
     else throwError $ TypeError $ "Expected: " <> show ty1 <> ", but got: " <> show ty2
 
--- | Anno Tactic
+-- | Annotation
 --
 -- The annotation provides a type, switching from synth to check mode. We check
 -- the body against the annotated type, then synthesize that type as the result.
@@ -514,19 +514,7 @@ annoTactic ty (Check check) = Synth $ do
   tm <- check ty
   pure (ty, tm)
 
--- | Unit Introduction Tactic
---
--- unit is a check rule, we verify the expected type is 'unitty'. there's
--- nothing to synthesize since @()@ doesn't carry type information.
---
--- ───────────── Unit⇐
--- Γ ⊢ () ⇐ Unit
-unitTactic :: Check
-unitTactic = Check $ \case
-  UnitTy -> pure SUnit
-  ty -> throwError $ TypeError $ "Expected Unit type but got: " <> show ty
-
--- | Lambda Introduction Tactic
+-- | Lambda Introduction
 --
 -- A lambda is checked against a function type. The expected type @A₁ → A₂@
 -- tells us what type the parameter has (@A₁@), so we extend the context and
@@ -538,8 +526,8 @@ unitTactic = Check $ \case
 --  Γ, x : A₁ ⊢ e ⇐ A₂
 -- ──────────────────── LamIntro⇐
 -- Γ ⊢ (λx.e) ⇐ A₁ → A₂
-lamTactic :: Name -> Check -> Check
-lamTactic bndr (Check bodyTac) = Check $ \case
+lamIntro :: Name -> Check -> Check
+lamIntro bndr (Check bodyTac) = Check $ \case
   a `FuncTy` b -> do
     ctx <- ask
     let var = freshCell ctx bndr a
@@ -547,7 +535,7 @@ lamTactic bndr (Check bodyTac) = Check $ \case
     pure $ SLam bndr fiber
   ty -> throwError $ TypeError $ "Tried to introduce a lambda at a non-function type: " <> show ty
 
--- | Lambda Elimination Tactic
+-- | Lambda Elimination
 --
 -- Application is a synth rule. Synthesize the function's type to get @A → B@,
 -- then check the argument against @A@, and return @B@. The function type tells
@@ -559,8 +547,8 @@ lamTactic bndr (Check bodyTac) = Check $ \case
 -- Γ ⊢ e₁ ⇒ A → B  Γ ⊢ e₂ ⇐ A
 -- ────────────────────────── LamElim⇒
 --       Γ ⊢ e₁ e₂ ⇒ B
-applyTactic :: Synth -> Check -> Synth
-applyTactic (Synth funcTac) (Check argTac) =
+lamElim :: Synth -> Check -> Synth
+lamElim (Synth funcTac) (Check argTac) =
   Synth $
     funcTac >>= \case
       (a `FuncTy` b, f) -> do
@@ -568,13 +556,13 @@ applyTactic (Synth funcTac) (Check argTac) =
         pure (b, SAp f arg)
       (ty, _) -> throwError $ TypeError $ "Expected a function type but got " <> show ty
 
--- | Let Tactic
+-- | Let Binding
 --
 -- @let x = e in body@ elaborates to @(λx. body') e'@. There is no dedicated
 -- @SLet@ in the core syntax. The let is fully dissolved by NbE: the beta redex
 -- reduces and the bound value is inlined into the normal form.
 --
--- Unlike 'lamTactic', which binds a fresh neutral variable (since the argument
+-- Unlike 'lamIntro', which binds a fresh neutral variable (since the argument
 -- is unknown), the let tactic evaluates @e@ and stores the resulting value in
 -- the context cell. This means references to @x@ in the body see the actual
 -- value during elaboration, not a stuck variable.
@@ -591,54 +579,7 @@ letTactic bndr (Synth synth) (Check bodyTac) = Check $ \ty -> do
   fiber <- local (bindCell var) $ bodyTac ty
   pure $ SAp (SLam bndr fiber) tm1
 
--- | Pair Introduction Tactic
---
--- Like lambdas, pairs are checked. the expected pair type @A × B@ tells us what
--- to check each component against.
---
--- Elaborates to @SPair a' b'@.
---
--- Γ ⊢ a ⇐ A   Γ ⊢ b ⇐ B
--- ───────────────────── Pair⇐
---  Γ ⊢ (a , b) ⇐ A × B
-pairTactic :: Check -> Check -> Check
-pairTactic (Check checkFst) (Check checkSnd) = Check $ \case
-  PairTy a b -> do
-    tm1 <- checkFst a
-    tm2 <- checkSnd b
-    pure (SPair tm1 tm2)
-  ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
-
--- | Pair Fst Elimination Tactic
---
--- Projection is a synth rule. Synthesize the pair's type to learn what the
--- components are, then return the appropriate one.
---
--- Γ ⊢ (t₁ , t₂) ⇒ A × B
--- ───────────────────── Fst⇒
---       Γ ⊢ t₁ ⇒ A
-fstTactic :: Synth -> Synth
-fstTactic (Synth synth) =
-  Synth $
-    synth >>= \case
-      (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
-      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
-
--- | Pair Snd Elimination Tactic
---
--- Same as fst, but returns the second component.
---
--- Γ ⊢ (t₁ , t₂) ⇒ A × B
--- ───────────────────── Snd⇒
---       Γ ⊢ t₂ ⇒ B
-sndTactic :: Synth -> Synth
-sndTactic (Synth synth) =
-  Synth $
-    synth >>= \case
-      (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
-      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
-
--- | Type Hole Tactic
+-- | Type Hole
 --
 -- A hole accepts any expected type and records it via the 'Writer' effect.
 -- Elaborates to @SHole ty@, which evaluates to a neutral and survives through
@@ -655,29 +596,76 @@ holeTactic = Check $ \ty -> do
   tell (Holes [ty])
   pure (SHole ty)
 
--- | Bool-False Introduction Tactic
+-- | Pair Introduction
 --
--- Checked against 'BoolTy'. Elaborates to 'SFls'.
+-- Like lambdas, pairs are checked. the expected pair type @A × B@ tells us what
+-- to check each component against.
 --
--- ──────────────── False⇐
--- Γ ⊢ False ⇐ Bool
-falseTactic :: Check
-falseTactic = Check $ \case
-  BoolTy -> pure SFls
-  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+-- Elaborates to @SPair a' b'@.
+--
+-- Γ ⊢ a ⇐ A   Γ ⊢ b ⇐ B
+-- ───────────────────── Pair⇐
+--  Γ ⊢ (a , b) ⇐ A × B
+pairIntro :: Check -> Check -> Check
+pairIntro (Check checkFst) (Check checkSnd) = Check $ \case
+  PairTy a b -> do
+    tm1 <- checkFst a
+    tm2 <- checkSnd b
+    pure (SPair tm1 tm2)
+  ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
--- | Bool-True Introduction Tactic
+-- | Pair Fst Elimination
+--
+-- Projection is a synth rule. Synthesize the pair's type to learn what the
+-- components are, then return the appropriate one.
+--
+-- Γ ⊢ (t₁ , t₂) ⇒ A × B
+-- ───────────────────── Fst⇒
+--       Γ ⊢ t₁ ⇒ A
+pairElimFst :: Synth -> Synth
+pairElimFst (Synth synth) =
+  Synth $
+    synth >>= \case
+      (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
+      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+
+-- | Pair Snd Elimination
+--
+-- Same as fst, but returns the second component.
+--
+-- Γ ⊢ (t₁ , t₂) ⇒ A × B
+-- ───────────────────── Snd⇒
+--       Γ ⊢ t₂ ⇒ B
+pairElimSnd :: Synth -> Synth
+pairElimSnd (Synth synth) =
+  Synth $
+    synth >>= \case
+      (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
+      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+
+-- | Bool-True Introduction
 --
 -- Checked against 'BoolTy'. Elaborates to 'STru'.
 --
 -- ──────────────── True⇐
 -- Γ ⊢ True ⇐ Bool
-trueTactic :: Check
-trueTactic = Check $ \case
+boolIntroTrue :: Check
+boolIntroTrue = Check $ \case
   BoolTy -> pure STru
   ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
 
--- | Bool Elimination Tactic
+-- | Bool-False Introduction
+--
+-- Checked against 'BoolTy'. Elaborates to 'SFls'.
+--
+-- ──────────────── False⇐
+-- Γ ⊢ False ⇐ Bool
+boolIntroFalse :: Check
+boolIntroFalse = Check $ \case
+  BoolTy -> pure SFls
+  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+
+-- | Bool Elimination
 --
 -- Check the condition against 'BoolTy', and both branches against the expected
 -- (motive) type. The motive is whatever type the @if@ expression is being
@@ -686,25 +674,37 @@ trueTactic = Check $ \case
 -- Γ ⊢ t₁ ⇐ Bool  Γ ⊢ t₂ ⇐ T  Γ ⊢ t₃ ⇐ T
 -- ───────────────────────────────────── If⇐
 --   Γ ⊢ If t₁ then t₂ else t₃ ⇐ T
-ifTactic :: Check -> Check -> Check -> Check
-ifTactic (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
+boolElim :: Check -> Check -> Check -> Check
+boolElim (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
   tm1 <- checkT1 BoolTy
   tm2 <- checkT2 ty
   tm3 <- checkT3 ty
   pure (SIf tm1 ty tm2 tm3)
 
--- | ℕ-Zero Introduction Tactic
+-- | Unit Introduction
+--
+-- unit is a check rule, we verify the expected type is 'unitty'. there's
+-- nothing to synthesize since @()@ doesn't carry type information.
+--
+-- ───────────── Unit⇐
+-- Γ ⊢ () ⇐ Unit
+unitIntro :: Check
+unitIntro = Check $ \case
+  UnitTy -> pure SUnit
+  ty -> throwError $ TypeError $ "Expected Unit type but got: " <> show ty
+
+-- | Nat Zero Introduction
 --
 -- Checked against 'NatTy'. Elaborates to 'SZero'.
 --
 -- ───────── Zero⇐
 -- Γ ⊢ 0 ⇐ ℕ
-zeroTactic :: Check
-zeroTactic = Check $ \case
+natIntroZero :: Check
+natIntroZero = Check $ \case
   NatTy -> pure SZero
   ty -> throwError $ TypeError $ "Expected ℕ type but got: " <> show ty
 
--- | ℕ-Succ Introduction Tactic
+-- | Nat Succ Introduction
 --
 -- Checked against 'NatTy'. The argument is also checked against 'NatTy'.
 -- Elaborates to @SSucc t'@.
@@ -712,12 +712,12 @@ zeroTactic = Check $ \case
 --   Γ ⊢ t ⇐ ℕ
 -- ────────────── Succ⇐
 -- Γ ⊢ Succ t ⇐ ℕ
-succTactic :: Check -> Check
-succTactic (Check check) = Check $ \case
+natIntroSucc :: Check -> Check
+natIntroSucc (Check check) = Check $ \case
   NatTy -> SSucc <$> check NatTy
   ty -> throwError $ TypeError $ "Expected ℕ type but got: " <> show ty
 
--- | Nat Recursion Tactic (Gödel's primitive recursor)
+-- | Nat Elimination (Gödel's primitive recursor)
 --
 -- The scrutinee is checked at 'NatTy'. The base case is checked at the motive
 -- type @T@. The step function is checked at @ℕ → T → T@: it receives the
@@ -728,15 +728,15 @@ succTactic (Check check) = Check $ \case
 -- Γ ⊢ s ⇐ ℕ  Γ ⊢ t₁ ⇐ T  Γ ⊢ t₂ ⇐ ℕ → T → T
 -- ───────────────────────────────────────── ℕ-Elim⇐
 --           Γ ⊢ elim t₁ t₂ s ⇐ T
-natRecTactic :: Check -> Check -> Check -> Check
-natRecTactic (Check zeroTac) (Check succTac) (Check scrutTac) =
+natElim :: Check -> Check -> Check -> Check
+natElim (Check zeroTac) (Check succTac) (Check scrutTac) =
   Check $ \ty -> do
     scrutinee <- scrutTac NatTy
     tm1 <- zeroTac ty
     tm2 <- succTac (NatTy `FuncTy` (ty `FuncTy` ty))
     pure (SNatRec tm1 tm2 scrutinee)
 
--- | Record Introduction Tactic
+-- | Record Introduction
 --
 -- Checked against a record type. Uses 'alignWithM' to match the term's fields
 -- against the type's fields via a 'Map'. 'These' means both present (check the
@@ -748,8 +748,8 @@ natRecTactic (Check zeroTac) (Check succTac) (Check scrutTac) =
 --         for each i  Γ ⊢ tᵢ ⇐ Tᵢ
 -- ─────────────────────────────────────── Record⇐
 -- Γ ⊢ { lᵢ = tᵢ} ⇐ { lᵢ : Tᵢ (i ∈ I..n) }
-recordTactic :: [(Name, (Term, Check))] -> Check
-recordTactic fields = Check $ \case
+recordIntro :: [(Name, (Term, Check))] -> Check
+recordIntro fields = Check $ \case
   RecordTy ty -> do
     fields' <-
       alignWithM
@@ -763,7 +763,7 @@ recordTactic fields = Check $ \case
     pure (SRecord $ Map.toList fields')
   ty -> throwError $ TypeError $ "Expected a Record type but got: " <> show ty
 
--- | Record Elimination Tactic
+-- | Record Elimination
 --
 -- Synthesize the record's type, then look up the projected field by name. A
 -- synth rule because the record's type tells us the field's type.
@@ -771,8 +771,8 @@ recordTactic fields = Check $ \case
 -- Γ ⊢ t₁ ⇒ { lᵢ : Tᵢ (i ∈ I..n) }
 -- ─────────────────────────────── Get⇒
 --       Γ ⊢ Get lⱼ t₁ ⇒ Tⱼ
-getTactic :: Name -> Synth -> Synth
-getTactic name (Synth fieldTac) = Synth $ do
+recordElim :: Name -> Synth -> Synth
+recordElim name (Synth fieldTac) = Synth $ do
   fieldTac >>= \case
     (RecordTy fields, tm) ->
       case lookup name fields of
@@ -814,13 +814,13 @@ eval = \case
     fun <- eval tm1
     arg <- eval tm2
     doApply fun arg
+  SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
   SPair tm1 tm2 -> do
     tm1' <- eval tm1
     tm2' <- eval tm2
     pure $ VPair tm1' tm2'
   SFst tm -> eval tm >>= doFst
   SSnd tm -> eval tm >>= doSnd
-  SUnit -> pure VUnit
   STru -> pure VTru
   SFls -> pure VFls
   SIf p motive t1 t2 -> do
@@ -828,6 +828,7 @@ eval = \case
     t1' <- eval t1
     t2' <- eval t2
     doIf p' motive t1' t2'
+  SUnit -> pure VUnit
   SZero -> pure VZero
   SSucc tm -> VSucc <$> eval tm
   SNatRec tm1 tm2 n -> do
@@ -837,7 +838,6 @@ eval = \case
     doNatRec n' tm1' tm2'
   SRecord fields -> doRecord fields
   SGet name tm -> eval tm >>= doGet name
-  SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appTermClosure clo arg
@@ -918,13 +918,13 @@ quote l (PairTy ty1 ty2) (VPair tm1 tm2) = do
   tm1' <- quote l ty1 tm1
   tm2' <- quote l ty2 tm2
   pure $ SPair tm1' tm2'
-quote l _ (VNeutral _ neu) = quoteNeutral l neu
-quote _ _ VUnit = pure SUnit
 quote _ _ VTru = pure STru
 quote _ _ VFls = pure SFls
+quote _ _ VUnit = pure SUnit
 quote _ _ VZero = pure SZero
 quote l ty (VSucc tm) = SSucc <$> quote l ty tm
 quote l ty (VRecord fields) = SRecord <$> traverse (traverse (quote l ty)) fields
+quote l _ (VNeutral _ neu) = quoteNeutral l neu
 quote _ ty tm = error $ "impossible case in quote:\n" <> show ty <> "\n" <> show tm
 
 quoteLevel :: Lvl -> Lvl -> Ix

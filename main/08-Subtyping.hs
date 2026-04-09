@@ -57,29 +57,25 @@ data Term
     Ap Term Term
   | -- | Let binding. @let x = t1 in t2@
     Let Name Term Term
+  | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
+    Anno Type Term
+  | -- | A missing subterm. Can only appear in check position (where the
+    -- expected type is known). In synth position it's an error.
+    Hole
   | -- | Pair introduction. @(a, b)@
     Pair Term Term
   | -- | First projection of a pair. @fst p@
     Fst Term
   | -- | Second projection of a pair. @snd p@
     Snd Term
-  | -- | The unit value. @()@
-    Unit
-  | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
-    Anno Type Term
-  | -- | A missing subterm. Can only appear in check position (where the
-    -- expected type is known). In synth position it's an error.
-    Hole
   | -- | Boolean true. @true@
     Tru
   | -- | Boolean false. @false@
     Fls
   | -- | Conditional. @if scrut then t else f@
     If Term Term Term
-  | -- | A record literal: a list of named fields with values.
-    Record [(Name, Term)]
-  | -- | Field projection from a record.
-    Get Name Term
+  | -- | The unit value. @()@
+    Unit
   | -- | Void elimination. Can produce any type from a value of type 'Void',
     -- since no such value exists.
     Absurd Term
@@ -89,12 +85,16 @@ data Term
     InR Term
   | -- | Binary sum elimination. Binds a variable in each branch.
     Case Term (Name, Term) (Name, Term)
-  | -- | An integer literal.
-    Integer Integer
   | -- | A natural number literal.
     Natural Integer
+  | -- | An integer literal.
+    Integer Integer
   | -- | A real number literal.
     Real Scientific
+  | -- | A record literal: a list of named fields with values.
+    Record [(Name, Term)]
+  | -- | Field projection from a record.
+    Get Name Term
   deriving stock (Show, Eq, Ord)
 
 prettyTerm :: Prec -> Term -> PP.Doc ann
@@ -113,6 +113,10 @@ prettyTerm p (Let n rhs body) =
       PP.<+> prettyTerm lamPrec rhs
       PP.<+> "in"
       PP.<+> prettyTerm lamPrec body
+prettyTerm p (Anno ty e) =
+  parensIf (p > lamPrec) $
+    prettyTerm (lamPrec + 1) e PP.<+> ":" PP.<+> prettyType lamPrec ty
+prettyTerm _ Hole = "_"
 prettyTerm _ (Pair a b) =
   PP.tupled [prettyTerm lamPrec a, prettyTerm lamPrec b]
 prettyTerm p (Fst e) =
@@ -121,11 +125,6 @@ prettyTerm p (Fst e) =
 prettyTerm p (Snd e) =
   parensIf (p > appPrec) $
     "snd" PP.<+> prettyTerm atomPrec e
-prettyTerm _ Unit = "()"
-prettyTerm p (Anno ty e) =
-  parensIf (p > lamPrec) $
-    prettyTerm (lamPrec + 1) e PP.<+> ":" PP.<+> prettyType lamPrec ty
-prettyTerm _ Hole = "_"
 prettyTerm _ Tru = "True"
 prettyTerm _ Fls = "False"
 prettyTerm p (If scrut t f) =
@@ -136,14 +135,7 @@ prettyTerm p (If scrut t f) =
       PP.<+> prettyTerm lamPrec t
       PP.<+> "else"
       PP.<+> prettyTerm lamPrec f
-prettyTerm _ (Record fields) =
-  PP.braces $
-    PP.sep $
-      PP.punctuate PP.comma $
-        map (\(n, e) -> PP.pretty (getName n) PP.<+> "=" PP.<+> prettyTerm lamPrec e) fields
-prettyTerm p (Get n e) =
-  parensIf (p > appPrec) $
-    prettyTerm atomPrec e <> "." <> PP.pretty (getName n)
+prettyTerm _ Unit = "()"
 prettyTerm p (Absurd e) =
   parensIf (p > appPrec) $
     "absurd" PP.<+> prettyTerm atomPrec e
@@ -167,9 +159,17 @@ prettyTerm p (Case scrut (ln, l) (rn, r)) =
         PP.<+> PP.pretty (getName rn)
         PP.<+> arrowSym
         PP.<+> prettyTerm lamPrec r
-prettyTerm _ (Integer n) = PP.pretty n
 prettyTerm _ (Natural n) = PP.pretty n
+prettyTerm _ (Integer n) = PP.pretty n
 prettyTerm _ (Real n) = PP.pretty (show n)
+prettyTerm _ (Record fields) =
+  PP.braces $
+    PP.sep $
+      PP.punctuate PP.comma $
+        map (\(n, e) -> PP.pretty (getName n) PP.<+> "=" PP.<+> prettyTerm lamPrec e) fields
+prettyTerm p (Get n e) =
+  parensIf (p > appPrec) $
+    prettyTerm atomPrec e <> "." <> PP.pretty (getName n)
 
 instance PP.Pretty Term where
   pretty = prettyTerm lamPrec
@@ -181,22 +181,22 @@ data Type
     FuncTy Type Type
   | -- | Pair type. @A * B@.
     PairTy Type Type
-  | -- | Unit type. @Unit@.
-    UnitTy
   | -- | Bool Type. @Bool@.
     BoolTy
-  | -- | A record type: a list of named fields with their types.
-    RecordTy [(Name, Type)]
-  | -- | Binary sum: @A + B@.
-    SumTy Type Type
+  | -- | Unit type. @Unit@.
+    UnitTy
   | -- | The empty type. No values inhabit it.
     VoidTy
+  | -- | Binary sum: @A + B@.
+    SumTy Type Type
   | -- | Natural numbers. @Nat@. Subtype of 'IntegerTy'.
     NaturalTy
   | -- | Integers. @Int@. Subtype of 'RealTy'.
     IntegerTy
   | -- | Real numbers. @Real@. Top of the numeric tower.
     RealTy
+  | -- | A record type: a list of named fields with their types.
+    RecordTy [(Name, Type)]
   deriving stock (Show, Eq, Ord)
 
 prettyType :: Prec -> Type -> PP.Doc ann
@@ -206,20 +206,20 @@ prettyType p (FuncTy a b) =
 prettyType p (PairTy a b) =
   parensIf (p > arrowPrec) $
     prettyType (arrowPrec + 1) a PP.<+> "*" PP.<+> prettyType arrowPrec b
-prettyType _ UnitTy = "Unit"
 prettyType _ BoolTy = "Bool"
+prettyType _ UnitTy = "Unit"
+prettyType _ VoidTy = "Void"
+prettyType p (SumTy a b) =
+  parensIf (p > sumPrec) $
+    prettyType (sumPrec + 1) a PP.<+> "+" PP.<+> prettyType sumPrec b
+prettyType _ NaturalTy = "Nat"
+prettyType _ IntegerTy = "Int"
+prettyType _ RealTy = "Real"
 prettyType _ (RecordTy fields) =
   PP.braces $
     PP.sep $
       PP.punctuate PP.comma $
         map (\(n, ty) -> PP.pretty (getName n) <> ":" PP.<+> prettyType lamPrec ty) fields
-prettyType p (SumTy a b) =
-  parensIf (p > sumPrec) $
-    prettyType (sumPrec + 1) a PP.<+> "+" PP.<+> prettyType sumPrec b
-prettyType _ VoidTy = "Void"
-prettyType _ NaturalTy = "Nat"
-prettyType _ IntegerTy = "Int"
-prettyType _ RealTy = "Real"
 
 instance PP.Pretty Type where
   pretty = prettyType lamPrec
@@ -236,41 +236,41 @@ data Syntax
     SLam Name Syntax
   | -- | Function application.
     SAp Syntax Syntax
+  | -- | A hole carrying the expected type. Evaluates to a
+    -- neutral so it propagates through NbE.
+    SHole Type
   | -- | Pair introduction.
     SPair Syntax Syntax
   | -- | First projection of a pair.
     SFst Syntax
   | -- | Second projection of a pair.
     SSnd Syntax
-  | -- | The unit value.
-    SUnit
-  | -- | A hole carrying the expected type. Evaluates to a
-    -- neutral so it propagates through NbE.
-    SHole Type
   | -- | Boolean true.
     STru
   | -- | Boolean false.
     SFls
   | -- | Conditional. @if scrut then t else f@.
     SIf Syntax Type Syntax Syntax
-  | -- | Record introduction. A list of named fields.
-    SRecord [(Name, Syntax)]
-  | -- | Record field projection. @r.field@.
-    SGet Name Syntax
+  | -- | The unit value.
+    SUnit
+  | -- | Elimination of the empty type. @absurd t@.
+    SAbsurd Type Syntax
   | -- | Left injection into a sum type. @inl x@.
     SInL Syntax
   | -- | Right injection into a sum type. @inr x@.
     SInR Syntax
   | -- | Case analysis on a sum type. @case scrut of inl x -> l; inr y -> r@.
     SCase Syntax Type Syntax Syntax
-  | -- | Elimination of the empty type. @absurd t@.
-    SAbsurd Type Syntax
-  | -- | An integer literal.
-    SInteger Integer
   | -- | A natural number literal.
     SNatural Integer
+  | -- | An integer literal.
+    SInteger Integer
   | -- | A real number literal.
     SReal Scientific
+  | -- | Record introduction. A list of named fields.
+    SRecord [(Name, Syntax)]
+  | -- | Record field projection. @r.field@.
+    SGet Name Syntax
   deriving stock (Show, Eq, Ord)
 
 -- | The result of evaluation.
@@ -292,24 +292,24 @@ data Value
     VLam Name Closure
   | -- | A fully evaluated pair of values.
     VPair Value Value
-  | -- | The unit value.
-    VUnit
   | -- | Boolean true.
     VTru
   | -- | Boolean false.
     VFls
-  | -- | An evaluated record.
-    VRecord [(Name, Value)]
+  | -- | The unit value.
+    VUnit
   | -- | Left injection value.
     VInL Value
   | -- | Right injection value.
     VInR Value
-  | -- | An integer value.
-    VInteger Integer
   | -- | A natural number value.
     VNatural Integer
+  | -- | An integer value.
+    VInteger Integer
   | -- | A real number value.
     VReal Scientific
+  | -- | An evaluated record.
+    VRecord [(Name, Value)]
   deriving stock (Show, Eq, Ord)
 
 -- | De Bruijn Indices.
@@ -367,12 +367,12 @@ data Frame
   | -- | A stuck if-then-else: the condition is neutral, so we can't choose a
     -- branch. Carries the motive type and both branch values.
     VIf Type Value Value
-  | -- | A stuck record projection.
-    VGet Name
-  | -- | A stuck case: the scrutinee is neutral.
-    VCase Type Type Type Value Value
   | -- | A stuck absurd: the scrutinee is neutral at 'VoidTy'.
     VAbsurd Type
+  | -- | A stuck case: the scrutinee is neutral.
+    VCase Type Type Type Value Value
+  | -- | A stuck record projection.
+    VGet Name
   deriving stock (Show, Eq, Ord)
 
 pushFrame :: Neutral -> Frame -> Neutral
@@ -485,34 +485,34 @@ newtype Synth = Synth {runSynth :: TypecheckM (Type, Syntax)}
 synth :: Term -> Synth
 synth = \case
   Var bndr -> varTactic bndr
-  Ap tm1 tm2 -> applyTactic (synth tm1) (check tm2)
-  Fst tm -> fstTactic (synth tm)
-  Snd tm -> sndTactic (synth tm)
+  Ap tm1 tm2 -> lamElim (synth tm1) (check tm2)
   Anno ty tm -> annoTactic ty (check tm)
-  Get name tm -> getTactic name (synth tm)
   Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
+  Fst tm -> pairElimFst (synth tm)
+  Snd tm -> pairElimSnd (synth tm)
+  Get name tm -> recordElim name (synth tm)
   tm -> Synth $ throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
 check :: Term -> Check
-check (Lam bndr body) = lamTactic bndr (check body)
+check (Lam bndr body) = lamIntro bndr (check body)
 check (Let bndr e body) = letTactic bndr (synth e) (check body)
-check Unit = unitTactic
-check (Pair tm1 tm2) = pairTactic (check tm1) (check tm2)
-check (InL tm1) = inLTactic (check tm1)
-check (InR tm2) = inRTactic (check tm2)
-check (Case scrut (bndr1, t1) (bndr2, t2)) = caseTactic (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
-check (Absurd tm) = absurdTactic (synth tm)
 check Hole = holeTactic
-check (If tm1 tm2 tm3) = ifTactic (check tm1) (check tm2) (check tm3)
-check Tru = trueTactic
-check Fls = falseTactic
-check (Integer z) = integerTactic z
-check (Natural n) = naturalTactic n
-check (Real r) = realTactic r
-check (Record fields) = recordTactic (fmap (fmap (id &&& check)) fields)
+check (Pair tm1 tm2) = pairIntro (check tm1) (check tm2)
+check Tru = boolIntroTrue
+check Fls = boolIntroFalse
+check (If tm1 tm2 tm3) = boolElim (check tm1) (check tm2) (check tm3)
+check Unit = unitIntro
+check (Absurd tm) = voidElim (synth tm)
+check (InL tm1) = sumIntroL (check tm1)
+check (InR tm2) = sumIntroR (check tm2)
+check (Case scrut (bndr1, t1) (bndr2, t2)) = sumElim (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
+check (Natural n) = natIntro n
+check (Integer z) = intIntro z
+check (Real r) = realIntro r
+check (Record fields) = recordIntro (fmap (fmap (id &&& check)) fields)
 check tm = subTactic (synth tm)
 
--- | Var Tactic
+-- | Variable Resolution
 --
 -- Resolve a named variable to its type and elaborated form. This is where name
 -- resolution happens.
@@ -536,7 +536,7 @@ varTactic bndr = Synth $ do
       pure (cellType, quoted)
     Nothing -> throwError $ OutOfScopeError bndr
 
--- | Sub Tactic
+-- | Subsumption
 --
 -- The bridge between synth and check. Synthesize a type for the term, then
 -- verify it is a subtype of the expected type. This replaces the equality check
@@ -554,7 +554,7 @@ subTactic (Synth synth) = Check $ \ty1 -> do
     then pure tm
     else throwError $ TypeError $ "Type '" <> show ty2 <> "' cannot be a subtype of type '" <> show ty1 <> "'"
 
--- | Anno Tactic
+-- | Annotation
 --
 -- The annotation provides a type, switching from synth to check mode. We check
 -- the body against the annotated type, then synthesize that type as the result.
@@ -569,19 +569,7 @@ annoTactic ty (Check check) = Synth $ do
   tm <- check ty
   pure (ty, tm)
 
--- | Unit Introduction Tactic
---
--- Verify the expected type is 'UnitTy' (or a supertype).
---
--- ───────────── Unit⇐
--- Γ ⊢ () ⇐ Unit
-unitTactic :: Check
-unitTactic = Check $ \case
-  UnitTy -> pure SUnit
-  ty | UnitTy `isSubtypeOf` ty -> pure SUnit
-  ty -> throwError $ TypeError $ "'Unit' cannot be a subtype of '" <> show ty <> "'"
-
--- | Lambda Introduction Tactic
+-- | Lambda Introduction
 --
 -- A lambda is checked against a function type. The expected type @A₁ → A₂@
 -- tells us what type the parameter has (@A₁@), so we extend the context and
@@ -593,8 +581,8 @@ unitTactic = Check $ \case
 --  Γ, x : A₁ ⊢ e ⇐ A₂
 -- ──────────────────── LamIntro⇐
 -- Γ ⊢ (λx.e) ⇐ A₁ → A₂
-lamTactic :: Name -> Check -> Check
-lamTactic bndr (Check bodyTac) = Check $ \case
+lamIntro :: Name -> Check -> Check
+lamIntro bndr (Check bodyTac) = Check $ \case
   a `FuncTy` b -> do
     ctx <- ask
     let var = freshCell ctx bndr a
@@ -602,7 +590,7 @@ lamTactic bndr (Check bodyTac) = Check $ \case
     pure $ SLam bndr fiber
   ty -> throwError $ TypeError $ "Tried to introduce a lambda at a non-function type: " <> show ty
 
--- | Lambda Elimination Tactic
+-- | Lambda Elimination
 --
 -- Application is a synth rule. Synthesize the function's type to get @A → B@,
 -- then check the argument against @A@, and return @B@. The function type tells
@@ -614,8 +602,8 @@ lamTactic bndr (Check bodyTac) = Check $ \case
 -- Γ ⊢ e₁ ⇒ A → B  Γ ⊢ e₂ ⇐ A
 -- ────────────────────────── LamElim⇒
 --       Γ ⊢ e₁ e₂ ⇒ B
-applyTactic :: Synth -> Check -> Synth
-applyTactic (Synth funcTac) (Check argTac) =
+lamElim :: Synth -> Check -> Synth
+lamElim (Synth funcTac) (Check argTac) =
   Synth $
     funcTac >>= \case
       (a `FuncTy` b, f) -> do
@@ -623,13 +611,13 @@ applyTactic (Synth funcTac) (Check argTac) =
         pure (b, SAp f arg)
       (ty, _) -> throwError $ TypeError $ "Expected a function type but got " <> show ty
 
--- | Let Tactic
+-- | Let Binding
 --
 -- @let x = e in body@ elaborates to @(λx. body') e'@. There is no dedicated
 -- @SLet@ in the core syntax. The let is fully dissolved by NbE: the beta redex
 -- reduces and the bound value is inlined into the normal form.
 --
--- Unlike 'lamTactic', which binds a fresh neutral variable (since the argument
+-- Unlike 'lamIntro', which binds a fresh neutral variable (since the argument
 -- is unknown), the let tactic evaluates @e@ and stores the resulting value in
 -- the context cell. This means references to @x@ in the body see the actual
 -- value during elaboration, not a stuck variable.
@@ -646,115 +634,7 @@ letTactic bndr (Synth synth) (Check bodyTac) = Check $ \ty -> do
   fiber <- local (bindCell var) $ bodyTac ty
   pure $ SAp (SLam bndr fiber) tm1
 
--- | Pair Introduction Tactic
---
--- Like lambdas, pairs are checked. the expected pair type @A × B@ tells us what
--- to check each component against.
---
--- Elaborates to @SPair a' b'@.
---
--- Γ ⊢ a ⇐ A   Γ ⊢ b ⇐ B
--- ───────────────────── Pair⇐
---  Γ ⊢ (a , b) ⇐ A × B
-pairTactic :: Check -> Check -> Check
-pairTactic (Check checkFst) (Check checkSnd) = Check $ \case
-  PairTy a b -> do
-    tm1 <- checkFst a
-    tm2 <- checkSnd b
-    pure (SPair tm1 tm2)
-  ty -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
-
--- | Pair Fst Elimination Tactic
---
--- Projection is a synth rule. Synthesize the pair's type to learn what the
--- components are, then return the appropriate one.
---
--- Γ ⊢ (t₁ , t₂) ⇒ A × B
--- ───────────────────── Fst⇒
---       Γ ⊢ t₁ ⇒ A
-fstTactic :: Synth -> Synth
-fstTactic (Synth synth) =
-  Synth $
-    synth >>= \case
-      (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
-      (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
-
--- | Pair Snd Elimination Tactic
---
--- Same as fst, but returns the second component.
---
--- Γ ⊢ (t₁ , t₂) ⇒ A × B
--- ───────────────────── Snd⇒
---       Γ ⊢ t₂ ⇒ B
-sndTactic :: Synth -> Synth
-sndTactic (Synth synth) =
-  Synth $
-    synth >>= \case
-      (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
-      (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
-
--- | InL Introduction Tactic
---
--- Checked against a sum type. The payload is checked against the left
--- component.
---
---      Γ ⊢ e ⇐ A
---  ───────────────── InL⇐
---  Γ ⊢ InL e ⇐ A + B
-inLTactic :: Check -> Check
-inLTactic (Check check) = Check $ \case
-  SumTy a _b -> SInL <$> check a
-  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
-
--- | InR Introduction Tactic
---
--- Checked against a sum type. The payload is checked against the right
--- component.
---
---  Γ ⊢ e ⇐ B
---  ──────────────── InR⇐
---  Γ ⊢ InR e ⇐ A + B
-inRTactic :: Check -> Check
-inRTactic (Check check) = Check $ \case
-  SumTy _a b -> SInR <$> check b
-  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
-
--- | Case Elimination Tactic
---
--- Synthesize the scrutinee's sum type, then check each branch as a
--- function from the injection's payload type to the motive. The
--- branches are elaborated as lambdas that bind the payload.
---
---  Γ ⊢ e ⇒ A + B    Γ ⊢ f ⇐ A → C    Γ ⊢ g ⇐ B → C
---  ─────────────────────────────────────────────── Case⇐
---                Γ ⊢ Case e f g ⇐ C
-caseTactic :: Synth -> Check -> Check -> Check
-caseTactic (Synth synth) (Check checkT1) (Check checkT2) = Check $ \ty -> do
-  (scrutTy, scrut) <- synth
-  case scrutTy of
-    SumTy a b -> do
-      f <- checkT1 (FuncTy a ty)
-      g <- checkT2 (FuncTy b ty)
-      pure $ SCase scrut ty f g
-    _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
-
--- | Void Elimination Tactic
---
--- Synthesize the scrutinee and verify it has type 'VoidTy'. Since no value of
--- type 'Void' exists, this branch is unreachable, but it can produce any type
--- @C@.
---
---  Γ ⊢ e ⇒ Void
---  ─────────────── Absurd⇐
---  Γ ⊢ absurd e ⇐ C
-absurdTactic :: Synth -> Check
-absurdTactic (Synth synth) = Check $ \ty -> do
-  (scrutTy, scrut) <- synth
-  case scrutTy of
-    VoidTy -> pure $ SAbsurd ty scrut
-    _ -> throwError $ TypeError $ "Expected a Void but got: " <> show scrutTy
-
--- | Type Hole Tactic
+-- | Type Hole
 --
 -- A hole accepts any expected type and records it via the 'Writer' effect.
 -- Elaborates to @SHole ty@, which evaluates to a neutral and survives through
@@ -771,31 +651,78 @@ holeTactic = Check $ \ty -> do
   tell (Holes [ty])
   pure (SHole ty)
 
--- | Bool-False Introduction Tactic
+-- | Pair Introduction
 --
--- Checked against 'BoolTy'. Elaborates to 'SFls' (or a supertype via subtyping).
+-- Like lambdas, pairs are checked. the expected pair type @A × B@ tells us what
+-- to check each component against.
 --
--- ──────────────── False⇐
--- Γ ⊢ False ⇐ Bool
-falseTactic :: Check
-falseTactic = Check $ \case
-  BoolTy -> pure SFls
-  ty | BoolTy `isSubtypeOf` ty -> pure SFls
-  ty -> throwError $ TypeError $ "'Bool' cannot be a subtype of '" <> show ty <> "'"
+-- Elaborates to @SPair a' b'@.
+--
+-- Γ ⊢ a ⇐ A   Γ ⊢ b ⇐ B
+-- ───────────────────── Pair⇐
+--  Γ ⊢ (a , b) ⇐ A × B
+pairIntro :: Check -> Check -> Check
+pairIntro (Check checkFst) (Check checkSnd) = Check $ \case
+  PairTy a b -> do
+    tm1 <- checkFst a
+    tm2 <- checkSnd b
+    pure (SPair tm1 tm2)
+  ty -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
 
--- | Bool-True Introduction Tactic
+-- | Pair Fst Elimination
+--
+-- Projection is a synth rule. Synthesize the pair's type to learn what the
+-- components are, then return the appropriate one.
+--
+-- Γ ⊢ (t₁ , t₂) ⇒ A × B
+-- ───────────────────── Fst⇒
+--       Γ ⊢ t₁ ⇒ A
+pairElimFst :: Synth -> Synth
+pairElimFst (Synth synth) =
+  Synth $
+    synth >>= \case
+      (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
+      (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
+
+-- | Pair Snd Elimination
+--
+-- Same as fst, but returns the second component.
+--
+-- Γ ⊢ (t₁ , t₂) ⇒ A × B
+-- ───────────────────── Snd⇒
+--       Γ ⊢ t₂ ⇒ B
+pairElimSnd :: Synth -> Synth
+pairElimSnd (Synth synth) =
+  Synth $
+    synth >>= \case
+      (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
+      (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
+
+-- | Bool-True Introduction
 --
 -- Checked against 'BoolTy' (or a supertype via subtyping).
 --
 -- ──────────────── True⇐
 -- Γ ⊢ True ⇐ Bool
-trueTactic :: Check
-trueTactic = Check $ \case
+boolIntroTrue :: Check
+boolIntroTrue = Check $ \case
   BoolTy -> pure STru
   ty | BoolTy `isSubtypeOf` ty -> pure STru
   ty -> throwError $ TypeError $ "'Bool' cannot be a subtype of '" <> show ty <> "'"
 
--- | Bool Elimination Tactic
+-- | Bool-False Introduction
+--
+-- Checked against 'BoolTy'. Elaborates to 'SFls' (or a supertype via subtyping).
+--
+-- ──────────────── False⇐
+-- Γ ⊢ False ⇐ Bool
+boolIntroFalse :: Check
+boolIntroFalse = Check $ \case
+  BoolTy -> pure SFls
+  ty | BoolTy `isSubtypeOf` ty -> pure SFls
+  ty -> throwError $ TypeError $ "'Bool' cannot be a subtype of '" <> show ty <> "'"
+
+-- | Bool Elimination
 --
 -- Check the condition against 'BoolTy', and both branches against the expected
 -- (motive) type. The motive is whatever type the @if@ expression is being
@@ -804,14 +731,127 @@ trueTactic = Check $ \case
 -- Γ ⊢ t₁ ⇐ Bool  Γ ⊢ t₂ ⇐ T  Γ ⊢ t₃ ⇐ T
 -- ───────────────────────────────────── If⇐
 --   Γ ⊢ If t₁ then t₂ else t₃ ⇐ T
-ifTactic :: Check -> Check -> Check -> Check
-ifTactic (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
+boolElim :: Check -> Check -> Check -> Check
+boolElim (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
   tm1 <- checkT1 BoolTy
   tm2 <- checkT2 ty
   tm3 <- checkT3 ty
   pure (SIf tm1 ty tm2 tm3)
 
--- | Record Introduction Tactic
+-- | Unit Introduction
+--
+-- Verify the expected type is 'UnitTy' (or a supertype).
+--
+-- ───────────── Unit⇐
+-- Γ ⊢ () ⇐ Unit
+unitIntro :: Check
+unitIntro = Check $ \case
+  UnitTy -> pure SUnit
+  ty | UnitTy `isSubtypeOf` ty -> pure SUnit
+  ty -> throwError $ TypeError $ "'Unit' cannot be a subtype of '" <> show ty <> "'"
+
+-- | Void Elimination
+--
+-- Synthesize the scrutinee and verify it has type 'VoidTy'. Since no value of
+-- type 'Void' exists, this branch is unreachable, but it can produce any type
+-- @C@.
+--
+--  Γ ⊢ e ⇒ Void
+--  ─────────────── Absurd⇐
+--  Γ ⊢ absurd e ⇐ C
+voidElim :: Synth -> Check
+voidElim (Synth synth) = Check $ \ty -> do
+  (scrutTy, scrut) <- synth
+  case scrutTy of
+    VoidTy -> pure $ SAbsurd ty scrut
+    _ -> throwError $ TypeError $ "Expected a Void but got: " <> show scrutTy
+
+-- | InL Introduction
+--
+-- Checked against a sum type. The payload is checked against the left
+-- component.
+--
+--      Γ ⊢ e ⇐ A
+--  ───────────────── InL⇐
+--  Γ ⊢ InL e ⇐ A + B
+sumIntroL :: Check -> Check
+sumIntroL (Check check) = Check $ \case
+  SumTy a _b -> SInL <$> check a
+  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
+
+-- | InR Introduction
+--
+-- Checked against a sum type. The payload is checked against the right
+-- component.
+--
+--  Γ ⊢ e ⇐ B
+--  ──────────────── InR⇐
+--  Γ ⊢ InR e ⇐ A + B
+sumIntroR :: Check -> Check
+sumIntroR (Check check) = Check $ \case
+  SumTy _a b -> SInR <$> check b
+  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
+
+-- | Case Elimination
+--
+-- Synthesize the scrutinee's sum type, then check each branch as a
+-- function from the injection's payload type to the motive. The
+-- branches are elaborated as lambdas that bind the payload.
+--
+--  Γ ⊢ e ⇒ A + B    Γ ⊢ f ⇐ A → C    Γ ⊢ g ⇐ B → C
+--  ─────────────────────────────────────────────── Case⇐
+--                Γ ⊢ Case e f g ⇐ C
+sumElim :: Synth -> Check -> Check -> Check
+sumElim (Synth synth) (Check checkT1) (Check checkT2) = Check $ \ty -> do
+  (scrutTy, scrut) <- synth
+  case scrutTy of
+    SumTy a b -> do
+      f <- checkT1 (FuncTy a ty)
+      g <- checkT2 (FuncTy b ty)
+      pure $ SCase scrut ty f g
+    _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
+
+-- | Natural Introduction
+--
+-- Checked against 'NaturalTy' (or a supertype via subtyping, e.g. 'IntegerTy'
+-- or 'RealTy'). Validates that the literal is non-negative.
+--
+-- ───────── ℕ⇐
+-- Γ ⊢ n ⇐ ℕ
+natIntro :: Integer -> Check
+natIntro n = Check $ \case
+  NaturalTy ->
+    if n >= 0
+      then pure (SNatural n)
+      else throwError $ TypeError "Naturals must be greater then or equal to zero."
+  ty | NaturalTy `isSubtypeOf` ty -> pure (SNatural n)
+  ty -> throwError $ TypeError $ "'Natural' cannot be a subtype of '" <> show ty <> "'"
+
+-- | Integer Introduction
+--
+-- Checked against 'IntegerTy' (or a supertype via subtyping, e.g. 'RealTy').
+--
+-- ──────── ℤ⇐
+-- Γ ⊢ z ⇐  ℤ
+intIntro :: Integer -> Check
+intIntro z = Check $ \case
+  IntegerTy -> pure (SInteger z)
+  ty | IntegerTy `isSubtypeOf` ty -> pure (SInteger z)
+  ty -> throwError $ TypeError $ "'Integer' cannot be a subtype of '" <> show ty <> "'"
+
+-- | Real Introduction
+--
+-- Checked against 'RealTy' (or a supertype via subtyping).
+--
+-- ───────── ℝ⇐
+-- Γ ⊢ r ⇐ ℝ
+realIntro :: Scientific -> Check
+realIntro r = Check $ \case
+  RealTy -> pure (SReal r)
+  ty | RealTy `isSubtypeOf` ty -> pure (SReal r)
+  ty -> throwError $ TypeError $ "'Real' cannot be a subtype of '" <> show ty <> "'"
+
+-- | Record Introduction
 --
 -- Checked against a record type. Uses 'alignWithM' to match the term's fields
 -- against the type's fields via a 'Map'. 'These' means both present (check the
@@ -823,8 +863,8 @@ ifTactic (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
 --         for each i  Γ ⊢ tᵢ ⇐ Tᵢ
 -- ─────────────────────────────────────── Record⇐
 -- Γ ⊢ { lᵢ = tᵢ} ⇐ { lᵢ : Tᵢ (i ∈ I..n) }
-recordTactic :: [(Name, (Term, Check))] -> Check
-recordTactic fields = Check $ \case
+recordIntro :: [(Name, (Term, Check))] -> Check
+recordIntro fields = Check $ \case
   RecordTy ty -> do
     fields' <-
       alignWithM
@@ -838,7 +878,7 @@ recordTactic fields = Check $ \case
     pure (SRecord $ Map.toList fields')
   ty -> throwError $ TypeError $ "Expected a Record type but got: " <> show ty
 
--- | Record Elimination Tactic
+-- | Record Elimination
 --
 -- Synthesize the record's type, then look up the projected field by name. A
 -- synth rule because the record's type tells us the field's type.
@@ -846,8 +886,8 @@ recordTactic fields = Check $ \case
 -- Γ ⊢ t₁ ⇒ { lᵢ : Tᵢ (i ∈ I..n) }
 -- ─────────────────────────────── Get⇒
 --       Γ ⊢ Get lⱼ t₁ ⇒ Tⱼ
-getTactic :: Name -> Synth -> Synth
-getTactic name (Synth fieldTac) =
+recordElim :: Name -> Synth -> Synth
+recordElim name (Synth fieldTac) =
   Synth $
     fieldTac >>= \case
       (RecordTy fields, tm) ->
@@ -855,46 +895,6 @@ getTactic name (Synth fieldTac) =
           Just ty -> pure (ty, SGet name tm)
           Nothing -> throwError $ TypeError $ "Record does not contain a field called " <> show name
       (ty, _) -> throwError $ TypeError $ "Expected a record type but got " <> show ty
-
--- | Integer Introduction Tactic
---
--- Checked against 'IntegerTy' (or a supertype via subtyping, e.g. 'RealTy').
---
--- ──────── ℤ⇐
--- Γ ⊢ z ⇐  ℤ
-integerTactic :: Integer -> Check
-integerTactic z = Check $ \case
-  IntegerTy -> pure (SInteger z)
-  ty | IntegerTy `isSubtypeOf` ty -> pure (SInteger z)
-  ty -> throwError $ TypeError $ "'Integer' cannot be a subtype of '" <> show ty <> "'"
-
--- | Natural Introduction Tactic
---
--- Checked against 'NaturalTy' (or a supertype via subtyping, e.g. 'IntegerTy'
--- or 'RealTy'). Validates that the literal is non-negative.
---
--- ───────── ℕ⇐
--- Γ ⊢ n ⇐ ℕ
-naturalTactic :: Integer -> Check
-naturalTactic n = Check $ \case
-  NaturalTy ->
-    if n >= 0
-      then pure (SNatural n)
-      else throwError $ TypeError "Naturals must be greater then or equal to zero."
-  ty | NaturalTy `isSubtypeOf` ty -> pure (SNatural n)
-  ty -> throwError $ TypeError $ "'Natural' cannot be a subtype of '" <> show ty <> "'"
-
--- | Real Introduction Tactic
---
--- Checked against 'RealTy' (or a supertype via subtyping).
---
--- ───────── ℝ⇐
--- Γ ⊢ r ⇐ ℝ
-realTactic :: Scientific -> Check
-realTactic r = Check $ \case
-  RealTy -> pure (SReal r)
-  ty | RealTy `isSubtypeOf` ty -> pure (SReal r)
-  ty -> throwError $ TypeError $ "'Real' cannot be a subtype of '" <> show ty <> "'"
 
 --------------------------------------------------------------------------------
 -- Subsumption
@@ -918,41 +918,12 @@ realTactic r = Check $ \case
 -- It can be understood as stating that anywhere a T₂ can be used, we can use a
 -- T₁.
 isSubtypeOf :: Type -> Type -> Bool
-isSubtypeOf s@RecordTy {} t@RecordTy {} = recordSubtypeTactic s t
-isSubtypeOf s@FuncTy {} t@FuncTy {} = functionSubtypeTactic s t
+isSubtypeOf s@FuncTy {} t@FuncTy {} = functionSubtype s t
 isSubtypeOf NaturalTy IntegerTy = True
 isSubtypeOf NaturalTy RealTy = True
 isSubtypeOf IntegerTy RealTy = True
+isSubtypeOf s@RecordTy {} t@RecordTy {} = recordSubtype s t
 isSubtypeOf super sub = super == sub
-
--- | Record Depth Subtyping
---
--- Any field of a record can be replaced by its subtype. Since any operation
--- supported for a field in the supertype is supported for its subtype, any
--- operation feasible on the record supertype is supported by the record
--- subtype.
---
--- For example:
---
--- { foo : ℕ } <: { foo : ℤ }
---
--- We can write our typing rule as:
---
---              Sᵢ <: Tᵢ (i ∈ 1..n)
--- ──────────────────────────────────────────────── RecordDepth
--- { lᵢ : Sᵢ (i ∈ I..n) } <: { lᵢ : Tᵢ (i ∈ I..n) }
---
--- Record width subtyping falls out of 'Map.isSubmapOfBy': the expected record's
--- keys must be a subset of the actual record's keys, so extra fields in the
--- actual record are ignored.
---
--- { foo :: Nat, bar :: Bool } <: { foo :: Nat }
-recordSubtypeTactic :: Type -> Type -> Bool
-recordSubtypeTactic (RecordTy s) (RecordTy t) =
-  let s' = Map.fromList s
-      t' = Map.fromList t
-   in Map.isSubmapOfBy (flip isSubtypeOf) t' s'
-recordSubtypeTactic _ _ = error "impossible case in rec"
 
 -- | Function Subtyping
 --
@@ -979,10 +950,39 @@ recordSubtypeTactic _ _ = error "impossible case in rec"
 -- T₁ <: S₁  S₂ <: T₂
 -- ────────────────── Func-Sub
 -- S₁ → S₂ <: T₁ → T₂
-functionSubtypeTactic :: Type -> Type -> Bool
-functionSubtypeTactic (s1 `FuncTy` s2) (t1 `FuncTy` t2) =
+functionSubtype :: Type -> Type -> Bool
+functionSubtype (s1 `FuncTy` s2) (t1 `FuncTy` t2) =
   t1 `isSubtypeOf` s1 && s2 `isSubtypeOf` t2
-functionSubtypeTactic _ _ = error "impossible case in functionSubTypeTactic"
+functionSubtype _ _ = error "impossible case in functionSubtype"
+
+-- | Record Depth Subtyping
+--
+-- Any field of a record can be replaced by its subtype. Since any operation
+-- supported for a field in the supertype is supported for its subtype, any
+-- operation feasible on the record supertype is supported by the record
+-- subtype.
+--
+-- For example:
+--
+-- { foo : ℕ } <: { foo : ℤ }
+--
+-- We can write our typing rule as:
+--
+--              Sᵢ <: Tᵢ (i ∈ 1..n)
+-- ──────────────────────────────────────────────── RecordDepth
+-- { lᵢ : Sᵢ (i ∈ I..n) } <: { lᵢ : Tᵢ (i ∈ I..n) }
+--
+-- Record width subtyping falls out of 'Map.isSubmapOfBy': the expected record's
+-- keys must be a subset of the actual record's keys, so extra fields in the
+-- actual record are ignored.
+--
+-- { foo :: Nat, bar :: Bool } <: { foo :: Nat }
+recordSubtype :: Type -> Type -> Bool
+recordSubtype (RecordTy s) (RecordTy t) =
+  let s' = Map.fromList s
+      t' = Map.fromList t
+   in Map.isSubmapOfBy (flip isSubtypeOf) t' s'
+recordSubtype _ _ = error "impossible case in rec"
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -1020,23 +1020,13 @@ eval = \case
     fun <- eval tm1
     arg <- eval tm2
     doApply fun arg
+  SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
   SPair tm1 tm2 -> do
     tm1' <- eval tm1
     tm2' <- eval tm2
     pure $ VPair tm1' tm2'
   SFst tm -> eval tm >>= doFst
   SSnd tm -> eval tm >>= doSnd
-  SInL tm -> eval tm >>= pure . VInL
-  SInR tm -> eval tm >>= pure . VInR
-  SCase t1 motive t2 t3 -> do
-    t1' <- eval t1
-    t2' <- eval t2
-    t3' <- eval t3
-    doCase t1' motive t2' t3'
-  SAbsurd ty tm -> do
-    tm' <- eval tm
-    doAbsurd tm' ty
-  SUnit -> pure VUnit
   STru -> pure VTru
   SFls -> pure VFls
   SIf p motive t1 t2 -> do
@@ -1044,12 +1034,22 @@ eval = \case
     t1' <- eval t1
     t2' <- eval t2
     doIf p' motive t1' t2'
+  SUnit -> pure VUnit
+  SAbsurd ty tm -> do
+    tm' <- eval tm
+    doAbsurd tm' ty
+  SInL tm -> VInL <$> eval tm
+  SInR tm -> VInR <$> eval tm
+  SCase t1 motive t2 t3 -> do
+    t1' <- eval t1
+    t2' <- eval t2
+    t3' <- eval t3
+    doCase t1' motive t2' t3'
+  SNatural n -> pure $ VNatural n
+  SInteger z -> pure $ VInteger z
+  SReal r -> pure $ VReal r
   SRecord fields -> doRecord fields
   SGet name tm -> eval tm >>= doGet name
-  SInteger z -> pure $ VInteger z
-  SNatural n -> pure $ VNatural n
-  SReal r -> pure $ VReal r
-  SHole ty -> pure $ VNeutral ty (Neutral (VHole ty) Nil)
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appTermClosure clo arg
@@ -1126,16 +1126,16 @@ quote l (PairTy ty1 ty2) (VPair tm1 tm2) = do
   tm1' <- quote l ty1 tm1
   tm2' <- quote l ty2 tm2
   pure $ SPair tm1' tm2'
-quote l (SumTy a _b) (VInL tm) = SInL <$> quote l a tm
-quote l (SumTy _a b) (VInR tm) = SInR <$> quote l b tm
-quote l _ (VNeutral _ neu) = quoteNeutral l neu
-quote _ _ VUnit = pure SUnit
 quote _ _ VTru = pure STru
 quote _ _ VFls = pure SFls
-quote l ty (VRecord fields) = SRecord <$> traverse (traverse (quote l ty)) fields
+quote _ _ VUnit = pure SUnit
+quote l (SumTy a _b) (VInL tm) = SInL <$> quote l a tm
+quote l (SumTy _a b) (VInR tm) = SInR <$> quote l b tm
 quote _ _ (VNatural n) = pure $ SNatural n
 quote _ _ (VInteger z) = pure $ SInteger z
 quote _ _ (VReal r) = pure $ SReal r
+quote l ty (VRecord fields) = SRecord <$> traverse (traverse (quote l ty)) fields
+quote l _ (VNeutral _ neu) = quoteNeutral l neu
 quote _ ty tm = error $ "impossible case in quote:\n" <> show ty <> "\n" <> show tm
 
 quoteLevel :: Lvl -> Lvl -> Ix
@@ -1153,12 +1153,12 @@ quoteFrame l tm = \case
   VApp ty arg -> SAp tm <$> quote l ty arg
   VFst -> pure $ SFst tm
   VSnd -> pure $ SSnd tm
+  VIf ty t1 t2 -> liftA2 (SIf tm ty) (quote l ty t1) (quote l ty t2)
+  VAbsurd ty -> pure $ SAbsurd ty tm
   VCase tyF tyG mot f g -> do
     f' <- quote l tyF f
     g' <- quote l tyG g
     pure $ SCase tm mot f' g'
-  VAbsurd ty -> pure $ SAbsurd ty tm
-  VIf ty t1 t2 -> liftA2 (SIf tm ty) (quote l ty t1) (quote l ty t2)
   VGet name -> pure $ SGet name tm
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
