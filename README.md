@@ -18,7 +18,7 @@ might want to include in your custom language in one place.
 - [X] NormalizationByEvaluation
 - [X] Elaboration
 - [X] TypedHoles
-- [X] SystemT
+- [X] System T
 - [X] Records
 - [X] Subtyping
 - [X] Nominal Inductive Types
@@ -29,11 +29,14 @@ might want to include in your custom language in one place.
 - [ ] Universe Polymorphism
 - [ ] Implicit Universe Levels with Constraint Solving
 - [ ] Tarski Universes
+- [ ] Implicits
 - [ ] Indexed Inductive Types
 - [ ] Equality
 - [ ] Case-Trees
 - [ ] Row Polymorphism
 - [ ] Linear Types
+- [ ] View Patterns
+- [ ] Modules
 
 Additionally we plan to provide complete examples of STLC, SystemF, and MLTT
 compiling to the following targets:
@@ -42,5 +45,5 @@ compiling to the following targets:
 - [ ] A simple stack machine
 - [ ] LLVM
 
-The ultimate term goal is build a [1lab](https://www.1lab.dev) style literate coded webapp that
-allows exploring Lambda Calculus in all its forms.
+The ultimate goal is build a [1lab](https://www.1lab.dev) style literate coded
+webapp that allows exploring Lambda Calculus in all its forms.

@@ -855,9 +855,9 @@ subTactic (Synth synth) = Check $ \ty1 -> do
 -- The annotation itself is erased during elaboration, it doesn't appear in the
 -- core 'Syntax'.
 --
---    Γ ⊢ e ⇐ A
--- ─────────────── Anno⇒
--- Γ ⊢ (e : A) ⇒ A
+--  Γ ⊢ A ⇐ Type    Γ ⊢ e ⇐ A
+--  ─────────────────────────── Anno⇒
+--       Γ ⊢ (e : A) ⇒ A
 annoTactic :: Term -> Check -> Synth
 annoTactic ty (Check bodyTac) = Synth $ do
   sty <- runCheck (check ty) VUniv
