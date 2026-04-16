@@ -4,3 +4,8 @@
 /.direnv/
 /result
 TAGS
+/dist-prof/
+*.prof
+*.eventlog
+*.eventlog.html
+*.hp
