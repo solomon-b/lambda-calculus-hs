@@ -5,16 +5,35 @@
 
 -- | Martin-Löf Type Theory with cumulative universes.
 --
--- Extends module 11 (MLTT) by replacing the inconsistent @Type : Type@ rule
--- with a cumulative universe hierarchy @Type 0 : Type 1 : Type 2 : ...@.
+-- Extends module 11 (MLTT) by replacing the inconsistent
+-- @Type : Type@ rule with a cumulative universe hierarchy
+-- @Type 0 : Type 1 : Type 2 : ...@.
 --
--- Types and terms still share a single syntax, core IR, and semantic domain.
+-- Types and terms still share a single syntax, core IR,
+-- and semantic domain.
 --
--- Russell-style universes (types are their own codes, no separate @El@
--- decoding). Cumulativity means @Type n@ is a subtype of @Type m@ when @n <=
--- m@.
+-- Russell-style universes (types are their own codes, no
+-- separate @El@ decoding). Cumulativity means @Type n@ is
+-- a subtype of @Type m@ when @n <= m@.
 --
--- Universe levels are explicit natural numbers, no inference or polymorphism.
+-- Universe levels are explicit natural numbers, no
+-- inference or polymorphism.
+--
+-- NOTE: Compound type formers (Pi, Sigma, FuncTy, PairTy, SumTy, records, ADTs)
+-- have dual Synth and Check formation rules.
+--
+-- The Synth path synthesizes components, extracts their levels with
+-- @expectUniv@, and computes the result level via @maxLevel@.
+--
+-- The Check path pushes a goal level down to both components, with cumulativity
+-- handling any mismatch.
+--
+-- The Synth rules are needed because the annotation tactic synthesizes the type
+-- to discover its level bottom-up. Without level variables or inference, there
+-- is no level to push down in synth position, so the level must be computed
+-- from the components. With universe polymorphism (module 13), the Check rules
+-- may subsume the Synth rules, since a level variable can be pushed down
+-- instead.
 module Main where
 
 --------------------------------------------------------------------------------
