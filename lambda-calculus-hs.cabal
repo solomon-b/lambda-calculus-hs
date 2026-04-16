@@ -194,3 +194,10 @@ executable 12-TypeUniverses
   main-is:             12-TypeUniverses.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
+
+executable Krivine
+  import:              common-settings
+  main-is:             AbstractMachine/Krivine.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
+
