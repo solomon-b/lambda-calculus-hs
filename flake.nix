@@ -10,7 +10,7 @@
     flake-utils.lib.eachDefaultSystem (system:
     let
       pkgs = nixpkgs.legacyPackages.${system};
-      hsPkgs = pkgs.haskellPackages.override {
+      hsPkgs = pkgs.haskell.packages.ghc912.override {
         overrides = hfinal: hprev: {
           lambda-calculus-hs = hfinal.callCabal2nix "lambda-calculus-hs" ./. { };
         };
@@ -35,9 +35,9 @@
               cabal2nix
               fzf
               just
-              hsPkgs.haskell-language-server
+              haskell.packages.ghc912.haskell-language-server
               haskellPackages.ghcid
-              haskellPackages.fourmolu
+              haskell.packages.ghc912.fourmolu
               haskellPackages.cabal-fmt
             ]
             ++ (builtins.attrValues (import ./scripts.nix { s = pkgs.writeShellScriptBin; }));
