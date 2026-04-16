@@ -1,10 +1,11 @@
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
-{-# OPTIONS_GHC -ddump-simpl -dsuppress-all -dno-suppress-type-signatures -ddump-to-file -dno-typeable-binds #-}
 
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE BangPatterns #-}
+{- HLINT ignore "Use const" -}
 {- HLINT ignore "Avoid lambda" -}
 {- HLINT ignore "Use id" -}
+
 -- | The Krivine Abstract Machine.
 module Main where
 
@@ -14,6 +15,10 @@ import Control.Exception (evaluate)
 
 import Data.Monoid
 import Data.Semigroup
+
+import Debug.Trace
+
+import GHC.Profiling.Eras
 
 -- * Syntax
 
@@ -72,6 +77,35 @@ lookupEnv (Idx n) e = loop n e
     loop 0 (ESnoc _ clo) = Just clo
     loop n (ESnoc e _) = loop (n - 1) e
 
+-- * Tree-walking interpreter
+
+interpret :: Term -> Env -> Val
+interpret (Var i) e =
+  case lookupEnv i e of
+    Just (Clo e' t) -> interpret t e'
+    Nothing -> error "interpret: ill-scoped environment for Var"
+interpret (Lam t) e = Clo e (WLam t)
+interpret (App t1 t2) e =
+  case interpret t1 e of
+    Clo e' (WLam t) -> interpret t (ESnoc e' (Clo e t2))
+    Clo e' _t -> Clo e' WCrash
+interpret (Pair t1 t2) e = Clo e (WPair t1 t2)
+interpret (Fst t) e =
+  case interpret t e of
+    Clo e' (WPair t1 _t2) -> interpret t1 e'
+    Clo e' _t -> Clo e' WCrash
+interpret (Snd t) e =
+  case interpret t e of
+    Clo e' (WPair _t1 t2) -> interpret t2 e'
+    Clo e' _t -> Clo e' WCrash
+interpret Zero e =
+  Clo e (WNat 0)
+interpret (Succ t) e =
+  case interpret t e of
+    Clo e (WNat n) -> Clo e (WNat (1 + n))
+    Clo e _t -> Clo e WCrash
+interpret Crash e = Clo e WCrash
+
 -- * The Abstract Machine
 --
 -- An interpreter would evaluate our language by walking the syntax
@@ -109,38 +143,41 @@ data Stack
   -- ^ Apply a first projection.
   | SSnd Stack
   -- ^ Apply a second projection.
-  | SSucc Stack
-  -- ^ Take a successor.
+  | SInc Word Stack
+  -- ^ Increment a number by k.
 
 -- | The Krivine abstract machine.
 krivine :: Term -> Env -> Stack -> Val
 krivine (Var i) e k =
   case lookupEnv i e of
     Just (Clo e' t) -> krivine t e' k
-    Nothing -> error "krivine: ill-scoped environment for Var"
+    Nothing -> Clo e WCrash
 krivine (Lam t) e k =
   case k of
     SNil -> Clo e (WLam t)
     SApp v k -> krivine t (ESnoc e v) k
-    _ -> error "krivine: ill-typed frame for Lam"
+    _ -> Clo e WCrash
 krivine (App t1 t2) e k = krivine t1 e (SApp (Clo e t2) k)
 krivine (Pair t1 t2) e k =
   case k of
     SNil -> Clo e (WPair t1 t2)
     SFst k -> krivine t1 e k
     SSnd k -> krivine t2 e k
-    _ -> error "krivine: ill-typed frame for Pair"
+    _ -> Clo e WCrash
 krivine (Fst t) e k = krivine t e (SFst k)
 krivine (Snd t) e k = krivine t e (SSnd k)
-krivine Zero e k = unwindSuccs 0 e k
-krivine (Succ t) e k = krivine t e (SSucc k)
-krivine Crash e _ = Clo e WCrash
+krivine Zero e k = unwindIncs 0 e k
+krivine (Succ t) e k =
+  case k of
+    SInc i k -> krivine t e (SInc (1 + i) k)
+    _ -> krivine t e (SInc 1 k)
+krivine Crash e _k = Clo e WCrash
 
--- | Unwind a stack of successors.
-unwindSuccs :: Word -> Env -> Stack -> Val
-unwindSuccs n e SNil = Clo e (WNat n)
-unwindSuccs !n e (SSucc k) = unwindSuccs (1 + n) e k
-unwindSuccs _ _ _ = error "unwindSuccs: ill-typed frame for Nat"
+-- | Unwind a stack of increments.
+unwindIncs :: Word -> Env -> Stack -> Val
+unwindIncs n e SNil = Clo e (WNat n)
+unwindIncs !n e (SInc i k) = unwindIncs (i + n) e k
+unwindIncs _n e _k = Clo e WCrash
 
 -- * HOAS Kit
 
@@ -200,7 +237,40 @@ unChurchT = closed $ lam \x -> x `app` lam succ `app` zero
 addT :: Term
 addT = closed $ lam \x -> lam \y -> lam \s -> lam \z -> x `app` s `app` (y `app` s `app` z)
 
+-- | To prove our claims that the abstract machine is more efficient than the tree-walking
+-- interpreter, we can use era profiling.
+--
+-- We start by building a term that adds the church numeral 10000000 to itself, and then reads it
+-- back as a natural number. We then run it in both our tree-walking interpreter and the
+-- abstract machine, and call @incrementUserEra 1@ inbetween. If we run this with
+--
+-- > cabal run Krivine --project-file=cabal.project.profile --builddir=dist-prof -- +RTS -l-aug -he -RTS && eventlog2html Krivine.eventlog && open Krivine.eventlog.html
+--
+-- We will get a nice HTML file that shows us the allocations made in when we constructed the term (era 1),
+-- interpreted the term (era 2), and ran the term through the abstract machine (era 3).
+--
+-- Notice how the tree walking interpreter allocates ~290M, yet the abstract machine
+-- allocates a measly 384 bytes! If we run again with
+--
+-- > cabal run Krivine --project-file=cabal.project.profile --builddir=dist-prof -- +RTS -l-aug -he2 -hT -RTS && eventlog2html Krivine.eventlog && open Krivine.eventlog.html
+--
+-- We will see that nearly 100% of that 290M is stack usage.
 main :: IO ()
 main = do
-  Clo _ (WNat n) <- evaluate (krivine (addT `App` churchT 1000 `App` churchT 1000) ENil SNil)
+  setUserEra 1
+  traceMarkerIO "term"
+  tm <- evaluate (unChurchT `App` (addT `App` churchT 10000000 `App` churchT 10000000))
+  traceMarkerIO "interpreter"
+
+  setUserEra 2
+  Clo _ (WNat n) <- evaluate (interpret tm ENil)
+  setUserEra 0
+
+  print n
+  traceMarkerIO "abstract machine"
+
+  setUserEra 3
+  Clo _ (WNat n) <- evaluate (krivine tm ENil SNil)
+  setUserEra 0
+
   print n
