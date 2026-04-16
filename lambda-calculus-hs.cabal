@@ -115,6 +115,12 @@ executable MLTT
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers
 
+executable Krivine
+  import:              common-settings
+  main-is:             AbstractMachine/Krivine.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
+
 -- ===========================================================================
 -- Story 1: Foundation (total, simply typed)
 -- ===========================================================================
