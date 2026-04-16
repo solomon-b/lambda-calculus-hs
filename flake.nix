@@ -2,8 +2,8 @@
   description = "Single file Lambda Calculus implementations and presentation slides.";
 
   inputs = {
-    nixpkgs.url = github:nixos/nixpkgs/25.11;
-    flake-utils.url = github:numtide/flake-utils;
+    nixpkgs.url = "github:nixos/nixpkgs/25.11";
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
   outputs = { self , nixpkgs , flake-utils }:
