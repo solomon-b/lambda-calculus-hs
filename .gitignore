@@ -3,3 +3,8 @@
 /.envrc.local
 /.direnv/
 /result
+/dist-prof/
+*.prof
+*.eventlog
+*.eventlog.html
+*.hp

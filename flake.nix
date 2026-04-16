@@ -37,6 +37,8 @@
               just
               haskell.packages.ghc912.haskell-language-server
               haskellPackages.ghcid
+              haskellPackages.hs-speedscope
+              haskellPackages.eventlog2html
               haskell.packages.ghc912.fourmolu
               haskellPackages.cabal-fmt
             ]
