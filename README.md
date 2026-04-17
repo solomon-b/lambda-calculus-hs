@@ -26,7 +26,7 @@ might want to include in your custom language in one place.
 - [X] System F
 - [X] Martin-Lof Type Theory (Pi and Sigma Types)
 - [X] Type Universes
-- [ ] Universe Polymorphism
+- [X] Universe Polymorphism
 - [ ] Implicit Universe Levels with Constraint Solving
 - [ ] Tarski Universes
 - [ ] Implicits
