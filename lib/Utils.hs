@@ -5,6 +5,8 @@ module Utils
     nth,
     alignWithM,
     allM,
+    iter,
+    iterM,
   )
 where
 
@@ -54,3 +56,11 @@ allM f (x : xs) =
   f x >>= \case
     False -> pure False
     True -> allM f xs
+
+iter :: (a -> a) -> a -> Word -> a
+iter _s z 0 = z
+iter s z n = s (iter s z (n - 1))
+
+iterM :: (Monad m) => (a -> m a) -> a -> Word -> m a
+iterM s z 0 = pure z
+iterM s z n = s =<< iterM s z (n - 1)

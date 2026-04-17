@@ -2,8 +2,8 @@
   description = "Single file Lambda Calculus implementations and presentation slides.";
 
   inputs = {
-    nixpkgs.url = github:nixos/nixpkgs/25.11;
-    flake-utils.url = github:numtide/flake-utils;
+    nixpkgs.url = "github:nixos/nixpkgs/25.11";
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
   outputs = { self , nixpkgs , flake-utils }:
@@ -37,6 +37,8 @@
               just
               haskell.packages.ghc912.haskell-language-server
               haskellPackages.ghcid
+              haskellPackages.hs-speedscope
+              haskellPackages.eventlog2html
               haskell.packages.ghc912.fourmolu
               haskellPackages.cabal-fmt
             ]
