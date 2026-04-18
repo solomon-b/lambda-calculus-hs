@@ -1,17 +1,16 @@
 # Lambda Calculus Examples
 
 A series of Lambda Calculus implementations starting from Simply Typed
-evaluation, then work up through bidirectional typechecking,
-normalization by evaluation, elaboration and then various type system
-extensions.
+evaluation, then work up through bidirectional typechecking, normalization by
+evaluation, elaboration and various type system extensions.
 
 These examples build up sequentially, but each module is a standalone program
 that can be read independently. we skip parsing for brevity but include pretty
 printers from the concrete syntax to a human readable notation to make the
 examples easier to read.
 
-The goal is to provide best practices examples of all the features you
-might want to include in your custom language in one place.
+The goal is to provide best practices examples of all the features you might
+want to include in your custom language in one place.
 
 - [X] SimplyTypedEvaluation
 - [X] BidirectionalTypechecking
@@ -27,15 +26,17 @@ might want to include in your custom language in one place.
 - [X] Martin-Lof Type Theory (Pi and Sigma Types)
 - [X] Type Universes
 - [X] Universe Polymorphism
+- [ ] Unification / Implicits
+- [ ] Indexed Inductive Types (with eliminators)
+- [ ] Dependent Patern Matching
+- [ ] Case-Trees
+- [ ] Termination / Coverage Checking
 - [ ] Implicit Universe Levels with Constraint Solving
 - [ ] Tarski Universes
-- [ ] Implicits
-- [ ] Indexed Inductive Types
-- [ ] Equality
-- [ ] Case-Trees
 - [ ] Row Polymorphism
 - [ ] Linear Types
 - [ ] View Patterns
+- [ ] Cubical
 - [ ] Modules
 
 Additionally we plan to provide complete examples of STLC, SystemF, and MLTT
