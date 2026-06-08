@@ -10,8 +10,11 @@
 -- core IR, and semantic domain. Pi and Sigma types bind a variable
 -- whose type can appear in the body, collapsing the former
 -- term/type separation. Non-dependent functions (@A -> B@) and
--- pairs (@A * B@) are surface sugar for Pi and Sigma with unused
--- binders.
+-- pairs (@A * B@) are kept as separate constructors alongside Pi
+-- and Sigma rather than being desugared. This keeps the elaboration
+-- rules for the simply typed fragment unchanged and lets the pretty
+-- printer recover the non-dependent surface syntax without
+-- inspecting binder occurrences.
 --
 -- The universe is inconsistent (@Type : Type@) for simplicity.
 module Main where
