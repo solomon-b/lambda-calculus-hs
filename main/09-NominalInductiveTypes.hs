@@ -1,5 +1,5 @@
 {-# LANGUAGE DerivingVia #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 -- | Nominal Inductive Types.
@@ -23,6 +23,7 @@ import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
+import Data.Either (fromRight)
 import Data.Foldable (find)
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
@@ -98,10 +99,10 @@ data Term
   | -- | Field projection from a record.
     Get Name Term
   | -- | Apply a named data constructor to arguments.
-    Cnstr Name [Term]
+    Cnstr DtCnstrName [Term]
   | -- | Pattern match on a nominal inductive type. Each branch names a
     -- constructor, binds its fields, and provides a body.
-    Case Term [(Name, [Name], Term)]
+    Case Term [(DtCnstrName, [Name], Term)]
   deriving stock (Show, Eq, Ord)
 
 prettyTerm :: Prec -> Term -> PP.Doc ann
@@ -177,10 +178,10 @@ prettyTerm _ (Record fields) =
 prettyTerm p (Get n e) =
   parensIf (p > appPrec) $
     prettyTerm atomPrec e <> "." <> PP.pretty (getName n)
-prettyTerm _ (Cnstr n []) = PP.pretty (getName n)
+prettyTerm _ (Cnstr n []) = PP.pretty n
 prettyTerm p (Cnstr n args) =
   parensIf (p > appPrec) $
-    PP.pretty (getName n) PP.<+> PP.hsep (map (prettyTerm atomPrec) args)
+    PP.pretty n PP.<+> PP.hsep (map (prettyTerm atomPrec) args)
 prettyTerm p (Case scrut branches) =
   parensIf (p > lamPrec) $
     "case"
@@ -190,7 +191,7 @@ prettyTerm p (Case scrut branches) =
         ( PP.punctuate ";" $
             map
               ( \(cn, binds, body) ->
-                  PP.pretty (getName cn)
+                  PP.pretty cn
                     PP.<+> PP.hsep (map (PP.pretty . getName) binds)
                     PP.<+> arrowSym
                     PP.<+> prettyTerm lamPrec body
@@ -225,7 +226,7 @@ data Type
   | -- | A record type: a list of named fields with their types.
     RecordTy [(Name, Type)]
   | -- | A nominal inductive type, referenced by name.
-    AdtTy Name
+    AdtTy TyCnstrName
   deriving stock (Show, Eq, Ord)
 
 prettyType :: Prec -> Type -> PP.Doc ann
@@ -249,7 +250,7 @@ prettyType _ (RecordTy fields) =
     PP.sep $
       PP.punctuate PP.comma $
         map (\(n, ty) -> PP.pretty (getName n) <> ":" PP.<+> prettyType lamPrec ty) fields
-prettyType _ (AdtTy n) = PP.pretty (getName n)
+prettyType _ (AdtTy n) = PP.pretty n
 
 instance PP.Pretty Type where
   pretty = prettyType lamPrec
@@ -302,11 +303,11 @@ data Syntax
   | -- | Record field projection. @r.field@.
     SGet Name Syntax
   | -- | A data constructor applied to its elaborated arguments.
-    SCnstr Name [Syntax]
+    SCnstr DtCnstrName [Syntax]
   | -- | Pattern match on a nominal inductive type. Each branch pairs a
     -- constructor name with an elaborated body (a lambda over the constructor's
     -- fields).
-    SCase Syntax [(Name, Syntax)]
+    SCase Syntax [(DtCnstrName, Syntax)]
   deriving stock (Show, Eq, Ord)
 
 -- | The result of evaluation.
@@ -347,7 +348,7 @@ data Value
   | -- | An evaluated record.
     VRecord [(Name, Value)]
   | -- | An evaluated data constructor with its argument values.
-    VCnstr Name [Value]
+    VCnstr DtCnstrName [Value]
   deriving stock (Show, Eq, Ord)
 
 -- | De Bruijn Indices.
@@ -412,7 +413,7 @@ data Frame
   | -- | A stuck record projection.
     VGet Name
   | -- | A stuck nominal case: the scrutinee is neutral.
-    VCase Type [(Name, Value)]
+    VCase Type [(DtCnstrName, Value)]
   deriving stock (Show, Eq, Ord)
 
 pushFrame :: Neutral -> Frame -> Neutral
@@ -428,23 +429,39 @@ data Closure = Closure {env :: SnocList Value, body :: Syntax}
 --------------------------------------------------------------------------------
 -- ADTs
 
+newtype TyCnstrName = TyCnstrName {getTyCnstrName :: Name}
+  deriving newtype (Show, Eq, Ord, IsString)
+
+instance PP.Pretty TyCnstrName where
+  pretty = PP.pretty . getName . getTyCnstrName
+
+newtype DtCnstrName = DtCnstrName {getDtCnstrName :: Name}
+  deriving newtype (Show, Eq, Ord, IsString)
+
+instance PP.Pretty DtCnstrName where
+  pretty = PP.pretty . getName . getDtCnstrName
+
 -- | A complete data type definition: a type name and its constructors.
 --
 -- For example, @DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [Term
 -- BoolTy, Rec]]@. Currently monomorphic. With polymorphism, this would carry
 -- type parameters.
 data DataTypeSpec
-  = DataTypeSpec Name [DataConstructorSpec]
+  = DataTypeSpec TyCnstrName [DataConstructorSpec]
   deriving stock (Show, Eq, Ord)
+
+dtCnstrInTy :: DtCnstrName -> DataTypeSpec -> Maybe DataConstructorSpec
+dtCnstrInTy dtName (DataTypeSpec _ cnstrs) =
+  find (\(Constr dtName' _) -> dtName == dtName') cnstrs
 
 -- | A single data constructor: a name and a list of argument specs. For
 -- example, @Constr "Cons" [Term BoolTy, Rec]@ is the @Cons@ constructor taking
 -- a @Bool@ and a recursive list.
 data DataConstructorSpec
-  = Constr Name [ArgSpec]
+  = Constr DtCnstrName [ArgSpec]
   deriving stock (Show, Eq, Ord)
 
-getCnstrName :: DataConstructorSpec -> Name
+getCnstrName :: DataConstructorSpec -> DtCnstrName
 getCnstrName (Constr nm _) = nm
 
 -- | Specifies the type of a single constructor argument. 'Term' means a
@@ -455,14 +472,53 @@ data ArgSpec
     Rec
   deriving stock (Show, Eq, Ord)
 
+data AdtIndex = AdtIndex
+  { byType :: Map TyCnstrName DataTypeSpec,
+    byCnstr :: Map DtCnstrName (TyCnstrName, DataConstructorSpec)
+  }
+  deriving stock (Show, Eq, Ord)
+
+data AdtError = DuplicateTypeName TyCnstrName | DuplicateConstructorName DtCnstrName
+  deriving stock (Show, Eq, Ord)
+
+mkAdtIndex :: [DataTypeSpec] -> Either AdtError AdtIndex
+mkAdtIndex = foldM f (AdtIndex mempty mempty)
+  where
+    g :: TyCnstrName -> Map DtCnstrName (TyCnstrName, DataConstructorSpec) -> DataConstructorSpec -> Either AdtError (Map DtCnstrName (TyCnstrName, DataConstructorSpec))
+    g tyName acc spec@(Constr dtName _) =
+      case Map.lookup dtName acc of
+        Nothing -> pure $ Map.insert dtName (tyName, spec) acc
+        Just _ -> Left $ DuplicateConstructorName dtName
+
+    f :: AdtIndex -> DataTypeSpec -> Either AdtError AdtIndex
+    f acc spec@(DataTypeSpec tyName dtSpecs) =
+      case Map.lookup tyName acc.byType of
+        Nothing -> do
+          let byType = Map.insert tyName spec acc.byType
+          byCnstr <- foldM (g tyName) acc.byCnstr dtSpecs
+          pure $ AdtIndex {..}
+        Just _ -> Left $ DuplicateTypeName tyName
+
+lookupType :: TyCnstrName -> AdtIndex -> Maybe DataTypeSpec
+lookupType tyName AdtIndex {..} = Map.lookup tyName byType
+
+lookupCnstr :: DtCnstrName -> AdtIndex -> Maybe (TyCnstrName, DataConstructorSpec)
+lookupCnstr dtName AdtIndex {..} = Map.lookup dtName byCnstr
+
+lookupCnstrInType :: TyCnstrName -> DtCnstrName -> AdtIndex -> Maybe DataConstructorSpec
+lookupCnstrInType tyName dtName AdtIndex {..} = do
+  dt <- Map.lookup tyName byType
+  dtCnstrInTy dtName dt
+
 -- | We predefine a few ADTs here for demonstration purposes. In a complete
 -- language these would be defined using 'data' declarations in a module.
-stockADTs :: Map Name DataTypeSpec
+stockADTs :: AdtIndex
 stockADTs =
-  Map.fromList
-    [ ("MaybeBool", DataTypeSpec "MaybeBool" [Constr "Nothing" [], Constr "Just" [Term BoolTy]]),
-      ("ListBool", DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [Term BoolTy, Rec]])
-    ]
+  fromRight (error "Impossible! Invalid data type spec") $
+    mkAdtIndex
+      [ DataTypeSpec "MaybeBool" [Constr "Nothing" [], Constr "Just" [Term BoolTy]],
+        DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [Term BoolTy, Rec]]
+      ]
 
 --------------------------------------------------------------------------------
 -- Environment
@@ -492,39 +548,13 @@ data Env = Env
     size :: Int,
     -- | Holes encountered during typechecking
     holes :: [Type],
-    -- | ADT Spec by Constructor Name
-    adtConstructors :: Map Name DataTypeSpec
+    -- | Stock ADTs
+    adtEnv :: AdtIndex
   }
   deriving stock (Show, Eq, Ord)
 
-adtConstructorsMap :: Map Name DataTypeSpec
-adtConstructorsMap = Map.fromList $ foldr (\d@(DataTypeSpec _ cs) acc -> fmap ((,d) . getCnstrName) cs <> acc) [] stockADTs
-
--- | Lookup a Data Constructor Spec from a Data Constructor Name.
-lookupDataCnstrSpec :: Name -> (DataConstructorSpec -> TypecheckM a) -> TypecheckM a
-lookupDataCnstrSpec nm k =
-  lookupDataTypeSpec nm $ \(DataTypeSpec tyName specs) ->
-    case find (\(Constr nm' _) -> nm == nm') specs of
-      Just cnstrSpec -> k cnstrSpec
-      Nothing -> throwError $ TypeError $ "Data Constructor '" <> show nm <> "' does not match type: " <> show tyName
-
--- | Lookup the Data Constructor Spec from a Data Constructor Name.
-lookupDataTypeSpec :: Name -> (DataTypeSpec -> TypecheckM a) -> TypecheckM a
-lookupDataTypeSpec nm k =
-  asks (Map.lookup nm . adtConstructors) >>= \case
-    Just dataSpec -> k dataSpec
-    Nothing -> throwError $ OutOfScopeError nm
-
--- | Lookup a Data Type Spec from a Data Type Name.
-lookupDataTypeSpecByType :: Name -> (DataTypeSpec -> TypecheckM a) -> TypecheckM a
-lookupDataTypeSpecByType tyName k = do
-  cnstrs <- asks (Map.elems . adtConstructors)
-  case find (\(DataTypeSpec tyName' _) -> tyName == tyName') cnstrs of
-    Just dataSpec -> k dataSpec
-    Nothing -> throwError $ OutOfScopeError tyName
-
 initEnv :: Env
-initEnv = Env Nil [] 0 mempty adtConstructorsMap
+initEnv = Env Nil [] 0 mempty stockADTs
 
 extendLocalNames :: Env -> Cell -> Env
 extendLocalNames e@Env {localNames} cell = e {localNames = cell : localNames}
@@ -539,7 +569,7 @@ bindCell cell@Cell {..} Env {..} =
       localNames = cell : localNames,
       size = size + 1,
       holes = holes,
-      adtConstructors = adtConstructors
+      adtEnv = adtEnv
     }
 
 resolveCell :: Env -> Name -> Maybe Cell
@@ -573,7 +603,10 @@ freshCell ctx name ty = Cell name ty (freshVar ctx ty)
 
 data Error
   = TypeError String
-  | OutOfScopeError Name
+  | UnknownVariable Name
+  | UnknownDataConstructor DtCnstrName
+  | UnknownDataType TyCnstrName
+  | ConstructorTypeMismatch DtCnstrName TyCnstrName TyCnstrName
   deriving (Show)
 
 -- | Accumulated hole types from typechecking. Each time the typechecker
@@ -644,7 +677,7 @@ varTactic bndr = Synth $ do
     Just Cell {..} -> do
       let quoted = flip runEvalM (locals ctx) $ quote (Lvl $ size ctx) cellType cellValue
       pure (cellType, quoted)
-    Nothing -> throwError $ OutOfScopeError bndr
+    Nothing -> throwError $ UnknownVariable bndr
 
 -- | Subsumption
 --
@@ -1028,30 +1061,36 @@ recordElim name (Synth fieldTac) =
 -- ──────────────────────────────────────────────── Cnstr⇐
 --   Γ ⊢ (λ[x₁...xₙ]. C x₁...xₙ) t₁...tₘ
 --     ⇐ Tₘ₊₁ → ... → Tₙ → T
-adtIntro :: Name -> [Check] -> Check
+adtIntro :: DtCnstrName -> [Check] -> Check
 adtIntro nm chks = Check $ \expectedTy -> do
   let (returnTy, _) = decomposeFunction expectedTy
   case returnTy of
-    AdtTy tyName ->
-      lookupDataCnstrSpec nm $ \dataConstrSpec -> do
-        let constrTy = buildConstrType tyName dataConstrSpec
-            (_returnTy, paramTys) = decomposeFunction constrTy
-        when (length chks > length paramTys) $
-          throwError $
-            TypeError $
-              "Data Constructor '"
-                <> show nm
-                <> "' expects "
-                <> show (length paramTys)
-                <> " arguments but got "
-                <> show (length chks)
-        let scnstr = etaExpandCnstr (length paramTys) (SCnstr nm [])
-        params <- zipWithM runCheck chks paramTys
-        pure $ foldl' SAp scnstr params
+    AdtTy tyName -> do
+      adtMap <- asks adtEnv
+      case lookupCnstrInType tyName nm adtMap of
+        Just dtSpec -> do
+          let constrTy = buildConstrType tyName dtSpec
+              (_returnTy, paramTys) = decomposeFunction constrTy
+          when (length chks > length paramTys) $
+            throwError $
+              TypeError $
+                "Data Constructor '"
+                  <> show nm
+                  <> "' expects "
+                  <> show (length paramTys)
+                  <> " arguments but got "
+                  <> show (length chks)
+          let scnstr = etaExpandCnstr (length paramTys) (SCnstr nm [])
+          params <- zipWithM runCheck chks paramTys
+          pure $ foldl' SAp scnstr params
+        Nothing ->
+          case lookupCnstr nm adtMap of
+            Nothing -> throwError $ UnknownDataConstructor nm
+            Just (actualTy, _) -> throwError $ ConstructorTypeMismatch nm tyName actualTy
     ty -> throwError $ TypeError $ "Expected an ADT type but got: " <> show ty
 
 -- | Build a function type from a 'DataConstructorSpec'
-buildConstrType :: Name -> DataConstructorSpec -> Type
+buildConstrType :: TyCnstrName -> DataConstructorSpec -> Type
 buildConstrType tyName (Constr _nm []) = AdtTy tyName
 buildConstrType tyName (Constr nm (Term x : xs)) = FuncTy x $ buildConstrType tyName (Constr nm xs)
 buildConstrType tyName (Constr nm (Rec : xs)) = FuncTy (AdtTy tyName) $ buildConstrType tyName (Constr nm xs)
@@ -1107,27 +1146,30 @@ etaExpandCnstr n t = uncurry ($) $ go n (id, t)
 --
 -- For the 'Nil' case we check the body against 'Bool' and for
 -- the 'Cons' case we check the body against '(Bool -> Bool -> Bool)'
-adtElim :: Synth -> [(Name, Check)] -> Check
+adtElim :: Synth -> [(DtCnstrName, Check)] -> Check
 adtElim scrut cases = Check $ \motive -> do
   (scrutTy, scrut') <- runSynth scrut
   case scrutTy of
-    AdtTy tyName ->
-      lookupDataTypeSpecByType tyName $ \dataSpec -> do
-        let eliminators = Map.fromList $ mkEliminator motive dataSpec
-            checks = Map.fromList cases
-            alignCases = \case
-              These ty chk -> runCheck chk ty
-              This _ty -> throwError $ TypeError $ "Missing case for constructor of type '" <> show tyName <> "'"
-              That _chk -> throwError $ TypeError $ "Extra case branch not in type '" <> show tyName <> "'"
-        cases' <- Map.toList <$> alignWithM alignCases eliminators checks
-        pure $ SCase scrut' cases'
+    AdtTy tyName -> do
+      adtIndex <- asks adtEnv
+      case lookupType tyName adtIndex of
+        Just dtSpec -> do
+          let eliminators = Map.fromList $ mkEliminator motive dtSpec
+              checks = Map.fromList cases
+              alignCases = \case
+                These ty chk -> runCheck chk ty
+                This _ty -> throwError $ TypeError $ "Missing case for constructor of type '" <> show tyName <> "'"
+                That _chk -> throwError $ TypeError $ "Extra case branch not in type '" <> show tyName <> "'"
+          cases' <- Map.toList <$> alignWithM alignCases eliminators checks
+          pure $ SCase scrut' cases'
+        Nothing -> throwError $ UnknownDataType tyName
     ty -> throwError $ TypeError $ "Expected an ADT type but got: " <> show ty
 
-mkConstrEliminator :: Name -> Type -> DataConstructorSpec -> (Name, Type)
+mkConstrEliminator :: TyCnstrName -> Type -> DataConstructorSpec -> (DtCnstrName, Type)
 mkConstrEliminator tyName motiveTy (Constr nm args) =
   (nm, foldr (flip $ \acc -> \case Term ty -> ty `FuncTy` acc; Rec -> AdtTy tyName `FuncTy` acc) motiveTy args)
 
-mkEliminator :: Type -> DataTypeSpec -> [(Name, Type)]
+mkEliminator :: Type -> DataTypeSpec -> [(DtCnstrName, Type)]
 mkEliminator motiveTy (DataTypeSpec tyName specs) = fmap (mkConstrEliminator tyName motiveTy) specs
 
 --------------------------------------------------------------------------------
@@ -1332,12 +1374,12 @@ doGet name (VRecord fields) =
     Just field -> pure field
 doGet _ _ = error "impossible case in doGet"
 
-doConstructor :: Name -> [Syntax] -> EvalM Value
+doConstructor :: DtCnstrName -> [Syntax] -> EvalM Value
 doConstructor nm args = do
   args' <- traverse eval args
   pure $ VCnstr nm args'
 
-doCase :: Syntax -> [(Name, Syntax)] -> EvalM Value
+doCase :: Syntax -> [(DtCnstrName, Syntax)] -> EvalM Value
 doCase scrut patterns = do
   scrut' <- eval scrut
   case scrut' of
@@ -1422,7 +1464,7 @@ quoteFrame l tm = \case
     pure $ SSumCase tm mot f' g'
   -- NOTE: This never get constructed. Do I need them in STLC?
   VGet name -> pure $ SGet name tm
-  VCase mot cases -> (SCase tm <$> traverse (traverse (quote l mot)) cases)
+  VCase mot cases -> SCase tm <$> traverse (traverse (quote l mot)) cases
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
@@ -1685,6 +1727,12 @@ main = do
   testErr
     "Unknown constructor"
     (Anno (AdtTy "ListBool") (Cnstr "Bogus" []))
+  testErr
+    "Constructor belongs to wrong ADT: Cons checked at MaybeBool (issue #23)"
+    (Anno (AdtTy "MaybeBool") (Cnstr "Cons" [Tru]))
+  testErr
+    "Wrong ADT in recursive position: Nothing inside Cons (issue #23)"
+    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nothing" []]))
   testErr
     "Type mismatch in constructor arg"
     (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Unit]))
