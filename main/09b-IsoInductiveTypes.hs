@@ -476,7 +476,8 @@ stockADTs :: Map Name DataTypeSpec
 stockADTs =
   Map.fromList
     [ ("MaybeBool", DataTypeSpec "MaybeBool" [Constr "Nothing" [], Constr "Just" [BoolTy]]),
-      ("ListBool", DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [BoolTy, TVar "ListBool"]])
+      ("ListBool", DataTypeSpec "ListBool" [Constr "Nil" [], Constr "Cons" [BoolTy, TVar "ListBool"]]),
+      ("Fn", DataTypeSpec "Fn" [Constr "MkFn" [FuncTy BoolTy BoolTy]])
     ]
 
 --------------------------------------------------------------------------------
@@ -1513,6 +1514,9 @@ main = do
   test
     "Just True"
     (Cnstr "Just" [Tru])
+  test
+    "MkFn (\\x. x) at Fn"
+    (Cnstr "MkFn" [Lam "x" (Var "x")])
   putStrLn ""
 
   -- Case elimination tests
