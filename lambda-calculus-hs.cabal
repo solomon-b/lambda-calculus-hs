@@ -57,6 +57,10 @@ library test-harness
   hs-source-dirs:      lib
   build-depends:       base >= 2 && <5, prettyprinter
 
+-- ---------------------------------------------------------------------------
+-- Legacy standalone implementations (predate the numbered series)
+-- ---------------------------------------------------------------------------
+
 executable Untyped
   import:              common-settings
   main-is:             old/Untyped.hs
@@ -111,98 +115,134 @@ executable MLTT
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers
 
-executable 00-SimplyTypedEvaluation
+-- ===========================================================================
+-- Story 1: Foundation (total, simply typed)
+-- ===========================================================================
+
+executable 01-00-SimplyTypedEvaluation
   import:              common-settings
-  main-is:             00-SimplyTypedEvaluation.hs
+  main-is:             01-Foundation/00-SimplyTypedEvaluation.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, utils
 
-executable 01-BidirectionalTypechecking
+executable 01-01-BidirectionalTypechecking
   import:              common-settings
-  main-is:             01-BidirectionalTypechecking.hs
+  main-is:             01-Foundation/01-BidirectionalTypechecking.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness, utils
 
-executable 02-NormalizationByEvaluation
+executable 01-02-NormalizationByEvaluation
   import:              common-settings
-  main-is:             02-NormalizationByEvaluation.hs
+  main-is:             01-Foundation/02-NormalizationByEvaluation.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness, utils
 
-executable 03-Elaboration
+executable 01-03-Elaboration
   import:              common-settings
-  main-is:             03-Elaboration.hs
+  main-is:             01-Foundation/03-Elaboration.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness, utils
 
-executable 04-TypedHoles
+executable 01-04-TypedHoles
   import:              common-settings
-  main-is:             04-TypedHoles.hs
+  main-is:             01-Foundation/04-TypedHoles.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness, utils
 
-executable 05-SystemT
+executable 01-05-SystemT
   import:              common-settings
-  main-is:             05-SystemT.hs
+  main-is:             01-Foundation/05-SystemT.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness, utils
 
-executable 06-Records
+executable 01-06-Records
   import:              common-settings
-  main-is:             06-Records.hs
+  main-is:             01-Foundation/06-Records.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, test-harness, utils
 
-executable 07-SumTypes
+executable 01-07-SumTypes
   import:              common-settings
-  main-is:             07-SumTypes.hs
+  main-is:             01-Foundation/07-SumTypes.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, test-harness, utils
 
-executable 08-Subtyping
+executable 01-08-Subtyping
   import:              common-settings
-  main-is:             08-Subtyping.hs
+  main-is:             01-Foundation/08-Subtyping.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 09-NominalInductiveTypes
+executable 01-09-NominalInductiveTypes
   import:              common-settings
-  main-is:             09-NominalInductiveTypes.hs
+  main-is:             01-Foundation/09-NominalInductiveTypes.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 09b-IsoInductiveTypes
+executable 01-09b-IsoInductiveTypes
   import:              common-settings
-  main-is:             09b-IsoInductiveTypes.hs
+  main-is:             01-Foundation/09b-IsoInductiveTypes.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 10-SystemF
+-- Capstone (planned): a runnable simply typed language with a parser.
+-- executable 01-capstone
+--   import:            common-settings
+--   main-is:           Main.hs
+--   hs-source-dirs:    main/01-Foundation/capstone
+--   other-modules:     Syntax, Parser, Eval, Typecheck, Repl
+--   build-depends:     base, ...
+
+-- ===========================================================================
+-- Story 2: Program (practical, partial)
+-- ===========================================================================
+
+executable 02-00-SystemF
   import:              common-settings
-  main-is:             10-SystemF.hs
+  main-is:             02-Program/00-SystemF.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 10b-TacticalElaborator
+executable 02-00b-TacticalElaborator
   import:              common-settings
-  main-is:             10b-TacticalElaborator.hs
+  main-is:             02-Program/00b-TacticalElaborator.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 11-MLTT
+-- Capstone (planned): a runnable F-omega language with a parser.
+-- executable 02-capstone
+--   import:            common-settings
+--   main-is:           Main.hs
+--   hs-source-dirs:    main/02-Program/capstone
+--   other-modules:     Syntax, Parser, Eval, Typecheck, Repl
+--   build-depends:     base, ...
+
+-- ===========================================================================
+-- Story 3: Proof (total, dependent)
+-- ===========================================================================
+
+executable 03-00-MLTT
   import:              common-settings
-  main-is:             11-MLTT.hs
+  main-is:             03-Proof/00-MLTT.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 12-TypeUniverses
+executable 03-01-TypeUniverses
   import:              common-settings
-  main-is:             12-TypeUniverses.hs
+  main-is:             03-Proof/01-TypeUniverses.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 13-UniversePolymorphism
+executable 03-02-UniversePolymorphism
   import:              common-settings
-  main-is:             13-UniversePolymorphism.hs
+  main-is:             03-Proof/02-UniversePolymorphism.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
+
+-- Capstone (planned): a runnable dependently typed language with a parser.
+-- executable 03-capstone
+--   import:            common-settings
+--   main-is:           Main.hs
+--   hs-source-dirs:    main/03-Proof/capstone
+--   other-modules:     Syntax, Parser, Eval, Typecheck, Repl
+--   build-depends:     base, ...
