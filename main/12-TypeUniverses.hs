@@ -19,8 +19,9 @@
 -- Universe levels are explicit natural numbers, no
 -- inference or polymorphism.
 --
--- NOTE: Compound type formers (Pi, Sigma, FuncTy, PairTy, SumTy, records, ADTs)
--- have dual Synth and Check formation rules.
+-- NOTE: Compound type formers (Pi, Sigma, PairTy, SumTy, records, ADTs)
+-- have dual Synth and Check formation rules. @A -> B@ is sugar for
+-- @Pi _ A B@ and routes to the Pi formation rules.
 --
 -- The Synth path synthesizes components, extracts their levels with
 -- @expectUniv@, and computes the result level via @maxLevel@.
@@ -47,7 +48,7 @@ import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
-import Data.Foldable (find)
+import Data.Foldable (find, foldrM)
 import Data.Functor ((<&>))
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
@@ -332,8 +333,6 @@ data Syntax
   | -- | Dependent function type. The body may reference the
     -- bound variable (index 0).
     SPi Name Syntax Syntax
-  | -- | Non-dependent function type. @A -> B@.
-    SFuncTy Syntax Syntax
   | -- | Dependent pair type. The second component's type may
     -- reference the bound variable (index 0).
     SSigma Name Syntax Syntax
@@ -421,8 +420,6 @@ data Value
   | -- | Dependent function type. The closure computes the
     -- codomain given a value of the domain type.
     VPi Name Value Closure
-  | -- | Evaluated non-dependent function type.
-    VFuncTy Value Value
   | -- | Dependent pair type. The closure computes the second
     -- component's type given the first component's value.
     VSigma Name Value Closure
@@ -609,8 +606,8 @@ data CnstrDecl = CnstrDecl DtCnstrName [Term]
 -- > DataTypeSpec "List" 1
 -- >   [ Constr "Nil" (SPi "a" (SUniv (Level 0)) (SAdtTy "List" [SVar 0])),
 -- >     Constr "Cons"
--- >       (SPi "a" (SUniv (Level 0)) (SFuncTy (SVar 0)
--- >         (SFuncTy (SAdtTy "List" [SVar 0]) (SAdtTy "List" [SVar 0]))))
+-- >       (SPi "a" (SUniv (Level 0)) (SPi "_" (SVar 0)
+-- >         (SPi "_" (SAdtTy "List" [SVar 1]) (SAdtTy "List" [SVar 2]))))
 -- >   ]
 data DataTypeSpec = DataTypeSpec TyCnstrName Int [DataConstructorSpec]
   deriving stock (Show, Eq, Ord)
@@ -624,8 +621,8 @@ data DataTypeSpec = DataTypeSpec TyCnstrName Int [DataConstructorSpec]
 -- @(a : Type 0) -> a -> List a -> List a@:
 --
 -- > Constr "Cons"
--- >   (SPi "a" (SUniv (Level 0)) (SFuncTy (SVar 0)
--- >     (SFuncTy (SAdtTy "List" [SVar 0]) (SAdtTy "List" [SVar 0]))))
+-- >   (SPi "a" (SUniv (Level 0)) (SPi "_" (SVar 0)
+-- >     (SPi "_" (SAdtTy "List" [SVar 1]) (SAdtTy "List" [SVar 2]))))
 data DataConstructorSpec = Constr
   { cnstrName :: DtCnstrName,
     cnstrType :: Syntax
@@ -684,37 +681,43 @@ elaborateDefinitions decls = do
         Just _ -> throwError (DuplicateTypeName tyName)
         Nothing -> pure (Map.insert tyName (l, length tyParams) acc)
 
+    -- Elaborate fields left to right, binding each as an unused cell so the SPi
+    -- binders line up; the return is checked under params + all field binders.
+    -- ADT parameters and fields are fixed at 'Level 0' in this module, the
+    -- no-level-polymorphism stage, so we cannot define ADTs whose parameters
+    -- or fields live at higher universes. Level-polymorphic ADTs are a later
+    -- module.
+    elabFields :: TyCnstrName -> [Name] -> [Term] -> TypecheckM ([Syntax], Syntax)
+    elabFields tyName tyParams [] = do
+      ret <- runCheck (check (AdtTy tyName (Var <$> tyParams))) (VUniv (Level 0))
+      pure ([], ret)
+    elabFields tyName tyParams (t : rest) = do
+      sty <- runCheck (check t) (VUniv (Level 0))
+      ctx <- ask
+      let cell = freshCell ctx "_" (runEvalM (eval sty) (toEvalEnv ctx))
+      (restFs, ret) <- local (bindCell cell) (elabFields tyName tyParams rest)
+      pure (sty : restFs, ret)
+
     elabDecl :: (Map Lvl Def, Map DtCnstrName Lvl) -> (Lvl, DataDecl) -> TypecheckM (Map Lvl Def, Map DtCnstrName Lvl)
     elabDecl (specs, byCnstr) (l, DataDecl tyName tyParams cnstrDecls) = do
       dcSpecs <- withTyParams tyParams $ forM cnstrDecls $ \(CnstrDecl dtName argSurfTys) -> do
-        -- ADT parameters and fields are fixed at 'Level 0' in this module.
-        -- This is the no-level-polymorphism stage, so we cannot define
-        -- ADTs whose parameters or fields live at higher universes.
-        -- Level-polymorphic ADTs are a later module.
-        args <- traverse (\t -> runCheck (check t) (VUniv (Level 0))) argSurfTys
-        -- Fields are chained with the non-dependent 'SFuncTy', so a field's
-        -- type cannot mention an earlier field's value. This module thus
-        -- cannot introduce genuinely dependent data types, e.g.
-        -- @MkPoly (Base : Type) (Fiber : Base -> Type)@ where Fiber's type
-        -- depends on the Base field. (Type parameters stay dependent, since
-        -- fields and the return type reference them, hence 'SPi' over
-        -- 'SUniv (Level 0)' for the params.)
+        -- Each field becomes an 'SPi' binder with an unused ("_") name, so
+        -- a field's type cannot reference an earlier field. This keeps the
+        -- module parameterized-only: a genuinely dependent constructor like
+        -- @MkPoly (Base : Type) (Fiber : Base -> Type)@, where Fiber's type
+        -- uses the Base field, is still out of reach. 'elabFields' threads
+        -- the context left to right purely so the SPi binders' de Bruijn
+        -- levels line up, not to expose fields by name. (Type parameters
+        -- stay dependent, since fields and the return type reference them,
+        -- hence 'SPi' over 'SUniv (Level 0)' for the params.)
         --
-        -- Supporting dependent fields belongs with the Dependent Pattern
-        -- Matching module and requires:
-        --   1. CnstrDecl fields to carry names, elaborated under a context
-        --      that binds the earlier fields, building an 'SPi' telescope
-        --      here instead of an 'SFuncTy' chain.
-        --   2. adtIntro and quote's VCnstr clause to walk that telescope,
-        --      instantiating each field's codomain with the preceding
-        --      argument, rather than flattening with 'decomposeFunction'.
-        --   3. constrBranchType to build a dependent branch type
-        --      (Pi fields. motive) so a case arm can bind fields whose
-        --      types refer to earlier ones.
-        let k = length tyParams
-            retParams = fmap (SVar . Ix) (reverse [0 .. k - 1])
-            body = foldr SFuncTy (SAdtTy tyName retParams) args
-            scheme = foldr (`SPi` SUniv (Level 0)) body tyParams
+        -- The Dependent Pattern Matching module would give CnstrDecl fields
+        -- real names (so a later field can reference an earlier one) for
+        -- dependent introduction, and make 'constrBranchType' build a
+        -- dependent branch type (with 'quote' walking it) for elimination.
+        (fieldTys, returnTy) <- elabFields tyName tyParams argSurfTys
+        let fieldTele = foldr (\fty acc -> SPi "_" fty acc) returnTy fieldTys
+            scheme = foldr (`SPi` SUniv (Level 0)) fieldTele tyParams
         pure $ Constr dtName scheme
 
       let def = Data $ DataTypeSpec tyName (length tyParams) dcSpecs
@@ -928,8 +931,8 @@ synth = \case
   Hole -> Synth $ throwError $ TypeError "Cannot synthesize holes"
   -- Universe
   Univ l -> univFormation l
-  -- Pi / Function
-  FuncTy a b -> funcTyFormationSynth (synth a) (synth b)
+  -- Pi / Function. @A -> B@ is sugar for @Pi _ A B@ (an unused binder).
+  FuncTy a b -> piFormationSynth "_" (synth a) (synth b)
   Pi nm a b -> piFormationSynth nm (synth a) (synth b)
   -- Sigma / Pair
   Sigma nm a b -> sigmaFormationSynth nm (synth a) (synth b)
@@ -963,8 +966,8 @@ check = \case
   Lam bndr body -> piIntro bndr (check body)
   Let bndr e body -> letTactic bndr (synth e) (check body)
   Hole -> holeTactic
-  -- Pi / Function
-  FuncTy a b -> funcTyFormationCheck (check a) (check b)
+  -- Pi / Function. @A -> B@ is sugar for @Pi _ A B@ (an unused binder).
+  FuncTy a b -> piFormationCheck "_" (check a) (check b)
   Pi nm a b -> piFormationCheck nm (check a) (check b)
   -- Sigma / Pair
   Sigma nm a b -> sigmaFormationCheck nm (check a) (check b)
@@ -1097,11 +1100,6 @@ annoTactic ty (Check bodyTac) = Synth $ do
 -- Γ ⊢ (λx.e) ⇐ A₁ → A₂
 piIntro :: Name -> Check -> Check
 piIntro bndr (Check bodyTac) = Check $ \case
-  VFuncTy a b -> do
-    ctx <- ask
-    let var = freshCell ctx bndr a
-    fiber <- local (bindCell var) $ bodyTac b
-    pure $ SLam bndr fiber
   VPi _ a clo -> do
     var <- asks $ \ctx -> freshCell ctx bndr a
     fiber <- local (bindCell var) $ do
@@ -1127,9 +1125,6 @@ piElim :: Synth -> Check -> Synth
 piElim (Synth funcTac) (Check argTac) =
   Synth $
     funcTac >>= \case
-      (a `VFuncTy` b, f) -> do
-        arg <- argTac a
-        pure (b, SAp f arg)
       (VPi _ a clo, f) -> do
         arg <- argTac a
         ctx <- asks toEvalEnv
@@ -1222,43 +1217,6 @@ piFormationCheck nm (Check domTac) (Check codTac) = Check $ \case
         var = freshCell ctx nm va
     sb <- local (bindCell var) $ codTac (VUniv k)
     pure (SPi nm sa sb)
-  ty ->
-    throwError $
-      TypeError $
-        "Expected a Type, but got: " <> show ty
-
--- | Function Type Formation Synth
---
--- Non-dependent function type. Synthesizes both components, extracts their
--- universe levels, and returns the maximum. Elaborates to @SFuncTy sa sb@.
---
---  Γ ⊢ A ⇒ Type n    Γ ⊢ B ⇒ Type m
---  ─────────────────────────────────── Arrow⇒
---       Γ ⊢ A → B ⇒ Type (max n m)
-funcTyFormationSynth :: Synth -> Synth -> Synth
-funcTyFormationSynth (Synth domTac) (Synth codTac) = Synth $ do
-  (domTy, sa) <- domTac
-  n <- expectUniv domTy
-  (codTy, sb) <- codTac
-  m <- expectUniv codTy
-  pure (VUniv (maxLevel n m), SFuncTy sa sb)
-
--- | Function Type Formation Check
---
--- Non-dependent function type. The domain and codomain are both checked against
--- the goal universe level. Cumulativity ensures this accepts components at any
--- lower level. Elaborates to @SFuncTy sa sb@.
---
---  Γ ⊢ A ⇐ Type k    Γ ⊢ B ⇐ Type k
---  ─────────────────────────────────── Arrow⇐
---       Γ ⊢ A → B ⇐ Type k
-funcTyFormationCheck :: Check -> Check -> Check
-funcTyFormationCheck (Check domTac) (Check codTac) = Check $ \case
-  VUniv k -> do
-    sa <- domTac (VUniv k)
-    sb <- codTac (VUniv k)
-
-    pure (SFuncTy sa sb)
   ty ->
     throwError $
       TypeError $
@@ -1619,8 +1577,11 @@ sumElim (Synth synth) (Check checkT1) (Check checkT2) = Check $ \motiv -> do
   (scrutTy, scrut) <- synth
   case scrutTy of
     VSumTy a b -> do
-      f <- checkT1 (VFuncTy a motiv)
-      g <- checkT2 (VFuncTy b motiv)
+      ctx <- ask
+      let fTy = runEvalM (vArrow a motiv) (toEvalEnv ctx)
+          gTy = runEvalM (vArrow b motiv) (toEvalEnv ctx)
+      f <- checkT1 fTy
+      g <- checkT2 gTy
       motiv <- quoteValue (VUniv 0) motiv
       pure $ SSumCase scrut motiv f g
     _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
@@ -1859,15 +1820,16 @@ adtFormationCheck nm tys = Check $ \case
 --   ⇐ Tₘ₊₁[ā] → ... → Tₙ[ā] → T ā
 adtIntro :: DtCnstrName -> [Check] -> Check
 adtIntro nm chks = Check $ \expectedTy -> do
-  let (returnTy, _) = decomposeFunction expectedTy
+  ctx <- ask
+  let lvl = Lvl ctx.localValuesSize
+      (returnTy, _) = runEvalM (decomposeFunction lvl expectedTy) (toEvalEnv ctx)
   case returnTy of
     VAdtTy tyName tys -> do
       adtMap <- asks adtEnv
       case lookupCnstrInType tyName nm adtMap of
         Just dtSpec -> do
-          ctx <- ask
           let constrTy = runEvalM (instantiateScheme dtSpec.cnstrType tys) (toEvalEnv ctx)
-              (_returnTy, paramTys) = decomposeFunction constrTy
+              (_returnTy, paramTys) = runEvalM (decomposeFunction lvl constrTy) (toEvalEnv ctx)
           when (length chks > length paramTys) $
             throwError $
               TypeError $
@@ -1953,9 +1915,13 @@ adtElim scrut cases = Check $ \motive -> do
     ty -> throwError $ TypeError $ "Expected an ADT type but got: " <> show ty
 
 -- | Decompose a function into its return type and a list of its args.
-decomposeFunction :: Value -> (Value, [Value])
-decomposeFunction (VFuncTy a b) = (a :) <$> decomposeFunction b
-decomposeFunction ty = (ty, [])
+decomposeFunction :: Lvl -> Value -> EvalM (Value, [Value])
+decomposeFunction l (VPi _ dom cod) = do
+  -- binder unused here, so the fresh var is harmless
+  rest <- appClosure cod (VNeutral dom (Neutral (VVar l) Nil))
+  (ret, doms) <- decomposeFunction (incLevel l) rest
+  pure (ret, dom : doms)
+decomposeFunction _ ty = pure (ty, [])
 
 -- | The type a single case branch is checked against: each constructor
 -- field becomes a function argument, ending in the goal type.
@@ -1965,9 +1931,11 @@ decomposeFunction ty = (ty, [])
 -- (this is case analysis, not a fold).
 constrBranchType :: EvalEnv -> Value -> [Value] -> DataConstructorSpec -> (DtCnstrName, Value)
 constrBranchType evalEnv motive tys (Constr nm scheme) =
-  let instTy = runEvalM (instantiateScheme scheme tys) evalEnv
-      (_ret, fields) = decomposeFunction instTy
-   in (nm, foldr VFuncTy motive fields)
+  let build = do
+        instTy <- instantiateScheme scheme tys
+        (_ret, fields) <- decomposeFunction (Lvl evalEnv.envValuesLen) instTy
+        foldrM vArrow motive fields
+   in (nm, runEvalM build evalEnv)
 
 -- | The branch types for every constructor of a data type, used to check
 -- each arm of a case expression.
@@ -2005,7 +1973,6 @@ isSubtypeOf l (VPi _ a1 clo1) (VPi _ a2 clo2) = do
   cod2 <- appClosure clo2 x
   codOk <- isSubtypeOf (incLevel l) cod1 cod2
   pure (domOk && codOk)
-isSubtypeOf l s@VFuncTy {} t@VFuncTy {} = functionSubtype l s t
 isSubtypeOf l (VSigma _ a1 clo1) (VSigma _ a2 clo2) = do
   fstOk <- isSubtypeOf l a1 a2
   let x = VNeutral a1 $ Neutral (VVar l) Nil
@@ -2086,10 +2053,6 @@ equateValue l (VPi _ a1 clo1) (VPi _ a2 clo2) = do
   b2 <- appClosure clo2 x
   bOk <- equateValue (incLevel l) b1 b2
   pure (aOk && bOk)
-equateValue l (VFuncTy a1 b1) (VFuncTy a2 b2) = do
-  aOk <- equateValue l a1 a2
-  bOk <- equateValue l b1 b2
-  pure (aOk && bOk)
 equateValue l (VSigma _ a1 clo1) (VSigma _ a2 clo2) = do
   aOk <- equateValue l a1 a2
   let x = VNeutral a1 $ Neutral (VVar l) Nil
@@ -2148,38 +2111,6 @@ equateValue l (VCnstr n1 as1) (VCnstr n2 as2) =
     then allM (uncurry (equateValue l)) (zip as1 as2)
     else pure False
 equateValue _ _ _ = pure False
-
--- | Function Subtyping
---
--- A subtype of T₁ → T₂ is any type S₁ → S₂ such that T₁ <: S₁ and S₂ <: T₂.
---
--- For example:
---
--- (ℤ → ℕ) <: (ℕ → ℤ)
---
--- These feels backwards at first glance, but the received parameter T₁/S₁ is
--- contravariant. This reverses the subtyping relationship.
---
--- Another way of stating the example above is that you can replace a function ℕ
--- → ℤ with a function ℤ → ℕ.
---
--- This works because any ℕ you would have applied to the supertype function is
--- also an ℤ which can also be applied to the subtype function.
---
--- Likewise the ℕ produced by the subtype function is also a ℤ and thus
--- satisfies the super type's return param.
---
--- Thus our typing rule for function subtyping is:
---
--- T₁ <: S₁  S₂ <: T₂
--- ────────────────── Func-Sub
--- S₁ → S₂ <: T₁ → T₂
-functionSubtype :: Lvl -> Value -> Value -> EvalM Bool
-functionSubtype l (s1 `VFuncTy` s2) (t1 `VFuncTy` t2) = do
-  domOk <- isSubtypeOf l t1 s1
-  codOk <- isSubtypeOf l s2 t2
-  pure (domOk && codOk)
-functionSubtype _ _ _ = error "impossible case in functionSubtype"
 
 -- | Record Depth Subtyping
 --
@@ -2268,10 +2199,6 @@ eval = \case
     env <- asks envValues
     a <- eval a
     pure $ VPi nm a $ Closure env b
-  SFuncTy t1 t2 -> do
-    t1 <- eval t1
-    t2 <- eval t2
-    pure $ VFuncTy t1 t2
   -- Sigma / Pair
   SSigma nm a b -> do
     env <- asks envValues
@@ -2339,7 +2266,6 @@ eval = \case
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appClosure clo arg
-doApply (VNeutral (VFuncTy ty1 ty2) neu) arg = pure $ VNeutral ty2 (pushFrame neu (VApp ty1 arg))
 doApply (VNeutral (VPi _ a clo) neu) arg = do
   fiber <- appClosure clo arg
   pure $ VNeutral fiber (pushFrame neu (VApp a arg))
@@ -2358,7 +2284,9 @@ doSumCase (VInL v) _motive f _ = doApply f v
 doSumCase (VInR v) _motive _ g = doApply g v
 doSumCase (VNeutral (VSumTy a b) neu) motive f g = do
   motive <- eval motive
-  pure $ VNeutral motive (pushFrame neu (VSumCase (VFuncTy a motive) (VFuncTy b motive) motive f g))
+  tyF <- vArrow a motive
+  tyG <- vArrow b motive
+  pure $ VNeutral motive (pushFrame neu (VSumCase tyF tyG motive f g))
 doSumCase _ _ _ _ = error "impossible case in doSumCase"
 
 doSumAbsurd :: Value -> Syntax -> EvalM Value
@@ -2418,7 +2346,7 @@ appClosure (Closure env body) v =
 --
 -- Key cases dispatch on the type:
 --
--- 1. At 'VFuncTy' or 'VPi': eta-expand. Generate a fresh
+-- 1. At 'VPi': eta-expand. Generate a fresh
 --    variable at the domain type, apply the value to it, quote
 --    the result at the codomain. For 'VPi' the codomain comes
 --    from instantiating the closure. Produces 'SLam'.
@@ -2453,15 +2381,6 @@ quote l = \cases
       fiber <- appClosure clo v
       doApply f v >>= quote l' fiber
     pure $ SLam "_" b
-  (VFuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) -> do
-    body <- bindVar ty1 l $ \v l' -> do
-      clo <- appClosure clo v
-      quote l' ty2 clo
-    pure $ SLam bndr body
-  (VFuncTy ty1 ty2) f -> do
-    body <- bindVar ty1 l $ \v l' ->
-      doApply f v >>= quote l' ty2
-    pure $ SLam "_" body
   -- Sigma / Pair: quote components
   (VSigma _bndr a clo) (VPair tm1 tm2) -> do
     tm1' <- quote l a tm1
@@ -2500,7 +2419,7 @@ quote l = \cases
     case lookupCnstrInType tyName nm adtEnv of
       Just (Constr _ scheme) -> do
         instTy <- instantiateScheme scheme vtys
-        let (_ret, argTys) = decomposeFunction instTy
+        (_ret, argTys) <- decomposeFunction l instTy
         SCnstr nm <$> zipWithM (quote l) argTys args
       Nothing ->
         error "impossible case in quote: constructor not found in its data type"
@@ -2512,10 +2431,6 @@ quote l = \cases
       fiber <- appClosure clo v
       quote l' (VUniv 0) fiber
     pure $ SPi nm a' b'
-  _ (VFuncTy t1 t2) -> do
-    t1 <- quote l (VUniv 0) t1
-    t2 <- quote l (VUniv 0) t2
-    pure $ SFuncTy t1 t2
   _ (VSigma bndr a clo) -> do
     a' <- quote l (VUniv 0) a
     b <- bindVar a l $ \v l' -> do
@@ -2544,6 +2459,16 @@ quote l = \cases
     pure $ SAdtTy nm tys
   -- Catch-all
   ty tm -> error $ "impossible case in quote:\n" <> show ty <> "\n" <> show tm
+
+-- | Build the non-dependent function type @dom -> cod@ as a 'VPi' with an
+-- unused binder. Since 'cod' is already a value, we quote it back one level
+-- deeper (under the binder) so the closure reproduces it when applied.
+vArrow :: Value -> Value -> EvalM Value
+vArrow dom cod = do
+  env <- ask
+  -- quote at depth+1
+  codS <- quote (incLevel (Lvl env.envValuesLen)) (VUniv (Level 0)) cod
+  pure $ VPi "_" dom (Closure env.envValues codS)
 
 quoteLevel :: Lvl -> Lvl -> Ix
 quoteLevel (Lvl l) (Lvl x) = Ix (l - (x + 1))

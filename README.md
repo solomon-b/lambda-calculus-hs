@@ -28,6 +28,7 @@ want to include in your custom language in one place.
 - [X] Martin-Lof Type Theory (Pi and Sigma Types)
 - [X] Type Universes
 - [X] Universe Polymorphism
+- [ ] First-class Type Constructors / Higher-Kinded Data
 - [ ] Unification / Implicits
 - [ ] Indexed Inductive Types (with eliminators)
 - [ ] Dependent Patern Matching
