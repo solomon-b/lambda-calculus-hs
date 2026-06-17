@@ -68,7 +68,7 @@ data Term
   | -- | Lambda abstraction. @\x. body@
     Lam Name Term
   | -- | Function application. @f x@
-    Ap Term Term
+    Ap Term Arg
   | -- | Let binding. @let x = t1 in t2@
     Let Name Term Term
   | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
@@ -122,6 +122,14 @@ data Term
     Case Term [(DtCnstrName, [Name], Term)]
   deriving stock (Show, Eq, Ord)
 
+data Arg = TmArg Term | TpArg Type
+  deriving stock (Show, Eq, Ord)
+
+prettyArg :: Prec -> Arg -> PP.Doc ann
+prettyArg p = \case
+  TmArg tm -> prettyTerm p tm
+  TpArg ty -> PP.brackets (prettyType lamPrec ty)
+
 prettyTerm :: Prec -> Term -> PP.Doc ann
 prettyTerm _ (Var n) = PP.pretty (getName n)
 prettyTerm p (Lam n body) =
@@ -129,7 +137,7 @@ prettyTerm p (Lam n body) =
     lambdaSym <> PP.pretty (getName n) <> "." PP.<+> prettyTerm lamPrec body
 prettyTerm p (Ap f x) =
   parensIf (p > appPrec) $
-    prettyTerm appPrec f PP.<+> prettyTerm atomPrec x
+    prettyTerm appPrec f PP.<+> prettyArg atomPrec x
 prettyTerm p (Let n rhs body) =
   parensIf (p > lamPrec) $
     "let"
@@ -933,7 +941,7 @@ newtype Synth = Synth {runSynth :: TypecheckM (SType, Syntax)}
 synth :: Term -> Synth
 synth = \case
   Var bndr -> varTactic bndr
-  Ap tm1 tm2 -> lamElim (synth tm1) (check tm2)
+  Ap tm arg -> applyTactic (synth tm) arg
   Anno ty tm -> annoTactic ty (check tm)
   Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
   TyAp tm ty -> forallElim (synth tm) ty
@@ -963,6 +971,41 @@ check (Record fields) = recordIntro (fmap (fmap (id &&& check)) fields)
 check (Cnstr nm args) = adtIntro nm (fmap check args)
 check (Case scrut cases) = adtElim (synth scrut) (fmap (\(x, y, z) -> (x, check (foldr Lam z y))) cases)
 check tm = subTactic (synth tm)
+
+-- | Expose the check goal to a user-space tactic.
+--
+-- A 'Check' normally consumes its goal inside the newtype. 'matchGoal' unwraps
+-- the goal so a user-space tactic can branch on the shape of the expected type,
+-- then picks an inner 'Check' and runs it at the same goal.
+matchGoal :: (SType -> Check) -> Check
+matchGoal tac = Check $ \goal -> runCheck (tac goal) goal
+
+-- | Run a synth tactic once, cache the result, and dispatch.
+--
+-- 'examine' takes a 'Synth' and a continuation. It runs the tactic exactly once
+-- to obtain its synthesized type and elaborated core term, packages that pair
+-- into a no-op 'Synth' that replays the cached result, and hands both the
+-- cached tactic and the synthesized type to the continuation.
+--
+-- The continuation can inspect the type, pick a branch, and feed the cached
+-- tactic to whichever kernel rule fires. The rule runs the cached tactic, which
+-- just returns the memoized pair, without re-typechecking the head.
+--
+-- Without this caching, a dispatch tactic that inspects the head type and then
+-- runs a branch would re-typecheck the head. For a nested application spine,
+-- the re-typechecking is exponential.
+examine :: Synth -> (Synth -> SType -> Synth) -> Synth
+examine tac k = Synth $ do
+  (ty, tm) <- runSynth tac
+  let memo = Synth (pure (ty, tm))
+  runSynth (k memo ty)
+
+-- | Abort a synth with a type error.
+--
+-- A named primitive so user-space tactics signal ill-formed terms without
+-- reaching into the underlying monad directly.
+die :: Error -> Synth
+die err = Synth (throwError err)
 
 -- | Var Synth
 --
@@ -1191,6 +1234,36 @@ forallElim (Synth synth) surfTy = Synth $ do
           resultSTy = runEvalM (quoteType (Lvl extEnv.envTypesLen) resultVTy) extEnv
       pure (resultSTy, STyAp tm surfTy)
     _ -> throwError $ TypeError $ "Expected a forall type but got " <> show ty
+
+-- | Unified Application
+--
+-- Dispatches to the appropriate elim rule based on the synthesized type of the
+-- head and the shape of the 'Arg'. Uses 'examine' to synthesize the head
+-- exactly once, then passes the memoized tactic to whichever branch fires so
+-- the kernel rule runs without re-typechecking.
+--
+-- Four cases. Two dispatch to existing kernel rules, two produce errors for
+-- mismatched dispatch, and a fallthrough handles heads whose type is neither a
+-- function nor a forall.
+--
+-- There is no single typing rule for this tactic. It selects between the two
+-- underlying rules:
+--
+-- Γ ⊢ e ⇒ A → B    Γ ⊢ e' ⇐ A
+-- ──────────────────────────── App⇒ (term arg)
+--   Γ ⊢ Ap e (TmArg e') ⇒ B
+--
+--       Γ ⊢ e ⇒ ∀α. B
+-- ────────────────────────── App⇒ (type arg)
+-- Γ ⊢ Ap e (TpArg A) ⇒ B[A/α]
+applyTactic :: Synth -> Arg -> Synth
+applyTactic t arg = examine t $ \memo tp ->
+  case (tp, arg) of
+    (SFuncTy _ _, TmArg x) -> lamElim memo (check x)
+    (SForall _, TpArg a) -> forallElim memo a
+    (SFuncTy _ _, TpArg _) -> die (TypeError "applied a type to a function")
+    (SForall _, TmArg _) -> die (TypeError "applied a term to a forall")
+    (ty, _) -> die (TypeError ("cannot eliminate " <> show ty))
 
 -- | Pair Introduction
 --
@@ -2117,7 +2190,7 @@ main = do
             (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
             BoolTy
         )
-        (Anno BoolTy Tru)
+        (TmArg (Anno BoolTy Tru))
     )
   test
     "poly id applied to Unit"
@@ -2126,7 +2199,7 @@ main = do
             (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
             UnitTy
         )
-        Unit
+        (TmArg Unit)
     )
   test
     "poly id unapplied"
@@ -2158,9 +2231,9 @@ main = do
                 )
                 UnitTy
             )
-            (Anno BoolTy Tru)
+            (TmArg (Anno BoolTy Tru))
         )
-        Unit
+        (TmArg Unit)
     )
   putStrLn ""
 
@@ -2174,15 +2247,15 @@ main = do
                 ( TyAp
                     ( Anno
                         (Forall "a" (Forall "b" ((TVar "a" `FuncTy` TVar "b") `FuncTy` (TVar "a" `FuncTy` TVar "b"))))
-                        (TyLam "a" (TyLam "b" (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))))
+                        (TyLam "a" (TyLam "b" (Lam "f" (Lam "x" (Ap (Var "f") (TmArg (Var "x")))))))
                     )
                     BoolTy
                 )
                 BoolTy
             )
-            (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
+            (TmArg (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru))))
         )
-        (Anno BoolTy Tru)
+        (TmArg (Anno BoolTy Tru))
     )
   putStrLn ""
 
@@ -2195,7 +2268,7 @@ main = do
             (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
             (Forall "b" (TVar "b" `FuncTy` TVar "b"))
         )
-        (Anno (Forall "b" (TVar "b" `FuncTy` TVar "b")) (TyLam "b" (Lam "x" (Var "x"))))
+        (TmArg (Anno (Forall "b" (TVar "b" `FuncTy` TVar "b")) (TyLam "b" (Lam "x" (Var "x")))))
     )
   putStrLn ""
 

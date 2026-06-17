@@ -203,12 +203,6 @@ executable 02-00-SystemF
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 02-00b-TacticalElaborator
-  import:              common-settings
-  main-is:             02-Program/00b-TacticalElaborator.hs
-  hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
-
 -- Capstone (planned): a runnable F-omega language with a parser.
 -- executable 02-capstone
 --   import:            common-settings
