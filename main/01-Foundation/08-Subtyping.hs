@@ -681,7 +681,7 @@ pairElimFst :: Synth -> Synth
 pairElimFst (Synth synth) =
   Synth $
     synth >>= \case
-      (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
+      (PairTy ty1 _ty2, tm) -> pure (ty1, SFst tm)
       (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
 
 -- | Pair Snd Elimination
@@ -695,7 +695,7 @@ pairElimSnd :: Synth -> Synth
 pairElimSnd (Synth synth) =
   Synth $
     synth >>= \case
-      (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
+      (PairTy _ty1 ty2, tm) -> pure (ty2, SSnd tm)
       (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
 
 -- | Bool-True Introduction
@@ -1058,10 +1058,12 @@ doApply _ _ = error "impossible case in doApply"
 
 doFst :: Value -> EvalM Value
 doFst (VPair a _b) = pure a
+doFst (VNeutral (PairTy a _) neu) = pure $ VNeutral a (pushFrame neu VFst)
 doFst _ = error "impossible case in doFst"
 
 doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
+doSnd (VNeutral (PairTy _ b) neu) = pure $ VNeutral b (pushFrame neu VSnd)
 doSnd _ = error "impossible case in doSnd"
 
 doCase :: Value -> Type -> Value -> Value -> EvalM Value

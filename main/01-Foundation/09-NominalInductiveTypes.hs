@@ -304,10 +304,12 @@ data Syntax
     SGet Name Syntax
   | -- | A data constructor applied to its elaborated arguments.
     SCnstr DtCnstrName [Syntax]
-  | -- | Pattern match on a nominal inductive type. Each branch pairs a
-    -- constructor name with an elaborated body (a lambda over the constructor's
-    -- fields).
-    SCase Syntax [(DtCnstrName, Syntax)]
+  | -- | Pattern match on a nominal inductive type. The 'Type' is the
+    -- result type. Each remaining pair is a constructor name and an
+    -- elaborated body, a lambda over the constructor's fields. The result
+    -- type is retained so a case on a neutral scrutinee can be read back,
+    -- quoting each branch at its branch type.
+    SCase Syntax Type [(DtCnstrName, Syntax)]
   deriving stock (Show, Eq, Ord)
 
 -- | The result of evaluation.
@@ -412,8 +414,10 @@ data Frame
     VSumCase Type Type Type Value Value
   | -- | A stuck record projection.
     VGet Name
-  | -- | A stuck nominal case: the scrutinee is neutral.
-    VCase Type [(DtCnstrName, Value)]
+  | -- | A stuck nominal case: the scrutinee is neutral. The first 'Type'
+    -- is the scrutinee's data type and the second is the result type. Both
+    -- are needed to read each branch back at its branch type.
+    VCase Type Type [(DtCnstrName, Value)]
   deriving stock (Show, Eq, Ord)
 
 pushFrame :: Neutral -> Frame -> Neutral
@@ -947,7 +951,7 @@ pairElimFst :: Synth -> Synth
 pairElimFst (Synth synth) =
   Synth $
     synth >>= \case
-      (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
+      (PairTy ty1 _ty2, tm) -> pure (ty1, SFst tm)
       (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
 
 -- | Pair Snd Elimination
@@ -961,7 +965,7 @@ pairElimSnd :: Synth -> Synth
 pairElimSnd (Synth synth) =
   Synth $
     synth >>= \case
-      (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
+      (PairTy _ty1 ty2, tm) -> pure (ty2, SSnd tm)
       (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
 
 -- | Bool-True Introduction
@@ -1279,7 +1283,7 @@ adtElim scrut cases = Check $ \motive -> do
                 This _ty -> throwError $ TypeError $ "Missing case for constructor of type '" <> show tyName <> "'"
                 That _chk -> throwError $ TypeError $ "Extra case branch not in type '" <> show tyName <> "'"
           cases' <- Map.toList <$> alignWithM alignCases branchTypes checks
-          pure $ SCase scrut' cases'
+          pure $ SCase scrut' motive cases'
         Nothing -> throwError $ UnknownDataType tyName
     ty -> throwError $ TypeError $ "Expected an ADT type but got: " <> show ty
 
@@ -1456,7 +1460,7 @@ eval = \case
   SRecord fields -> doRecord fields
   SGet name tm -> eval tm >>= doGet name
   SCnstr nm bndrs -> doConstructor nm bndrs
-  SCase scrut patterns -> doCase scrut patterns
+  SCase scrut motive patterns -> doCase scrut motive patterns
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appTermClosure clo arg
@@ -1465,10 +1469,12 @@ doApply _ _ = error "impossible case in doApply"
 
 doFst :: Value -> EvalM Value
 doFst (VPair a _b) = pure a
+doFst (VNeutral (PairTy a _) neu) = pure $ VNeutral a (pushFrame neu VFst)
 doFst _ = error "impossible case in doFst"
 
 doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
+doSnd (VNeutral (PairTy _ b) neu) = pure $ VNeutral b (pushFrame neu VSnd)
 doSnd _ = error "impossible case in doSnd"
 
 doSumCase :: Value -> Type -> Value -> Value -> EvalM Value
@@ -1503,8 +1509,12 @@ doConstructor nm args = do
   args' <- traverse eval args
   pure $ VCnstr nm args'
 
-doCase :: Syntax -> [(DtCnstrName, Syntax)] -> EvalM Value
-doCase scrut patterns = do
+-- | Evaluate case analysis. The 'Type' is the result type. On a constructor
+-- value, select the matching branch and apply it to the constructor's
+-- fields. On a neutral scrutinee, build a stuck 'VCase' frame carrying the
+-- scrutinee's data type and the result type.
+doCase :: Syntax -> Type -> [(DtCnstrName, Syntax)] -> EvalM Value
+doCase scrut mot patterns = do
   scrut' <- eval scrut
   case scrut' of
     VCnstr nm args -> do
@@ -1515,7 +1525,7 @@ doCase scrut patterns = do
         Nothing -> error "impossible case in doCase: missing branch"
     VNeutral ty neu -> do
       branches <- traverse (traverse eval) patterns
-      pure $ VNeutral ty (pushFrame neu (VCase ty branches))
+      pure $ VNeutral mot (pushFrame neu (VCase ty mot branches))
     _ -> error "impossible case in doCase: non-constructor scrutinee"
 
 appTermClosure :: Closure -> Value -> EvalM Value
@@ -1594,7 +1604,18 @@ quoteFrame l tm = \case
     pure $ SSumCase tm mot f' g'
   -- NOTE: This never get constructed. Do I need them in STLC?
   VGet name -> pure $ SGet name tm
-  VCase mot cases -> SCase tm <$> traverse (traverse (quote l mot)) cases
+  VCase (AdtTy scrut) mot cases -> do
+    adtEnv <- asks envAdtEnv
+    patterns' <- forM cases $ \(dtName, val) -> do
+      case lookupCnstrInType scrut dtName adtEnv of
+        Just dtSpec -> do
+          let (cnstrName, patTy) = constrBranchType mot dtSpec
+          syn <- quote l patTy val
+          pure (cnstrName, syn)
+        Nothing ->
+          error "impossible case in quote: constructor not found in its data type"
+    pure $ SCase tm mot patterns'
+  VCase {} -> error "impossible case in quote: cannot quote VCase against a non AdtTy"
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
@@ -1837,6 +1858,33 @@ main = do
             )
             [("Nil", [], Tru), ("Cons", ["x", "xs"], Var "x")]
         )
+    )
+  putStrLn ""
+
+  -- Case on a neutral scrutinee. These force doCase's VNeutral branch and
+  -- the VCase quote arm, which the concrete-scrutinee tests above never
+  -- reach. The case is kept in the normal form.
+  section "Case: stuck on neutral scrutinee"
+  test
+    "\\xs. case xs of Nil -> True | Cons h t -> h"
+    -- (λxs. case xs of Nil → True; Cons h t → h) : ListBool → Bool
+    ( Anno
+        (FuncTy (AdtTy "ListBool") BoolTy)
+        (Lam "xs" (Case (Var "xs") [("Nil", [], Tru), ("Cons", ["h", "t"], Var "h")]))
+    )
+  test
+    "\\m. case m of Nothing -> False | Just b -> b"
+    -- (λm. case m of Nothing → False; Just b → b) : MaybeBool → Bool
+    ( Anno
+        (FuncTy (AdtTy "MaybeBool") BoolTy)
+        (Lam "m" (Case (Var "m") [("Nothing", [], Fls), ("Just", ["b"], Var "b")]))
+    )
+  test
+    "\\xs. case xs of Nil -> Nil | Cons h t -> t (motive is an ADT)"
+    -- (λxs. case xs of Nil → Nil; Cons h t → t) : ListBool → ListBool
+    ( Anno
+        (FuncTy (AdtTy "ListBool") (AdtTy "ListBool"))
+        (Lam "xs" (Case (Var "xs") [("Nil", [], Cnstr "Nil" []), ("Cons", ["h", "t"], Var "t")]))
     )
   putStrLn ""
 

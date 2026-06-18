@@ -459,10 +459,12 @@ doApply _ _ = error "impossible case in doApply"
 
 doFst :: Value -> EvalM Value
 doFst (VPair a _b) = pure a
+doFst (VNeutral (PairTy a _) neu) = pure $ VNeutral a (pushFrame neu VFst)
 doFst _ = error "impossible case in doFst"
 
 doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
+doSnd (VNeutral (PairTy _ b) neu) = pure $ VNeutral b (pushFrame neu VSnd)
 doSnd _ = error "impossible case in doSnd"
 
 appTermClosure :: Closure -> Value -> EvalM Value

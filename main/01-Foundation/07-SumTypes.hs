@@ -262,10 +262,12 @@ data Syntax
     SZero
   | -- | Successor of a natural number.
     SSucc Syntax
-  | -- | Primitive recursion on natural numbers. @NatRec base step scrut@
-    -- eliminates a natural number. At zero it returns @base@; at @Succ n@
-    -- it applies @step@ to the predecessor @n@ and the recursive result.
-    SNatRec Syntax Syntax Syntax
+  | -- | Primitive recursion on natural numbers. @NatRec motive base step
+    -- scrut@ eliminates a natural number. At zero it returns @base@; at
+    -- @Succ n@ it applies @step@ to the predecessor @n@ and the recursive
+    -- result. The motive is the result type, retained so a recursion on a
+    -- neutral scrutinee can be read back.
+    SNatRec Type Syntax Syntax Syntax
   | -- | Record introduction. A list of named fields.
     SRecord [(Name, Syntax)]
   | -- | Record field projection. @r.field@.
@@ -680,7 +682,7 @@ pairElimFst :: Synth -> Synth
 pairElimFst (Synth synth) =
   Synth $
     synth >>= \case
-      (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
+      (PairTy ty1 _ty2, tm) -> pure (ty1, SFst tm)
       (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Pair Snd Elimination
@@ -694,7 +696,7 @@ pairElimSnd :: Synth -> Synth
 pairElimSnd (Synth synth) =
   Synth $
     synth >>= \case
-      (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
+      (PairTy _ty1 ty2, tm) -> pure (ty2, SSnd tm)
       (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Bool-True Introduction
@@ -844,11 +846,11 @@ natIntroSucc (Check check) = Check $ \case
 --           Γ ⊢ elim t₁ t₂ s ⇐ T
 natElim :: Check -> Check -> Check -> Check
 natElim (Check zeroTac) (Check succTac) (Check scrutTac) =
-  Check $ \ty -> do
+  Check $ \motive -> do
     scrutinee <- scrutTac NatTy
-    tm1 <- zeroTac ty
-    tm2 <- succTac (NatTy `FuncTy` (ty `FuncTy` ty))
-    pure (SNatRec tm1 tm2 scrutinee)
+    base <- zeroTac motive
+    step <- succTac (NatTy `FuncTy` (motive `FuncTy` motive))
+    pure (SNatRec motive base step scrutinee)
 
 -- | Record Introduction
 --
@@ -959,11 +961,11 @@ eval = \case
     doCase t1' motive t2' t3'
   SZero -> pure VZero
   SSucc tm -> VSucc <$> eval tm
-  SNatRec tm1 tm2 n -> do
+  SNatRec motive base step n -> do
     n' <- eval n
-    tm1' <- eval tm1
-    tm2' <- eval tm2
-    doNatRec n' tm1' tm2'
+    base' <- eval base
+    step' <- eval step
+    doNatRec n' motive base' step'
   SRecord fields -> doRecord fields
   SGet name tm -> eval tm >>= doGet name
 
@@ -974,10 +976,12 @@ doApply _ _ = error "impossible case in doApply"
 
 doFst :: Value -> EvalM Value
 doFst (VPair a _b) = pure a
+doFst (VNeutral (PairTy a _) neu) = pure $ VNeutral a (pushFrame neu VFst)
 doFst _ = error "impossible case in doFst"
 
 doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
+doSnd (VNeutral (PairTy _ b) neu) = pure $ VNeutral b (pushFrame neu VSnd)
 doSnd _ = error "impossible case in doSnd"
 
 doCase :: Value -> Type -> Value -> Value -> EvalM Value
@@ -1000,15 +1004,15 @@ doIf _ _ _ _ = error "impossible case in doIf"
 -- | Evaluate primitive recursion. At 'VZero' return the base case. At @VSucc n@
 -- apply the step function to the predecessor @n@ and the recursive result on
 -- @n@. At a neutral, produce a stuck 'VNatRec' frame.
-doNatRec :: Value -> Value -> Value -> EvalM Value
-doNatRec VZero z _f = pure z
-doNatRec (VSucc n) z f = do
+doNatRec :: Value -> Type -> Value -> Value -> EvalM Value
+doNatRec VZero _ z _f = pure z
+doNatRec (VSucc n) motive z f = do
   hd <- doApply f n
-  tl <- doNatRec n z f
+  tl <- doNatRec n motive z f
   doApply hd tl
-doNatRec (VNeutral ty neu) z f = do
-  pure $ VNeutral ty $ pushFrame neu $ VNatRec ty z f
-doNatRec _ _ _ = error "impossible case in doNatRec"
+doNatRec (VNeutral _ neu) motive z f = do
+  pure $ VNeutral motive $ pushFrame neu $ VNatRec motive z f
+doNatRec _ _ _ _ = error "impossible case in doNatRec"
 
 doRecord :: [(Name, Syntax)] -> EvalM Value
 doRecord fields = VRecord <$> traverse (traverse eval) fields
@@ -1089,7 +1093,10 @@ quoteFrame l tm = \case
     f' <- quote l tyF f
     g' <- quote l tyG g
     pure $ SCase tm mot f' g'
-  VNatRec ty tm1 tm2 -> liftA2 (SNatRec tm) (quote l ty tm1) (quote l (NatTy `FuncTy` (ty `FuncTy` ty)) tm2)
+  VNatRec motive base step -> do
+    sbase <- quote l motive base
+    sstep <- quote l (NatTy `FuncTy` (motive `FuncTy` motive)) step
+    pure $ SNatRec motive sbase sstep tm
   VGet name -> pure $ SGet name tm
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a

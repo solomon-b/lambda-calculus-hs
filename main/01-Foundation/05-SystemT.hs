@@ -199,7 +199,7 @@ data Syntax
   | -- | Primitive recursion on natural numbers. @NatRec base step scrut@
     -- eliminates a natural number. At zero it returns @base@; at @Succ n@
     -- it applies @step@ to the predecessor @n@ and the recursive result.
-    SNatRec Syntax Syntax Syntax
+    SNatRec Type Syntax Syntax Syntax
   deriving stock (Show, Eq, Ord)
 
 -- | The result of evaluation.
@@ -594,7 +594,7 @@ pairElimFst :: Synth -> Synth
 pairElimFst (Synth synth) =
   Synth $
     synth >>= \case
-      (PairTy ty1 _ty2, SPair tm1 _tm2) -> pure (ty1, tm1)
+      (PairTy ty1 _ty2, tm) -> pure (ty1, SFst tm)
       (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Pair Snd Elimination
@@ -608,7 +608,7 @@ pairElimSnd :: Synth -> Synth
 pairElimSnd (Synth synth) =
   Synth $
     synth >>= \case
-      (PairTy _ty1 ty2, SPair _tm1 tm2) -> pure (ty2, tm2)
+      (PairTy _ty1 ty2, tm) -> pure (ty2, SSnd tm)
       (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
 -- | Bool-True Introduction
@@ -700,11 +700,11 @@ natIntroSucc (Check check) = Check $ \case
 --           Γ ⊢ elim t₁ t₂ s ⇐ T
 natElim :: Check -> Check -> Check -> Check
 natElim (Check zeroTac) (Check succTac) (Check scrutTac) =
-  Check $ \ty -> do
+  Check $ \motive -> do
     scrutinee <- scrutTac NatTy
-    tm1 <- zeroTac ty
-    tm2 <- succTac (NatTy `FuncTy` (ty `FuncTy` ty))
-    pure (SNatRec tm1 tm2 scrutinee)
+    base <- zeroTac motive
+    step <- succTac (NatTy `FuncTy` (motive `FuncTy` motive))
+    pure (SNatRec motive base step scrutinee)
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -757,11 +757,11 @@ eval = \case
   SUnit -> pure VUnit
   SZero -> pure VZero
   SSucc tm -> VSucc <$> eval tm
-  SNatRec tm1 tm2 n -> do
+  SNatRec motive base step n -> do
     n' <- eval n
-    tm1' <- eval tm1
-    tm2' <- eval tm2
-    doNatRec n' tm1' tm2'
+    base' <- eval base
+    step' <- eval step
+    doNatRec n' motive base' step'
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appTermClosure clo arg
@@ -770,30 +770,32 @@ doApply _ _ = error "impossible case in doApply"
 
 doFst :: Value -> EvalM Value
 doFst (VPair a _b) = pure a
+doFst (VNeutral (PairTy a _) neu) = pure $ VNeutral a (pushFrame neu VFst)
 doFst _ = error "impossible case in doFst"
 
 doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
+doSnd (VNeutral (PairTy _ b) neu) = pure $ VNeutral b (pushFrame neu VSnd)
 doSnd _ = error "impossible case in doSnd"
 
 doIf :: Value -> Type -> Value -> Value -> EvalM Value
-doIf VTru _ t1 _ = pure t1
-doIf VFls _ _ t2 = pure t2
+doIf VTru _ p _ = pure p
+doIf VFls _ _ q = pure q
 doIf (VNeutral _ neu) motive t1 t2 = pure $ VNeutral motive (pushFrame neu (VIf motive t1 t2))
 doIf _ _ _ _ = error "impossible case in doIf"
 
 -- | Evaluate primitive recursion. At 'VZero' return the base case. At @VSucc n@
 -- apply the step function to the predecessor @n@ and the recursive result on
 -- @n@. At a neutral, produce a stuck 'VNatRec' frame.
-doNatRec :: Value -> Value -> Value -> EvalM Value
-doNatRec VZero z _f = pure z
-doNatRec (VSucc n) z f = do
+doNatRec :: Value -> Type -> Value -> Value -> EvalM Value
+doNatRec VZero _ z _f = pure z
+doNatRec (VSucc n) motive z f = do
   hd <- doApply f n
-  tl <- doNatRec n z f
+  tl <- doNatRec n motive z f
   doApply hd tl
-doNatRec (VNeutral ty neu) z f = do
-  pure $ VNeutral ty $ pushFrame neu $ VNatRec ty z f
-doNatRec _ _ _ = error "impossible case in doNatRec"
+doNatRec (VNeutral _ neu) motive z f = do
+  pure $ VNeutral motive $ pushFrame neu $ VNatRec motive z f
+doNatRec _ _ _ _ = error "impossible case in doNatRec"
 
 appTermClosure :: Closure -> Value -> EvalM Value
 appTermClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
@@ -852,12 +854,15 @@ quoteHead l (VVar lvl) = SVar (quoteLevel l lvl)
 quoteHead _ (VHole ty) = SHole ty
 
 quoteFrame :: Lvl -> Syntax -> Frame -> EvalM Syntax
-quoteFrame l tm = \case
-  VApp ty arg -> SAp tm <$> quote l ty arg
-  VFst -> pure $ SFst tm
-  VSnd -> pure $ SSnd tm
-  VIf ty t1 t2 -> liftA2 (SIf tm ty) (quote l ty t1) (quote l ty t2)
-  VNatRec ty tm1 tm2 -> liftA2 (SNatRec tm) (quote l ty tm1) (quote l (NatTy `FuncTy` (ty `FuncTy` ty)) tm2)
+quoteFrame l scrut = \case
+  VApp ty arg -> SAp scrut <$> quote l ty arg
+  VFst -> pure $ SFst scrut
+  VSnd -> pure $ SSnd scrut
+  VIf motive p q -> liftA2 (SIf scrut motive) (quote l motive p) (quote l motive q)
+  VNatRec motive base step -> do
+    sbase <- quote l motive base
+    sstep <- quote l (NatTy `FuncTy` (motive `FuncTy` motive)) step
+    pure $ SNatRec motive sbase sstep scrut
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
@@ -1002,6 +1007,46 @@ main = do
     )
   putStrLn ""
 
+  -- NatRec — factorial. The successor step multiplies the current value
+  -- (Succ of the predecessor) by the recursive result, so it needs BOTH
+  -- the predecessor and the recursion. A catamorphism could not write this
+  -- without first reconstructing the predecessor. add and mult are
+  -- themselves NatRecs, bound with let.
+  --
+  --   let add  = λm n. natrec n (λx y. Succ y) m            -- m + n
+  --       mult = λm n. natrec Zero (λx y. add n y) m        -- m * n
+  --       fact = λn. natrec (Succ Zero) (λx y. mult (Succ x) y) n
+  --   in fact 3                                             -- ==> 6
+  section "NatRec Factorial"
+  test
+    "fact 3 ==> 6"
+    ( Anno
+        NatTy
+        ( Let
+            "add"
+            ( Anno
+                (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
+                (Lam "m" (Lam "n" (NatRec (Var "n") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "m"))))
+            )
+            ( Let
+                "mult"
+                ( Anno
+                    (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
+                    (Lam "m" (Lam "n" (NatRec Zero (Lam "x" (Lam "y" (Ap (Ap (Var "add") (Var "n")) (Var "y")))) (Var "m"))))
+                )
+                ( Let
+                    "fact"
+                    ( Anno
+                        (NatTy `FuncTy` NatTy)
+                        (Lam "n" (NatRec (Succ Zero) (Lam "x" (Lam "y" (Ap (Ap (Var "mult") (Succ (Var "x"))) (Var "y")))) (Var "n")))
+                    )
+                    (Ap (Var "fact") (Succ (Succ (Succ Zero))))
+                )
+            )
+        )
+    )
+  putStrLn ""
+
   -- NatRec — returning non-Nat type
   section "NatRec with Non-Nat Motive"
   test
@@ -1015,6 +1060,37 @@ main = do
     ( Anno
         (PairTy BoolTy BoolTy)
         (NatRec (Pair Tru Fls) (Lam "_" (Lam "_" (Pair Fls Tru))) (Succ Zero))
+    )
+  putStrLn ""
+
+  -- NatRec stuck on a neutral scrutinee with a non-Nat motive. Under a
+  -- lambda the scrutinee is neutral, so the recursor does not reduce and
+  -- must be read back. This exercises the motive threaded through SNatRec.
+  section "NatRec Stuck on Neutral (non-Nat motive)"
+  -- Quoting the stuck recursor reads the base back at the motive Unit (not
+  -- at Nat). Before the motive was threaded, this quoted () at Nat.
+  test
+    "\\n. natrec () (\\x y. ()) n  : Nat -> Unit"
+    ( Anno
+        (NatTy `FuncTy` UnitTy)
+        (Lam "n" (NatRec Unit (Lam "x" (Lam "y" Unit)) (Var "n")))
+    )
+  -- The stuck recursor has a function motive (Nat -> Nat) and is then
+  -- applied. doApply needs the neutral tagged with the motive, not Nat.
+  test
+    "\\n. (natrec (\\x. x) (\\p r. r) n) Zero  : Nat -> Nat"
+    ( Anno
+        (NatTy `FuncTy` NatTy)
+        ( Lam
+            "n"
+            ( Ap
+                ( Anno
+                    (NatTy `FuncTy` NatTy)
+                    (NatRec (Lam "x" (Var "x")) (Lam "p" (Lam "r" (Var "r"))) (Var "n"))
+                )
+                Zero
+            )
+        )
     )
   putStrLn ""
 
