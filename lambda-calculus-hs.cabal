@@ -185,6 +185,18 @@ executable 01-09b-IsoInductiveTypes
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
+executable 01-10-DirectRecursion
+  import:              common-settings
+  main-is:             01-Foundation/10-DirectRecursion.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
+
+executable 01-11-FirstOrderUnification
+  import:              common-settings
+  main-is:             01-Foundation/11-FirstOrderUnification.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
+
 -- Capstone (planned): a runnable simply typed language with a parser.
 -- executable 01-capstone
 --   import:            common-settings

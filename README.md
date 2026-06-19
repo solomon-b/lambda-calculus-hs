@@ -23,7 +23,7 @@ want to include in your custom language in one place.
 - [X] Nominal Inductive Types
 - [X] Iso-Inductive Types
 - [ ] Nominal Recursion
-- [ ] Recursion Principles
+- [X] Recursion Principles
 - [X] System F
 - [X] Martin-Lof Type Theory (Pi and Sigma Types)
 - [X] Type Universes
