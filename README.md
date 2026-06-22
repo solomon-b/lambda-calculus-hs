@@ -1,46 +1,62 @@
 # Lambda Calculus Examples
 
-A series of Lambda Calculus implementations starting from Simply Typed
-evaluation, then work up through bidirectional typechecking, normalization by
-evaluation, elaboration and various type system extensions.
+An exploration of Lambda Calculus, programming language design, and type theory
+starting from a foundation of Bidirectional Typechecking and Normalization by
+Evaluation.
 
-These examples build up sequentially, but each module is a standalone program
-that can be read independently. we skip parsing for brevity but include pretty
-printers from the concrete syntax to a human readable notation to make the
-examples easier to read.
+The `foundation` series sets the stage with a cohesive STLC implementation we
+can build on. The `feature museum` then grafts on a variety of popular language
+features. `program` and `proof` build up System Fomega and MLTT based systems
+respectively.
+
+Every module is a standalone executable written in a direct style of Haskell
+with tests. We skip parsing for brevity but include pretty printers from the
+concrete syntax to a human readable notation to make the examples easier to
+read.
+
+Each section will eventually conclude with a capstone project implementing a
+full language including parsing and a repl.
 
 The goal is to provide best practices examples of all the features you might
 want to include in your custom language in one place.
 
-- [X] SimplyTypedEvaluation
-- [X] BidirectionalTypechecking
-- [X] NormalizationByEvaluation
-- [X] Elaboration
-- [X] TypedHoles
-- [X] System T
-- [X] Records
-- [X] Subtyping
-- [X] Nominal Inductive Types
-- [X] Iso-Inductive Types
-- [ ] Nominal Recursion
-- [X] Recursion Principles
-- [X] System F
-- [X] Martin-Lof Type Theory (Pi and Sigma Types)
-- [X] Type Universes
-- [X] Universe Polymorphism
-- [ ] First-class Type Constructors / Higher-Kinded Data
-- [ ] Unification / Implicits
-- [ ] Indexed Inductive Types (with eliminators)
-- [ ] Dependent Patern Matching
-- [ ] Case-Trees
-- [ ] Termination / Coverage Checking
-- [ ] Implicit Universe Levels with Constraint Solving
-- [ ] Tarski Universes
-- [ ] Row Polymorphism
-- [ ] Linear Types
-- [ ] View Patterns
-- [ ] Cubical
-- [ ] Modules
+1. Foundation
+  - [X] Simply Typed Evaluation
+  - [X] Bidirectional Typechecking
+  - [X] Normalization By Evaluation
+  - [X] Elaboration
+  - [X] Typed Holes
+  - [X] First Order Unification
+2. Feature Museum
+  - [X] Subtyping
+  - [X] System T
+  - [X] Records
+  - [X] Nominal Inductive Types
+  - [X] Iso-Inductive Types
+  - [X] Recursion Principles
+  - [ ] Row Polymorphism
+  - [ ] Linear Types
+  - [ ] Modules
+3. Program
+  - [X] System F
+  - [ ] System Omega
+  - [ ] System Fomega
+  - [ ] Nominal Recursion
+  - [ ] First Order Unification up to definitional equality
+  - [ ] Implicits
+  - [ ] View Patterns
+4. Proof
+  - [X] Martin-Lof Type Theory
+  - [X] Type Universes
+  - [X] Universe Polymorphism
+  - [ ] Indexed Inductive Types (with eliminators)
+  - [ ] Dependent Pattern Matching
+  - [ ] Case-Trees
+  - [ ] Termination / Coverage Checking
+  - [ ] Implicit Universe Levels with Constraint Solving
+  - [ ] Tarski Universes
+  - [ ] Dependent View Patterns
+  - [ ] Cubical
 
 Additionally we plan to provide complete examples of STLC, SystemF, and MLTT
 compiling to the following targets:
