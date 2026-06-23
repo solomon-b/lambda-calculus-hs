@@ -304,8 +304,8 @@ varTactic ix = Synth $ do
 -- ──────────────── Sub⇐
 --    Γ ⊢ e ⇐ B
 subTactic :: Synth -> Check
-subTactic synth' = Check $ \ty1 -> do
-  ty2 <- runSynth synth'
+subTactic subTac = Check $ \ty1 -> do
+  ty2 <- runSynth subTac
   if ty2 == ty1
     then pure ()
     else throwError $ TypeError $ "Expected: " <> show ty1 <> ", but got: " <> show ty2
@@ -320,8 +320,8 @@ subTactic synth' = Check $ \ty1 -> do
 -- ─────────────── Anno⇒
 -- Γ ⊢ (e : A) ⇒ A
 annoTactic :: Type -> Check -> Synth
-annoTactic ty check' = Synth $ do
-  runCheck check' ty
+annoTactic ty termTac = Synth $ do
+  runCheck termTac ty
   pure ty
 
 -- | Lambda Introduction
@@ -369,10 +369,10 @@ lamElim funcTac argTac =
 -- ───────────────────── Pair⇐
 --  Γ ⊢ (a , b) ⇐ A × B
 pairIntro :: Check -> Check -> Check
-pairIntro checkFst checkSnd = Check $ \case
+pairIntro fstTac sndTac = Check $ \case
   PairTy a b -> do
-    runCheck checkFst a
-    runCheck checkSnd b
+    runCheck fstTac a
+    runCheck sndTac b
     pure ()
   ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
@@ -385,9 +385,9 @@ pairIntro checkFst checkSnd = Check $ \case
 -- ───────────────────── Fst⇒
 --       Γ ⊢ t₁ ⇒ A
 pairElimFst :: Synth -> Synth
-pairElimFst synthPair =
+pairElimFst fstTac =
   Synth $
-    runSynth synthPair >>= \case
+    runSynth fstTac >>= \case
       PairTy ty1 _ty2 -> pure ty1
       ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
@@ -399,9 +399,9 @@ pairElimFst synthPair =
 -- ───────────────────── Snd⇒
 --       Γ ⊢ t₂ ⇒ B
 pairElimSnd :: Synth -> Synth
-pairElimSnd synthPair =
+pairElimSnd sndTac =
   Synth $
-    runSynth synthPair >>= \case
+    runSynth sndTac >>= \case
       PairTy _ty1 ty2 -> pure ty2
       ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
@@ -441,12 +441,12 @@ sumIntroR inrTac = Check $ \case
 --  ─────────────────────────────────────────────── Case⇐
 --                Γ ⊢ Case e f g ⇐ C
 sumElim :: Synth -> Check -> Check -> Check
-sumElim scrutTac checkT1 checkT2 = Check $ \ty -> do
+sumElim scrutTac leftTac rightTac = Check $ \ty -> do
   scrutTy <- runSynth scrutTac
   case scrutTy of
     SumTy a b -> do
-      runCheck checkT1 (FuncTy a ty)
-      runCheck checkT2 (FuncTy b ty)
+      runCheck leftTac (FuncTy a ty)
+      runCheck rightTac (FuncTy b ty)
     _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
 
 -- | Unit Introduction
@@ -493,10 +493,10 @@ boolIntroFalse = Check $ \case
 -- ───────────────────────────────────── If⇐
 --   Γ ⊢ If t₁ then t₂ else t₃ ⇐ T
 boolElim :: Check -> Check -> Check -> Check
-boolElim checkT1 checkT2 checkT3 = Check $ \ty -> do
-  runCheck checkT1 BoolTy
-  runCheck checkT2 ty
-  runCheck checkT3 ty
+boolElim pTac tTac fTac = Check $ \ty -> do
+  runCheck pTac BoolTy
+  runCheck tTac ty
+  runCheck fTac ty
 
 --------------------------------------------------------------------------------
 -- Evaluator

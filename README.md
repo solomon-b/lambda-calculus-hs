@@ -28,12 +28,13 @@ want to include in your custom language in one place.
   - [X] Typed Holes
   - [X] First Order Unification
 2. Feature Museum
-  - [X] Subtyping
   - [X] Records
   - [X] System T
   - [X] Nominal Inductive Types
-  - [X] Iso-Inductive Types
+  - [X] Structural Iso-Recursive Types
+  - [ ] Equi-Recursive Types
   - [X] Recursion Principles
+  - [ ] Subtyping
   - [ ] Row Polymorphism
   - [ ] Linear Types
   - [ ] Modules

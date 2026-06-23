@@ -162,14 +162,14 @@ data Type
     FuncTy Type Type
   | -- | Pair type. @A * B@.
     PairTy Type Type
+  | -- | Binary sum: @A + B@.
+    SumTy Type Type
   | -- | Bool Type. @Bool@.
     BoolTy
   | -- | Unit type. @Unit@.
     UnitTy
   | -- | The empty type. No values inhabit it.
     VoidTy
-  | -- | Binary sum: @A + B@.
-    SumTy Type Type
   | -- | A metavariable: an unknown type, to be solved by unification.
     MetaTy MetaId
   deriving stock (Show, Eq, Ord)
@@ -188,12 +188,12 @@ prettyType p (FuncTy a b) =
 prettyType p (PairTy a b) =
   parensIf (p > arrowPrec) $
     prettyType (arrowPrec + 1) a PP.<+> "*" PP.<+> prettyType arrowPrec b
-prettyType _ BoolTy = "Bool"
-prettyType _ UnitTy = "Unit"
-prettyType _ VoidTy = "Void"
 prettyType p (SumTy a b) =
   parensIf (p > sumPrec) $
     prettyType (sumPrec + 1) a PP.<+> "+" PP.<+> prettyType sumPrec b
+prettyType _ BoolTy = "Bool"
+prettyType _ UnitTy = "Unit"
+prettyType _ VoidTy = "Void"
 prettyType _ (MetaTy (MetaId n)) = "?" <> PP.pretty n
 
 instance PP.Pretty Type where
@@ -257,16 +257,16 @@ data Value
     VLam Name Closure
   | -- | A fully evaluated pair of values.
     VPair Value Value
+  | -- | Left injection value.
+    VInL Value
+  | -- | Right injection value.
+    VInR Value
   | -- | Boolean true.
     VTru
   | -- | Boolean false.
     VFls
   | -- | The unit value.
     VUnit
-  | -- | Left injection value.
-    VInL Value
-  | -- | Right injection value.
-    VInR Value
   deriving stock (Show, Eq, Ord)
 
 -- | De Bruijn Indices.
@@ -321,13 +321,13 @@ data Frame
   = VApp Type Value
   | VFst
   | VSnd
+  | -- | A stuck case: the scrutinee is neutral.
+    VSumCase Type Type Type Value Value
+  | -- | A stuck absurd: the scrutinee is neutral at 'VoidTy'.
+    VAbsurd Type
   | -- | A stuck if-then-else: the condition is neutral, so we can't choose a
     -- branch. Carries the motive type and both branch values.
     VIf Type Value Value
-  | -- | A stuck absurd: the scrutinee is neutral at 'VoidTy'.
-    VAbsurd Type
-  | -- | A stuck case: the scrutinee is neutral.
-    VSumCase Type Type Type Value Value
   deriving stock (Show, Eq, Ord)
 
 pushFrame :: Neutral -> Frame -> Neutral
@@ -654,8 +654,8 @@ varTactic bndr = Synth $ do
 -- ──────────────── Switch⇐
 --    Γ ⊢ e ⇐ B
 switchTactic :: Synth -> Check
-switchTactic (Synth synth) = Check $ \ty1 -> do
-  (ty2, tm) <- synth
+switchTactic switchTac = Check $ \ty1 -> do
+  (ty2, tm) <- runSynth switchTac
   unify ty2 ty1
 
   pure tm
@@ -671,8 +671,8 @@ switchTactic (Synth synth) = Check $ \ty1 -> do
 -- ─────────────── Anno⇒
 -- Γ ⊢ (e : A) ⇒ A
 annoTactic :: Type -> Check -> Synth
-annoTactic ty (Check check) = Synth $ do
-  tm <- check ty
+annoTactic ty termTac = Synth $ do
+  tm <- runCheck termTac ty
   pure (ty, tm)
 
 -- | Lambda Introduction
@@ -693,14 +693,15 @@ annoTactic ty (Check check) = Synth $ do
 -- ──────────────────── LamIntro⇐
 -- Γ ⊢ (λx.e) ⇐ A₁ → A₂
 lamIntro :: Name -> Check -> Check
-lamIntro bndr (Check bodyTac) = Check $ \ty -> do
+lamIntro bndr bodyTac = Check $ \ty -> do
   a <- freshMeta
   b <- freshMeta
   unify ty (FuncTy a b)
+  a' <- force a
 
   ctx <- ask
-  let var = freshCell ctx bndr a
-  fiber <- local (bindCell var) $ bodyTac b
+  let var = freshCell ctx bndr a'
+  fiber <- local (bindCell var) $ runCheck bodyTac b
   pure $ SLam bndr fiber
 
 -- | Lambda Elimination
@@ -742,12 +743,12 @@ lamElim funcTac argTac = Synth $ do
 --  ──────────────────────────────────── Let⇐
 --        Γ ⊢ let x = e in body ⇐ B
 letTactic :: Name -> Synth -> Check -> Check
-letTactic bndr (Synth synth) (Check bodyTac) = Check $ \ty -> do
-  (ty1, tm1) <- synth
+letTactic bndr bndrTac bodyTac = Check $ \ty -> do
+  (ty1, tm1) <- runSynth bndrTac
   ctx <- ask
   let val = runEvalM (eval tm1) (toEvalEnv ctx)
       var = Cell bndr ty1 val
-  fiber <- local (bindCell var) $ bodyTac ty
+  fiber <- local (bindCell var) $ runCheck bodyTac ty
   pure $ SAp (SLam bndr fiber) tm1
 
 -- | Type Hole
@@ -806,8 +807,8 @@ pairIntro checkFst checkSnd = Check $ \ty -> do
 -- ───────────────────── Fst⇒
 --       Γ ⊢ t₁ ⇒ A
 pairElimFst :: Synth -> Synth
-pairElimFst synth = Synth $ do
-  (ty, tm) <- runSynth synth
+pairElimFst fstTac = Synth $ do
+  (ty, tm) <- runSynth fstTac
   a <- freshMeta
   b <- freshMeta
   unify ty (PairTy a b)
@@ -822,8 +823,8 @@ pairElimFst synth = Synth $ do
 -- ───────────────────── Snd⇒
 --       Γ ⊢ t₂ ⇒ B
 pairElimSnd :: Synth -> Synth
-pairElimSnd synth = Synth $ do
-  (ty, tm) <- runSynth synth
+pairElimSnd sndTac = Synth $ do
+  (ty, tm) <- runSynth sndTac
   a <- freshMeta
   b <- freshMeta
   unify ty (PairTy a b)
@@ -858,10 +859,10 @@ boolIntroFalse = Check $ \ty -> unify ty BoolTy >> pure SFls
 -- ───────────────────────────────────── If⇐
 --   Γ ⊢ If t₁ then t₂ else t₃ ⇐ T
 boolElim :: Check -> Check -> Check -> Check
-boolElim (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
-  tm1 <- checkT1 BoolTy
-  tm2 <- checkT2 ty
-  tm3 <- checkT3 ty
+boolElim pTac tTac fTac = Check $ \ty -> do
+  tm1 <- runCheck pTac BoolTy
+  tm2 <- runCheck tTac ty
+  tm3 <- runCheck fTac ty
   pure (SIf tm1 ty tm2 tm3)
 
 -- | Unit Introduction
@@ -884,8 +885,8 @@ unitIntro = Check $ \ty -> unify ty UnitTy >> pure SUnit
 --  ─────────────── Absurd⇐
 --  Γ ⊢ absurd e ⇐ C
 voidElim :: Synth -> Check
-voidElim (Synth synth) = Check $ \ty -> do
-  (scrutTy, scrut) <- synth
+voidElim voidTac = Check $ \ty -> do
+  (scrutTy, scrut) <- runSynth voidTac
   unify scrutTy VoidTy
 
   pure $ SAbsurd ty scrut
@@ -901,12 +902,12 @@ voidElim (Synth synth) = Check $ \ty -> do
 --  ───────────────── InL⇐
 --  Γ ⊢ InL e ⇐ A + B
 sumIntroL :: Check -> Check
-sumIntroL check = Check $ \ty -> do
+sumIntroL inlTac = Check $ \ty -> do
   a <- freshMeta
   b <- freshMeta
   unify ty (SumTy a b)
 
-  tm <- runCheck check a
+  tm <- runCheck inlTac a
   pure (SInL tm)
 
 -- | Sum Right Introduction
@@ -920,12 +921,12 @@ sumIntroL check = Check $ \ty -> do
 --  ──────────────── InR⇐
 --  Γ ⊢ InR e ⇐ A + B
 sumIntroR :: Check -> Check
-sumIntroR check = Check $ \ty -> do
+sumIntroR inrTac = Check $ \ty -> do
   a <- freshMeta
   b <- freshMeta
   unify ty (SumTy a b)
 
-  tm <- runCheck check b
+  tm <- runCheck inrTac b
   pure (SInR tm)
 
 -- | Sum Elimination
@@ -940,14 +941,14 @@ sumIntroR check = Check $ \ty -> do
 --  ─────────────────────────────────────────────── SumCase⇐
 --                Γ ⊢ SumCase e f g ⇐ C
 sumElim :: Synth -> Check -> Check -> Check
-sumElim (Synth synth) (Check checkT1) (Check checkT2) = Check $ \ty -> do
-  (scrutTy, scrut) <- synth
+sumElim scrutTac leftTac rightTac = Check $ \ty -> do
+  (scrutTy, scrut) <- runSynth scrutTac
   a <- freshMeta
   b <- freshMeta
   unify scrutTy (SumTy a b)
 
-  f <- checkT1 (FuncTy a ty)
-  g <- checkT2 (FuncTy b ty)
+  f <- runCheck leftTac (FuncTy a ty)
+  g <- runCheck rightTac (FuncTy b ty)
   pure $ SSumCase scrut ty f g
 
 --------------------------------------------------------------------------------
@@ -995,17 +996,6 @@ eval = \case
     pure $ VPair tm1' tm2'
   SFst tm -> eval tm >>= doFst
   SSnd tm -> eval tm >>= doSnd
-  STru -> pure VTru
-  SFls -> pure VFls
-  SIf p motive t1 t2 -> do
-    p' <- eval p
-    t1' <- eval t1
-    t2' <- eval t2
-    doIf p' motive t1' t2'
-  SUnit -> pure VUnit
-  SAbsurd ty tm -> do
-    tm' <- eval tm
-    doSumAbsurd tm' ty
   SInL tm -> VInL <$> eval tm
   SInR tm -> VInR <$> eval tm
   SSumCase t1 motive t2 t3 -> do
@@ -1013,6 +1003,17 @@ eval = \case
     t2' <- eval t2
     t3' <- eval t3
     doSumCase t1' motive t2' t3'
+  SUnit -> pure VUnit
+  STru -> pure VTru
+  SFls -> pure VFls
+  SIf p motive t1 t2 -> do
+    p' <- eval p
+    t1' <- eval t1
+    t2' <- eval t2
+    doIf p' motive t1' t2'
+  SAbsurd ty tm -> do
+    tm' <- eval tm
+    doSumAbsurd tm' ty
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appTermClosure clo arg
@@ -1080,11 +1081,11 @@ quote l (PairTy ty1 ty2) (VPair tm1 tm2) = do
   tm1' <- quote l ty1 tm1
   tm2' <- quote l ty2 tm2
   pure $ SPair tm1' tm2'
-quote _ _ VTru = pure STru
-quote _ _ VFls = pure SFls
-quote _ _ VUnit = pure SUnit
 quote l (SumTy a _b) (VInL tm) = SInL <$> quote l a tm
 quote l (SumTy _a b) (VInR tm) = SInR <$> quote l b tm
+quote _ _ VUnit = pure SUnit
+quote _ _ VTru = pure STru
+quote _ _ VFls = pure SFls
 quote l _ (VNeutral _ neu) = quoteNeutral l neu
 quote _ ty tm = error $ "impossible case in quote:\n" <> show ty <> "\n" <> show tm
 
@@ -1099,16 +1100,16 @@ quoteHead l (VVar lvl) = SVar (quoteLevel l lvl)
 quoteHead _ (VHole ty) = SHole ty
 
 quoteFrame :: Lvl -> Syntax -> Frame -> EvalM Syntax
-quoteFrame l tm = \case
-  VApp ty arg -> SAp tm <$> quote l ty arg
-  VFst -> pure $ SFst tm
-  VSnd -> pure $ SSnd tm
-  VIf ty t1 t2 -> liftA2 (SIf tm ty) (quote l ty t1) (quote l ty t2)
-  VAbsurd ty -> pure $ SAbsurd ty tm
+quoteFrame l scrut = \case
+  VApp ty arg -> SAp scrut <$> quote l ty arg
+  VFst -> pure $ SFst scrut
+  VSnd -> pure $ SSnd scrut
   VSumCase tyF tyG mot f g -> do
     f' <- quote l tyF f
     g' <- quote l tyG g
-    pure $ SSumCase tm mot f' g'
+    pure $ SSumCase scrut mot f' g'
+  VIf ty t1 t2 -> liftA2 (SIf scrut ty) (quote l ty t1) (quote l ty t2)
+  VAbsurd ty -> pure $ SAbsurd ty scrut
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
@@ -1165,6 +1166,15 @@ main = do
     ( Ap
         (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
         (Anno BoolTy Tru)
+    )
+  -- Resolving a function typed bound variable eta expands it during
+  -- quoting, which applies the variable. The binder must carry a function
+  -- type, not the fresh metavariable it was created with.
+  test
+    "id on functions: (\\f. f) : (Bool -> Bool) -> Bool -> Bool"
+    ( Anno
+        ((BoolTy `FuncTy` BoolTy) `FuncTy` (BoolTy `FuncTy` BoolTy))
+        (Lam "f" (Var "f"))
     )
   putStrLn ""
 

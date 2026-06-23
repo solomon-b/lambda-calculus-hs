@@ -183,9 +183,9 @@ executable 02-03-NominalInductiveTypes
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 02-03b-IsoInductiveTypes
+executable 02-03b-StructuralIsoRecursiveTypes
   import:              common-settings
-  main-is:             02-FeatureMuseum/03b-IsoInductiveTypes.hs
+  main-is:             02-FeatureMuseum/03b-StructuralIsoRecursiveTypes.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 

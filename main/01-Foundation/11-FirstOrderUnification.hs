@@ -1098,9 +1098,10 @@ lamIntro bndr (Check bodyTac) = Check $ \ty -> do
   a <- freshMeta
   b <- freshMeta
   unify ty (FuncTy a b)
+  a' <- force a
 
   ctx <- ask
-  let var = freshCell ctx bndr a
+  let var = freshCell ctx bndr a'
   fiber <- local (bindCell var) $ bodyTac b
   pure $ SLam bndr fiber
 

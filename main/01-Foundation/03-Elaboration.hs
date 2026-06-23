@@ -631,12 +631,12 @@ sumIntroR inrCheck = Check $ \case
 --  ─────────────────────────────────────────────── Case⇐
 --                Γ ⊢ Case e f g ⇐ C
 sumElim :: Synth -> Check -> Check -> Check
-sumElim scrutTac checkT1 checkT2 = Check $ \ty -> do
+sumElim scrutTac leftTac rightTac = Check $ \ty -> do
   (scrutTy, scrut) <- runSynth scrutTac
   case scrutTy of
     SumTy a b -> do
-      f <- runCheck checkT1 (FuncTy a ty)
-      g <- runCheck checkT2 (FuncTy b ty)
+      f <- runCheck leftTac (FuncTy a ty)
+      g <- runCheck rightTac (FuncTy b ty)
       pure $ SCase scrut ty f g
     _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
 
@@ -650,8 +650,8 @@ sumElim scrutTac checkT1 checkT2 = Check $ \ty -> do
 --  ─────────────── Absurd⇐
 --  Γ ⊢ absurd e ⇐ C
 voidElim :: Synth -> Check
-voidElim (Synth synth) = Check $ \ty -> do
-  (scrutTy, scrut) <- synth
+voidElim voidTac = Check $ \ty -> do
+  (scrutTy, scrut) <- runSynth voidTac
   case scrutTy of
     VoidTy -> pure $ SAbsurd ty scrut
     _ -> throwError $ TypeError $ "Expected a Void but got: " <> show scrutTy
@@ -702,10 +702,10 @@ boolIntroFalse = Check $ \case
 -- ───────────────────────────────────── If⇐
 --   Γ ⊢ If t₁ then t₂ else t₃ ⇐ T
 boolElim :: Check -> Check -> Check -> Check
-boolElim checkT1 checkT2 checkT3 = Check $ \ty -> do
-  tm1 <- runCheck checkT1 BoolTy
-  tm2 <- runCheck checkT2 ty
-  tm3 <- runCheck checkT3 ty
+boolElim pTac tTac fTac = Check $ \ty -> do
+  tm1 <- runCheck pTac BoolTy
+  tm2 <- runCheck tTac ty
+  tm3 <- runCheck fTac ty
   pure (SIf tm1 ty tm2 tm3)
 
 --------------------------------------------------------------------------------

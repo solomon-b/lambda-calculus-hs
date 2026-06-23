@@ -4,18 +4,20 @@
 
 -- | Recursion Principles.
 --
--- Generalizes @NatRec@ from System T to direct recursion operation for all nominal ADTs.
+-- Generalizes @NatRec@ from System T to a direct recursion operator over
+-- every nominal ADT.
 module Main where
 
 --------------------------------------------------------------------------------
 
-import Control.Arrow ((&&&))
 import Control.Monad (foldM, forM, unless, when, zipWithM, (>=>))
 import Control.Monad.Except (MonadError (..))
 import Control.Monad.Identity
 import Control.Monad.Reader (MonadReader (..), asks)
+import Control.Monad.State.Strict (MonadState (..), gets, modify)
 import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
+import Control.Monad.Trans.State.Strict (StateT (..))
 import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
 import Data.Bifunctor (second)
@@ -24,7 +26,6 @@ import Data.Foldable (find)
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
-import Data.Scientific (Scientific)
 import Data.String
 import Data.These
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
@@ -54,8 +55,6 @@ data Term
     Lam Name Term
   | -- | Function application. @f x@
     Ap Term Term
-  | -- | Let binding. @let x = t1 in t2@
-    Let Name Term Term
   | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
     Anno Type Term
   | -- | A missing subterm. Can only appear in check position (where the
@@ -67,33 +66,23 @@ data Term
     Fst Term
   | -- | Second projection of a pair. @snd p@
     Snd Term
-  | -- | Boolean true. @true@
-    Tru
-  | -- | Boolean false. @false@
-    Fls
-  | -- | Conditional. @if scrut then t else f@
-    If Term Term Term
-  | -- | The unit value. @()@
-    Unit
-  | -- | Void elimination. Can produce any type from a value of type 'Void',
-    -- since no such value exists.
-    Absurd Term
   | -- | Left injection into a sum type.
     InL Term
   | -- | Right injection into a sum type.
     InR Term
   | -- | Binary sum elimination. Binds a variable in each branch.
     SumCase Term (Name, Term) (Name, Term)
-  | -- | A natural number literal.
-    Natural Integer
-  | -- | An integer literal.
-    Integer Integer
-  | -- | A real number literal.
-    Real Scientific
-  | -- | A record literal: a list of named fields with values.
-    Record [(Name, Term)]
-  | -- | Field projection from a record.
-    Get Name Term
+  | -- | Boolean true. @true@
+    Tru
+  | -- | Boolean false. @false@
+    Fls
+  | -- | Conditional. @if scrut then t else f@
+    If Term Term Term
+  | -- | Void elimination. Can produce any type from a value of type 'Void',
+    -- since no such value exists.
+    Absurd Term
+  | -- | The unit value. @()@
+    Unit
   | -- | Apply a named data constructor to arguments.
     Cnstr DtCnstrName [Term]
   | -- | Pattern match on a nominal inductive type. Each branch names a
@@ -114,14 +103,6 @@ prettyTerm p (Lam n body) =
 prettyTerm p (Ap f x) =
   parensIf (p > appPrec) $
     prettyTerm appPrec f PP.<+> prettyTerm atomPrec x
-prettyTerm p (Let n rhs body) =
-  parensIf (p > lamPrec) $
-    "let"
-      PP.<+> PP.pretty (getName n)
-      PP.<+> "="
-      PP.<+> prettyTerm lamPrec rhs
-      PP.<+> "in"
-      PP.<+> prettyTerm lamPrec body
 prettyTerm p (Anno ty e) =
   parensIf (p > lamPrec) $
     prettyTerm (lamPrec + 1) e PP.<+> ":" PP.<+> prettyType lamPrec ty
@@ -168,17 +149,6 @@ prettyTerm p (SumCase scrut (ln, l) (rn, r)) =
         PP.<+> PP.pretty (getName rn)
         PP.<+> arrowSym
         PP.<+> prettyTerm lamPrec r
-prettyTerm _ (Natural n) = PP.pretty n
-prettyTerm _ (Integer n) = PP.pretty n
-prettyTerm _ (Real n) = PP.pretty (show n)
-prettyTerm _ (Record fields) =
-  PP.braces $
-    PP.sep $
-      PP.punctuate PP.comma $
-        map (\(n, e) -> PP.pretty (getName n) PP.<+> "=" PP.<+> prettyTerm lamPrec e) fields
-prettyTerm p (Get n e) =
-  parensIf (p > appPrec) $
-    prettyTerm atomPrec e <> "." <> PP.pretty (getName n)
 prettyTerm _ (Cnstr n []) = PP.pretty n
 prettyTerm p (Cnstr n args) =
   parensIf (p > appPrec) $
@@ -233,17 +203,18 @@ data Type
     VoidTy
   | -- | Binary sum: @A + B@.
     SumTy Type Type
-  | -- | Natural numbers. @Nat@. Subtype of 'IntegerTy'.
-    NaturalTy
-  | -- | Integers. @Int@. Subtype of 'RealTy'.
-    IntegerTy
-  | -- | Real numbers. @Real@. Top of the numeric tower.
-    RealTy
-  | -- | A record type: a list of named fields with their types.
-    RecordTy [(Name, Type)]
   | -- | A nominal inductive type, referenced by name.
     AdtTy TyCnstrName
+  | -- | A metavariable: an unknown type, to be solved by unification.
+    MetaTy MetaId
   deriving stock (Show, Eq, Ord)
+
+-- | A metavariable identifier. A metavariable is an unknown type; it
+-- rides through 'Syntax' and 'Value' as an opaque atomic head, since a
+-- hole evaluates to a neutral and quoting a neutral ignores its type. It
+-- is resolved only in the typechecker, never by the evaluator.
+newtype MetaId = MetaId Int
+  deriving (Eq, Ord, Show)
 
 prettyType :: Prec -> Type -> PP.Doc ann
 prettyType p (FuncTy a b) =
@@ -258,15 +229,8 @@ prettyType _ VoidTy = "Void"
 prettyType p (SumTy a b) =
   parensIf (p > sumPrec) $
     prettyType (sumPrec + 1) a PP.<+> "+" PP.<+> prettyType sumPrec b
-prettyType _ NaturalTy = "Nat"
-prettyType _ IntegerTy = "Int"
-prettyType _ RealTy = "Real"
-prettyType _ (RecordTy fields) =
-  PP.braces $
-    PP.sep $
-      PP.punctuate PP.comma $
-        map (\(n, ty) -> PP.pretty (getName n) <> ":" PP.<+> prettyType lamPrec ty) fields
 prettyType _ (AdtTy n) = PP.pretty n
+prettyType _ (MetaTy (MetaId n)) = "?" <> PP.pretty n
 
 instance PP.Pretty Type where
   pretty = prettyType lamPrec
@@ -292,32 +256,22 @@ data Syntax
     SFst Syntax
   | -- | Second projection of a pair.
     SSnd Syntax
-  | -- | Boolean true.
-    STru
-  | -- | Boolean false.
-    SFls
-  | -- | Conditional. @if scrut then t else f@.
-    SIf Syntax Type Syntax Syntax
-  | -- | The unit value.
-    SUnit
-  | -- | Elimination of the empty type. @absurd t@.
-    SAbsurd Type Syntax
   | -- | Left injection into a sum type. @inl x@.
     SInL Syntax
   | -- | Right injection into a sum type. @inr x@.
     SInR Syntax
   | -- | Case analysis on a sum type. @case scrut of inl x -> l; inr y -> r@.
     SSumCase Syntax Type Syntax Syntax
-  | -- | A natural number literal.
-    SNatural Integer
-  | -- | An integer literal.
-    SInteger Integer
-  | -- | A real number literal.
-    SReal Scientific
-  | -- | Record introduction. A list of named fields.
-    SRecord [(Name, Syntax)]
-  | -- | Record field projection. @r.field@.
-    SGet Name Syntax
+  | -- | Boolean true.
+    STru
+  | -- | Boolean false.
+    SFls
+  | -- | Conditional. @if scrut then t else f@.
+    SIf Syntax Type Syntax Syntax
+  | -- | Elimination of the empty type. @absurd t@.
+    SAbsurd Type Syntax
+  | -- | The unit value.
+    SUnit
   | -- | A data constructor applied to its elaborated arguments.
     SCnstr DtCnstrName [Syntax]
   | -- | Pattern match on a nominal inductive type. The 'Type' is the
@@ -354,24 +308,16 @@ data Value
     VLam Name Closure
   | -- | A fully evaluated pair of values.
     VPair Value Value
+  | -- | Left injection value.
+    VInL Value
+  | -- | Right injection value.
+    VInR Value
   | -- | Boolean true.
     VTru
   | -- | Boolean false.
     VFls
   | -- | The unit value.
     VUnit
-  | -- | Left injection value.
-    VInL Value
-  | -- | Right injection value.
-    VInR Value
-  | -- | A natural number value.
-    VNatural Integer
-  | -- | An integer value.
-    VInteger Integer
-  | -- | A real number value.
-    VReal Scientific
-  | -- | An evaluated record.
-    VRecord [(Name, Value)]
   | -- | An evaluated data constructor with its argument values.
     VCnstr DtCnstrName [Value]
   deriving stock (Show, Eq, Ord)
@@ -428,15 +374,8 @@ data Frame
   = VApp Type Value
   | VFst
   | VSnd
-  | -- | A stuck if-then-else: the condition is neutral, so we can't choose a
-    -- branch. Carries the motive type and both branch values.
-    VIf Type Value Value
-  | -- | A stuck absurd: the scrutinee is neutral at 'VoidTy'.
-    VAbsurd Type
   | -- | A stuck case: the scrutinee is neutral.
     VSumCase Type Type Type Value Value
-  | -- | A stuck record projection.
-    VGet Name
   | -- | A stuck nominal case: the scrutinee is neutral. The first 'Type'
     -- is the scrutinee's data type and the second is the result type. Both
     -- are needed to read each branch back at its branch type.
@@ -445,6 +384,11 @@ data Frame
     -- 'Type' is the scrutinee's data type and the second is the result
     -- type. Both are needed to read each method back at its method type.
     VRec Type Type [(DtCnstrName, Value)]
+  | -- | A stuck if-then-else: the condition is neutral, so we can't choose a
+    -- branch. Carries the motive type and both branch values.
+    VIf Type Value Value
+  | -- | A stuck absurd: the scrutinee is neutral at 'VoidTy'.
+    VAbsurd Type
   deriving stock (Show, Eq, Ord)
 
 pushFrame :: Neutral -> Frame -> Neutral
@@ -491,10 +435,6 @@ data TypeRef
   | TyRefBool
   | TyRefUnit
   | TyRefVoid
-  | TyRefNatural
-  | TyRefInteger
-  | TyRefReal
-  | TyRefRecord [(Name, TypeRef)]
   deriving stock (Show, Eq, Ord)
 
 -- | Core syntax datatype definition.
@@ -599,6 +539,18 @@ elaborateDefinitions decls = do
           dcSpecs
       pure (specs', byCnstr')
 
+-- | Check that a constructor field type is strictly positive in @tyName@:
+-- the type being declared must never occur to the left of an arrow.
+--
+-- A negative occurrence breaks normalization. Even without a recursor,
+-- @data Bad = MkBad (Bad -> Bad)@ lets the term
+-- @(λx. case x of MkBad f -> f x)@ applied to @MkBad@ of itself diverge.
+-- A recursor over such a type would not be well founded either. So a
+-- recursive occurrence left of an arrow is rejected here, at declaration
+-- time, to keep the language normalizing.
+--
+-- Every type former is positive in both components, except the domain of
+-- a function, where @tyName@ must not occur at all.
 strictPositivity :: TyCnstrName -> Type -> Bool
 strictPositivity tyName = pos
   where
@@ -606,7 +558,6 @@ strictPositivity tyName = pos
       FuncTy a b -> not (occurs a) && pos b
       PairTy a b -> pos a && pos b
       SumTy a b -> pos a && pos b
-      RecordTy fields -> all (pos . snd) fields
       _ -> True
 
     occurs = \case
@@ -614,7 +565,6 @@ strictPositivity tyName = pos
       FuncTy a b -> occurs a || occurs b
       PairTy a b -> occurs a || occurs b
       SumTy a b -> occurs a || occurs b
-      RecordTy fields -> any (occurs . snd) fields
       _ -> False
 
 -- | Resolve a surface 'TypeRef' to a core 'Type', checking that every
@@ -633,10 +583,6 @@ resolveTypeRef byType = go
       TyRefBool -> pure BoolTy
       TyRefUnit -> pure UnitTy
       TyRefVoid -> pure VoidTy
-      TyRefNatural -> pure NaturalTy
-      TyRefInteger -> pure IntegerTy
-      TyRefReal -> pure RealTy
-      TyRefRecord fields -> RecordTy <$> traverse (traverse go) fields
 
 -- | Look up a data type's spec by name. Returns 'Nothing' if the name is
 -- unbound or refers to a term definition rather than a data type.
@@ -766,6 +712,142 @@ freshCell :: TypeCheckEnv -> Name -> Type -> Cell
 freshCell ctx name ty = Cell name ty (freshVar ctx ty)
 
 --------------------------------------------------------------------------------
+-- Unification
+--
+-- A metavariable is an unknown type, written 'MetaTy' and carried as an
+-- atomic head alongside the other type formers. The evaluator never
+-- inspects one, so the whole solving apparatus lives here in the
+-- typechecker, in the 'TypecheckM' state.
+--
+-- The state is the 'MetaCtx': a counter for minting fresh metavariables
+-- and a map from each to its solution. 'freshMeta' mints a new unknown,
+-- 'force' resolves a head far enough to see whether it is rigid or still
+-- a metavariable, 'solveMeta' records a solution after an occurs check,
+-- and 'unify' makes two types equal by solving metavariables.
+--
+-- 'zonk' and 'zonkSyntax' replace every solved metavariable with its
+-- solution. They run before anything crosses into the evaluator, which
+-- has no access to the solution map.
+
+-- | The unification state: a counter for minting fresh metavariables and
+-- a map from each metavariable to its solution.
+data MetaCtx = MetaCtx {next :: MetaId, solutions :: Map MetaId Type}
+
+-- | The empty unification state: no metavariables minted, none solved.
+initMetas :: MetaCtx
+initMetas = MetaCtx (MetaId 0) mempty
+
+-- | The successor metavariable id.
+nextMetaId :: MetaId -> MetaId
+nextMetaId (MetaId n) = MetaId (n + 1)
+
+-- | Mint a fresh, unsolved metavariable. Bumps the counter and returns
+-- the new 'MetaTy'.
+freshMeta :: TypecheckM Type
+freshMeta = do
+  i <- gets next
+  modify (\m -> m {next = nextMetaId m.next})
+  pure $ MetaTy i
+
+-- | Record the solution @meta := ty@, guarded by an occurs check.
+--
+-- The check forces at every node as it descends, so it catches @meta@
+-- hiding behind an already solved metavariable. If @meta@ occurs in @ty@
+-- the solution would be infinite (e.g. @?a := ?a -> ?a@), so we reject it
+-- with 'InfiniteTypeError'. Otherwise we store the forced @ty@, keeping
+-- the map free of stale metavariable heads.
+solveMeta :: MetaId -> Type -> TypecheckM ()
+solveMeta meta ty = do
+  occured <- occurs ty
+  if occured
+    then throwError $ InfiniteTypeError ty
+    else do
+      ty' <- force ty
+      modify $ \ctx -> ctx {solutions = Map.insert meta ty' ctx.solutions}
+  where
+    occurs =
+      force >=> \case
+        MetaTy m -> pure (m == meta)
+        FuncTy a b -> (||) <$> occurs a <*> occurs b
+        PairTy a b -> (||) <$> occurs a <*> occurs b
+        SumTy a b -> (||) <$> occurs a <*> occurs b
+        _ -> pure False
+
+-- | Resolve a type's head. A solved metavariable is chased to its
+-- solution (and on, until the head is rigid or unsolved); anything else
+-- is returned unchanged. This is shallow: it resolves only the head, not
+-- the interior, which is all a consumer needs to tell whether the head is
+-- rigid or flexible. Termination relies on the solution map being
+-- acyclic, which the occurs check in 'solveMeta' guarantees.
+force :: Type -> TypecheckM Type
+force = \case
+  MetaTy m ->
+    gets (Map.lookup m . solutions) >>= \case
+      Just ty -> force ty
+      Nothing -> pure (MetaTy m)
+  ty -> pure ty
+
+-- | Resolve every metavariable in a type, head and interior alike. The
+-- deep counterpart of 'force', used for display and before a type crosses
+-- into the evaluator. A metavariable that survives a zonk is genuinely
+-- unsolved and is shown as @?n@.
+zonk :: Type -> TypecheckM Type
+zonk =
+  force >=> \case
+    FuncTy a b -> FuncTy <$> zonk a <*> zonk b
+    PairTy a b -> PairTy <$> zonk a <*> zonk b
+    SumTy a b -> SumTy <$> zonk a <*> zonk b
+    ty -> pure ty
+
+-- | Resolve every metavariable embedded in an elaborated term. The core
+-- 'Syntax' carries types: the type of each hole and the motive of each
+-- eliminator. The evaluator cannot resolve a metavariable, so the term is
+-- zonked before evaluation. The traversal recurses through the whole
+-- tree, zonking each embedded type and leaving the term structure intact.
+zonkSyntax :: Syntax -> TypecheckM Syntax
+zonkSyntax = \case
+  SLam nm bdy -> SLam nm <$> zonkSyntax bdy
+  SAp f a -> SAp <$> zonkSyntax f <*> zonkSyntax a
+  SHole ty -> SHole <$> zonk ty
+  SPair a b -> SPair <$> zonkSyntax a <*> zonkSyntax b
+  SFst tm -> SFst <$> zonkSyntax tm
+  SSnd tm -> SSnd <$> zonkSyntax tm
+  SIf s ty t f -> SIf <$> zonkSyntax s <*> zonk ty <*> zonkSyntax t <*> zonkSyntax f
+  SAbsurd ty tm -> SAbsurd <$> zonk ty <*> zonkSyntax tm
+  SInL tm -> SInL <$> zonkSyntax tm
+  SInR tm -> SInR <$> zonkSyntax tm
+  SSumCase scrut ty f g -> SSumCase <$> zonkSyntax scrut <*> zonk ty <*> zonkSyntax f <*> zonkSyntax g
+  SCnstr nm cnstrs -> SCnstr nm <$> traverse zonkSyntax cnstrs
+  SCase scrut ty branches -> SCase <$> zonkSyntax scrut <*> zonk ty <*> traverse (traverse zonkSyntax) branches
+  SRec scrut ty branches -> SRec <$> zonkSyntax scrut <*> zonk ty <*> traverse (traverse zonkSyntax) branches
+  syn -> pure syn
+
+-- | Make two types equal by solving metavariables.
+--
+-- Both heads are forced first. Two identical metavariables are already
+-- equal. A flexible head (an unsolved metavariable) is solved to the
+-- other side. Two rigid heads of the same former are decomposed and
+-- unified componentwise. Anything else is a rigid mismatch. This is first
+-- order and syntactic, so it is complete: if a unifier exists, it is
+-- found.
+unify :: Type -> Type -> TypecheckM ()
+unify a b = do
+  a' <- force a
+  b' <- force b
+  case (a', b') of
+    (MetaTy m, MetaTy n)
+      | m == n -> pure ()
+      | otherwise -> solveMeta m b'
+    (MetaTy m, _) -> solveMeta m b'
+    (_, MetaTy n) -> solveMeta n a'
+    (FuncTy x1 y1, FuncTy x2 y2) -> unify x1 x2 >> unify y1 y2
+    (SumTy x1 y1, SumTy x2 y2) -> unify x1 x2 >> unify y1 y2
+    (PairTy x1 y1, PairTy x2 y2) -> unify x1 x2 >> unify y1 y2
+    _
+      | a' == b' -> pure ()
+      | otherwise -> throwError (UnificationError a' b')
+
+--------------------------------------------------------------------------------
 -- Typechecker
 --
 -- The typechecker is split into two mutually recursive judgements:
@@ -775,7 +857,7 @@ freshCell ctx name ty = Cell name ty (freshVar ctx ty)
 --
 -- Terms that introduce a type former (lambdas, pairs, unit) are checked. Terms
 -- that eliminate one (application, projection) or carry an annotation are
--- synthesized. The 'subTactic' bridges the two directions.
+-- synthesized. The 'switchTactic' bridges the two directions.
 --
 -- Each tactic returns the elaborated core IR: 'Check' returns @Type ->
 -- TypecheckM Syntax@ and 'Synth' returns @TypecheckM (Type, Syntax)@. This is
@@ -787,6 +869,8 @@ data Error
   | UnknownDataConstructor DtCnstrName
   | UnknownDataType TyCnstrName
   | ConstructorTypeMismatch DtCnstrName TyCnstrName TyCnstrName
+  | InfiniteTypeError Type
+  | UnificationError Type Type
   deriving (Show)
 
 -- | Accumulated hole types from typechecking. Each time the typechecker
@@ -794,10 +878,10 @@ data Error
 newtype Holes = Holes {getHoles :: [Type]}
   deriving newtype (Show, Semigroup, Monoid)
 
-newtype TypecheckM a = TypecheckM {runTypecheckM :: TypeCheckEnv -> (Either Error a, Holes)}
+newtype TypecheckM a = TypecheckM {runTypecheckM :: MetaCtx -> TypeCheckEnv -> ((Either Error a, Holes), MetaCtx)}
   deriving
-    (Functor, Applicative, Monad, MonadReader TypeCheckEnv, MonadError Error, MonadWriter Holes)
-    via (ExceptT Error (WriterT Holes (Reader TypeCheckEnv)))
+    (Functor, Applicative, Monad, MonadState MetaCtx, MonadReader TypeCheckEnv, MonadError Error, MonadWriter Holes)
+    via (ExceptT Error (WriterT Holes (StateT MetaCtx (Reader TypeCheckEnv))))
 
 newtype Check = Check {runCheck :: Type -> TypecheckM Syntax}
 
@@ -808,15 +892,13 @@ synth = \case
   Var bndr -> varTactic bndr
   Ap tm1 tm2 -> lamElim (synth tm1) (check tm2)
   Anno ty tm -> annoTactic ty (check tm)
-  Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
+  Hole -> holeSynthTactic
   Fst tm -> pairElimFst (synth tm)
   Snd tm -> pairElimSnd (synth tm)
-  Get name tm -> recordElim name (synth tm)
   tm -> Synth $ throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
 check :: Term -> Check
 check (Lam bndr body) = lamIntro bndr (check body)
-check (Let bndr e body) = letTactic bndr (synth e) (check body)
 check Hole = holeTactic
 check (Pair tm1 tm2) = pairIntro (check tm1) (check tm2)
 check Tru = boolIntroTrue
@@ -827,14 +909,10 @@ check (Absurd tm) = voidElim (synth tm)
 check (InL tm1) = sumIntroL (check tm1)
 check (InR tm2) = sumIntroR (check tm2)
 check (SumCase scrut (bndr1, t1) (bndr2, t2)) = sumElim (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
-check (Natural n) = natIntro n
-check (Integer z) = intIntro z
-check (Real r) = realIntro r
-check (Record fields) = recordIntro (fmap (fmap (id &&& check)) fields)
 check (Cnstr nm args) = adtIntro nm (fmap check args)
 check (Case scrut cases) = adtElim (synth scrut) (fmap (\(x, y, z) -> (x, check (foldr Lam z y))) cases)
 check (Rec scrut cases) = adtRecElim (synth scrut) (fmap (second check) cases)
-check tm = subTactic (synth tm)
+check tm = switchTactic (synth tm)
 
 -- | Variable Resolution
 --
@@ -847,6 +925,10 @@ check tm = subTactic (synth tm)
 -- The quoting step is what converts the de Bruijn level in the cell's value to
 -- a de Bruijn index in the syntax.
 --
+-- The cell's type is zonked first. Quoting is type directed and runs in the
+-- evaluator, which cannot resolve a metavariable, so a binder whose type is a
+-- solved metavariable would otherwise crash the quote.
+--
 -- (x : A) ∈ Γ
 -- ─────────── Var⇒
 --  Γ ⊢ x ⇒ A
@@ -856,27 +938,29 @@ varTactic bndr = Synth $ do
 
   case resolveCell ctx bndr of
     Just Cell {..} -> do
-      let quoted = flip runEvalM (toEvalEnv ctx) $ quote (Lvl $ size ctx) cellType cellValue
-      pure (cellType, quoted)
+      ty <- zonk cellType
+      let quoted = flip runEvalM (toEvalEnv ctx) $ quote (Lvl $ size ctx) ty cellValue
+      pure (ty, quoted)
     Nothing -> throwError $ UnknownVariable bndr
 
--- | Subsumption
+-- | Switch
 --
 -- The bridge between synth and check. Synthesize a type for the term, then
--- verify it is a subtype of the expected type. This replaces the equality check
--- from earlier modules. This is how a synthesizable term (like a variable or
--- annotation) can appear in a checked position. Every term that doesn't have
--- its own check rule falls through to this.
+-- unify it with the expected type, solving metavariables on either side. This
+-- is how a synthesizable term (like a variable or annotation) can appear in a
+-- checked position. Every term that doesn't have its own check rule falls
+-- through to this. It is the canonical place unification fires: a synthesized
+-- type meeting an expected one.
 --
--- Γ ⊢ e ⇒ A  A <∶ B
--- ──────────────── Sub⇐
+-- Γ ⊢ e ⇒ A  A ≡ B
+-- ──────────────── Switch⇐
 --    Γ ⊢ e ⇐ B
-subTactic :: Synth -> Check
-subTactic (Synth synth) = Check $ \ty1 -> do
-  (ty2, tm) <- synth
-  if ty2 `isSubtypeOf` ty1
-    then pure tm
-    else throwError $ TypeError $ "Type '" <> show ty2 <> "' cannot be a subtype of type '" <> show ty1 <> "'"
+switchTactic :: Synth -> Check
+switchTactic switchTac = Check $ \ty1 -> do
+  (ty2, tm) <- runSynth switchTac
+  unify ty2 ty1
+
+  pure tm
 
 -- | Annotation
 --
@@ -889,8 +973,8 @@ subTactic (Synth synth) = Check $ \ty1 -> do
 -- ─────────────── Anno⇒
 -- Γ ⊢ (e : A) ⇒ A
 annoTactic :: Type -> Check -> Synth
-annoTactic ty (Check check) = Synth $ do
-  tm <- check ty
+annoTactic ty termTac = Synth $ do
+  tm <- runCheck termTac ty
   pure (ty, tm)
 
 -- | Lambda Introduction
@@ -900,26 +984,36 @@ annoTactic ty (Check check) = Synth $ do
 -- check the body against the return type (@A₂@). This is why lambdas can't
 -- synthesize. Without the expected function type, we wouldn't know @A₁@.
 --
+-- The expected type is unified with a fresh @?a -> ?b@ rather than matched
+-- directly: if it is already a function type this recovers the domain and
+-- codomain, and if it is a flexible metavariable, unification solves it to
+-- that function shape (imitation).
+--
 -- Elaborates to @SLam name body'@.
 --
 --  Γ, x : A₁ ⊢ e ⇐ A₂
 -- ──────────────────── LamIntro⇐
 -- Γ ⊢ (λx.e) ⇐ A₁ → A₂
 lamIntro :: Name -> Check -> Check
-lamIntro bndr (Check bodyTac) = Check $ \case
-  a `FuncTy` b -> do
-    ctx <- ask
-    let var = freshCell ctx bndr a
-    fiber <- local (bindCell var) $ bodyTac b
-    pure $ SLam bndr fiber
-  ty -> throwError $ TypeError $ "Tried to introduce a lambda at a non-function type: " <> show ty
+lamIntro bndr bodyTac = Check $ \ty -> do
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (FuncTy a b)
+  a' <- force a
+
+  ctx <- ask
+  let var = freshCell ctx bndr a'
+  fiber <- local (bindCell var) $ runCheck bodyTac b
+  pure $ SLam bndr fiber
 
 -- | Lambda Elimination
 --
--- Application is a synth rule. Synthesize the function's type to get @A → B@,
--- then check the argument against @A@, and return @B@. The function type tells
--- us what to check the argument against. Information flows from the function to
--- the argument.
+-- Application is a synth rule. Synthesize the function's type, unify it with a
+-- fresh @?a -> ?b@, check the argument against @?a@, and return @?b@. The
+-- unification recovers the domain and codomain when the function type is
+-- known, and solves a flexible head into a function shape when it is a
+-- metavariable (imitation). Information flows from the function to the
+-- argument.
 --
 -- Elaborates to @SAp f' arg'@.
 --
@@ -927,13 +1021,14 @@ lamIntro bndr (Check bodyTac) = Check $ \case
 -- ────────────────────────── LamElim⇒
 --       Γ ⊢ e₁ e₂ ⇒ B
 lamElim :: Synth -> Check -> Synth
-lamElim (Synth funcTac) (Check argTac) =
-  Synth $
-    funcTac >>= \case
-      (a `FuncTy` b, f) -> do
-        arg <- argTac a
-        pure (b, SAp f arg)
-      (ty, _) -> throwError $ TypeError $ "Expected a function type but got " <> show ty
+lamElim funcTac argTac = Synth $ do
+  (ty, f) <- runSynth funcTac
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (FuncTy a b)
+
+  arg <- runCheck argTac a
+  pure (b, SAp f arg)
 
 -- | Let Binding
 --
@@ -950,12 +1045,12 @@ lamElim (Synth funcTac) (Check argTac) =
 --  ──────────────────────────────────── Let⇐
 --        Γ ⊢ let x = e in body ⇐ B
 letTactic :: Name -> Synth -> Check -> Check
-letTactic bndr (Synth synth) (Check bodyTac) = Check $ \ty -> do
-  (ty1, tm1) <- synth
+letTactic bndr bndrTac bodyTac = Check $ \ty -> do
+  (ty1, tm1) <- runSynth bndrTac
   ctx <- ask
   let val = runEvalM (eval tm1) (toEvalEnv ctx)
       var = Cell bndr ty1 val
-  fiber <- local (bindCell var) $ bodyTac ty
+  fiber <- local (bindCell var) $ runCheck bodyTac ty
   pure $ SAp (SLam bndr fiber) tm1
 
 -- | Type Hole
@@ -975,10 +1070,18 @@ holeTactic = Check $ \ty -> do
   tell (Holes [ty])
   pure (SHole ty)
 
+holeSynthTactic :: Synth
+holeSynthTactic = Synth $ do
+  m <- freshMeta
+  tell (Holes [m])
+  pure (m, SHole m)
+
 -- | Pair Introduction
 --
--- Like lambdas, pairs are checked. the expected pair type @A × B@ tells us what
--- to check each component against.
+-- Like lambdas, pairs are checked. The expected type is unified with a fresh
+-- @?a * ?b@: when it is a known pair type this recovers the component types to
+-- check against, and when it is a flexible metavariable, unification solves it
+-- to a pair shape (imitation).
 --
 -- Elaborates to @SPair a' b'@.
 --
@@ -986,27 +1089,33 @@ holeTactic = Check $ \ty -> do
 -- ───────────────────── Pair⇐
 --  Γ ⊢ (a , b) ⇐ A × B
 pairIntro :: Check -> Check -> Check
-pairIntro (Check checkFst) (Check checkSnd) = Check $ \case
-  PairTy a b -> do
-    tm1 <- checkFst a
-    tm2 <- checkSnd b
-    pure (SPair tm1 tm2)
-  ty -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
+pairIntro checkFst checkSnd = Check $ \ty -> do
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (PairTy a b)
+
+  tm1 <- runCheck checkFst a
+  tm2 <- runCheck checkSnd b
+  pure (SPair tm1 tm2)
 
 -- | Pair Fst Elimination
 --
--- Projection is a synth rule. Synthesize the pair's type to learn what the
--- components are, then return the appropriate one.
+-- Projection is a synth rule. Synthesize the operand's type and unify it with
+-- a fresh @?a * ?b@, then return the first component. When the operand is a
+-- hole, the unification solves its metavariable to a pair (imitation), so
+-- @fst _@ learns the hole is a pair and reports the skeleton.
 --
 -- Γ ⊢ (t₁ , t₂) ⇒ A × B
 -- ───────────────────── Fst⇒
 --       Γ ⊢ t₁ ⇒ A
 pairElimFst :: Synth -> Synth
-pairElimFst (Synth synth) =
-  Synth $
-    synth >>= \case
-      (PairTy ty1 _ty2, tm) -> pure (ty1, SFst tm)
-      (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
+pairElimFst fstTac = Synth $ do
+  (ty, tm) <- runSynth fstTac
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (PairTy a b)
+
+  pure (a, SFst tm)
 
 -- | Pair Snd Elimination
 --
@@ -1016,35 +1125,31 @@ pairElimFst (Synth synth) =
 -- ───────────────────── Snd⇒
 --       Γ ⊢ t₂ ⇒ B
 pairElimSnd :: Synth -> Synth
-pairElimSnd (Synth synth) =
-  Synth $
-    synth >>= \case
-      (PairTy _ty1 ty2, tm) -> pure (ty2, SSnd tm)
-      (ty, _) -> throwError $ TypeError $ "Couldn't match expected type Pair with actual type '" <> show ty <> "'"
+pairElimSnd sndTac = Synth $ do
+  (ty, tm) <- runSynth sndTac
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (PairTy a b)
+
+  pure (b, SSnd tm)
 
 -- | Bool-True Introduction
 --
--- Checked against 'BoolTy' (or a supertype via subtyping).
+-- Checked against 'BoolTy'.
 --
 -- ──────────────── True⇐
 -- Γ ⊢ True ⇐ Bool
 boolIntroTrue :: Check
-boolIntroTrue = Check $ \case
-  BoolTy -> pure STru
-  ty | BoolTy `isSubtypeOf` ty -> pure STru
-  ty -> throwError $ TypeError $ "'Bool' cannot be a subtype of '" <> show ty <> "'"
+boolIntroTrue = Check $ \ty -> unify ty BoolTy >> pure STru
 
 -- | Bool-False Introduction
 --
--- Checked against 'BoolTy'. Elaborates to 'SFls' (or a supertype via subtyping).
+-- Checked against 'BoolTy'. Elaborates to 'SFls'.
 --
 -- ──────────────── False⇐
 -- Γ ⊢ False ⇐ Bool
 boolIntroFalse :: Check
-boolIntroFalse = Check $ \case
-  BoolTy -> pure SFls
-  ty | BoolTy `isSubtypeOf` ty -> pure SFls
-  ty -> throwError $ TypeError $ "'Bool' cannot be a subtype of '" <> show ty <> "'"
+boolIntroFalse = Check $ \ty -> unify ty BoolTy >> pure SFls
 
 -- | Bool Elimination
 --
@@ -1056,23 +1161,21 @@ boolIntroFalse = Check $ \case
 -- ───────────────────────────────────── If⇐
 --   Γ ⊢ If t₁ then t₂ else t₃ ⇐ T
 boolElim :: Check -> Check -> Check -> Check
-boolElim (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
-  tm1 <- checkT1 BoolTy
-  tm2 <- checkT2 ty
-  tm3 <- checkT3 ty
+boolElim pTac tTac fTac = Check $ \ty -> do
+  tm1 <- runCheck pTac BoolTy
+  tm2 <- runCheck tTac ty
+  tm3 <- runCheck fTac ty
   pure (SIf tm1 ty tm2 tm3)
 
 -- | Unit Introduction
 --
--- Verify the expected type is 'UnitTy' (or a supertype).
+-- Unify the expected type with 'UnitTy'. When the expected type is a
+-- flexible metavariable, this solves it to 'UnitTy'.
 --
 -- ───────────── Unit⇐
 -- Γ ⊢ () ⇐ Unit
 unitIntro :: Check
-unitIntro = Check $ \case
-  UnitTy -> pure SUnit
-  ty | UnitTy `isSubtypeOf` ty -> pure SUnit
-  ty -> throwError $ TypeError $ "'Unit' cannot be a subtype of '" <> show ty <> "'"
+unitIntro = Check $ \ty -> unify ty UnitTy >> pure SUnit
 
 -- | Void Elimination
 --
@@ -1084,141 +1187,71 @@ unitIntro = Check $ \case
 --  ─────────────── Absurd⇐
 --  Γ ⊢ absurd e ⇐ C
 voidElim :: Synth -> Check
-voidElim (Synth synth) = Check $ \ty -> do
-  (scrutTy, scrut) <- synth
-  case scrutTy of
-    VoidTy -> pure $ SAbsurd ty scrut
-    _ -> throwError $ TypeError $ "Expected a Void but got: " <> show scrutTy
+voidElim voidTac = Check $ \ty -> do
+  (scrutTy, scrut) <- runSynth voidTac
+  unify scrutTy VoidTy
+
+  pure $ SAbsurd ty scrut
 
 -- | Sum Left Introduction
 --
--- Checked against a sum type. The payload is checked against the left
--- component.
+-- Checked against a sum type. The expected type is unified with a fresh
+-- @?a + ?b@ and the payload is checked against the left component @?a@.
+-- Building a left injection says nothing about the right summand, so @?b@
+-- is left unsolved.
 --
 --      Γ ⊢ e ⇐ A
 --  ───────────────── InL⇐
 --  Γ ⊢ InL e ⇐ A + B
 sumIntroL :: Check -> Check
-sumIntroL (Check check) = Check $ \case
-  SumTy a _b -> SInL <$> check a
-  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
+sumIntroL inlTac = Check $ \ty -> do
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (SumTy a b)
+
+  tm <- runCheck inlTac a
+  pure (SInL tm)
 
 -- | Sum Right Introduction
 --
--- Checked against a sum type. The payload is checked against the right
--- component.
+-- Checked against a sum type. The expected type is unified with a fresh
+-- @?a + ?b@ and the payload is checked against the right component @?b@.
+-- Building a right injection says nothing about the left summand, so @?a@
+-- is left unsolved.
 --
 --  Γ ⊢ e ⇐ B
 --  ──────────────── InR⇐
 --  Γ ⊢ InR e ⇐ A + B
 sumIntroR :: Check -> Check
-sumIntroR (Check check) = Check $ \case
-  SumTy _a b -> SInR <$> check b
-  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
+sumIntroR inrTac = Check $ \ty -> do
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (SumTy a b)
+
+  tm <- runCheck inrTac b
+  pure (SInR tm)
 
 -- | Sum Elimination
 --
--- Synthesize the scrutinee's sum type, then check each branch as a
--- function from the injection's payload type to the motive. The
--- branches are elaborated as lambdas that bind the payload.
+-- Synthesize the scrutinee's type and unify it with a fresh @?a + ?b@,
+-- then check each branch as a function from its payload type to the
+-- motive. The branches are elaborated as lambdas that bind the payload.
+-- When the scrutinee is a hole, the unification solves its metavariable
+-- to a sum (imitation), so @case _ of …@ learns the hole is a sum.
 --
 --  Γ ⊢ e ⇒ A + B    Γ ⊢ f ⇐ A → C    Γ ⊢ g ⇐ B → C
 --  ─────────────────────────────────────────────── SumCase⇐
 --                Γ ⊢ SumCase e f g ⇐ C
 sumElim :: Synth -> Check -> Check -> Check
-sumElim (Synth synth) (Check checkT1) (Check checkT2) = Check $ \ty -> do
-  (scrutTy, scrut) <- synth
-  case scrutTy of
-    SumTy a b -> do
-      f <- checkT1 (FuncTy a ty)
-      g <- checkT2 (FuncTy b ty)
-      pure $ SSumCase scrut ty f g
-    _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
+sumElim scrutTac leftTac rightTac = Check $ \ty -> do
+  (scrutTy, scrut) <- runSynth scrutTac
+  a <- freshMeta
+  b <- freshMeta
+  unify scrutTy (SumTy a b)
 
--- | Natural Introduction
---
--- Checked against 'NaturalTy' (or a supertype via subtyping, e.g. 'IntegerTy'
--- or 'RealTy'). Validates that the literal is non-negative.
---
--- ───────── ℕ⇐
--- Γ ⊢ n ⇐ ℕ
-natIntro :: Integer -> Check
-natIntro n = Check $ \case
-  NaturalTy ->
-    if n >= 0
-      then pure (SNatural n)
-      else throwError $ TypeError "Naturals must be greater then or equal to zero."
-  ty | NaturalTy `isSubtypeOf` ty -> pure (SNatural n)
-  ty -> throwError $ TypeError $ "'Natural' cannot be a subtype of '" <> show ty <> "'"
-
--- | Integer Introduction
---
--- Checked against 'IntegerTy' (or a supertype via subtyping, e.g. 'RealTy').
---
--- ──────── ℤ⇐
--- Γ ⊢ z ⇐  ℤ
-intIntro :: Integer -> Check
-intIntro z = Check $ \case
-  IntegerTy -> pure (SInteger z)
-  ty | IntegerTy `isSubtypeOf` ty -> pure (SInteger z)
-  ty -> throwError $ TypeError $ "'Integer' cannot be a subtype of '" <> show ty <> "'"
-
--- | Real Introduction
---
--- Checked against 'RealTy' (or a supertype via subtyping).
---
--- ───────── ℝ⇐
--- Γ ⊢ r ⇐ ℝ
-realIntro :: Scientific -> Check
-realIntro r = Check $ \case
-  RealTy -> pure (SReal r)
-  ty | RealTy `isSubtypeOf` ty -> pure (SReal r)
-  ty -> throwError $ TypeError $ "'Real' cannot be a subtype of '" <> show ty <> "'"
-
--- | Record Introduction
---
--- Checked against a record type. Uses 'alignWithM' to match the term's fields
--- against the type's fields via a 'Map'. 'These' means both present (check the
--- field), 'This' means a field in the type but not the term (missing field
--- error), 'That' means a field in the term but not the type (extra field
--- error). Field order is irrelevant because both sides are converted to maps
--- before alignment.
---
---         for each i  Γ ⊢ tᵢ ⇐ Tᵢ
--- ─────────────────────────────────────── Record⇐
--- Γ ⊢ { lᵢ = tᵢ} ⇐ { lᵢ : Tᵢ (i ∈ I..n) }
-recordIntro :: [(Name, (Term, Check))] -> Check
-recordIntro fields = Check $ \case
-  RecordTy ty -> do
-    fields' <-
-      alignWithM
-        ( \case
-            These ty (_, chk) -> runCheck chk ty
-            This ty -> throwError $ TypeError $ "Term is missing field of type: " <> show ty
-            That (tm, _) -> throwError $ TypeError $ "Term has extra field: " <> show tm
-        )
-        (Map.fromList ty)
-        (Map.fromList fields)
-    pure (SRecord $ Map.toList fields')
-  ty -> throwError $ TypeError $ "Expected a Record type but got: " <> show ty
-
--- | Record Elimination
---
--- Synthesize the record's type, then look up the projected field by name. A
--- synth rule because the record's type tells us the field's type.
---
--- Γ ⊢ t₁ ⇒ { lᵢ : Tᵢ (i ∈ I..n) }
--- ─────────────────────────────── Get⇒
---       Γ ⊢ Get lⱼ t₁ ⇒ Tⱼ
-recordElim :: Name -> Synth -> Synth
-recordElim name (Synth fieldTac) =
-  Synth $
-    fieldTac >>= \case
-      (RecordTy fields, tm) ->
-        case lookup name fields of
-          Just ty -> pure (ty, SGet name tm)
-          Nothing -> throwError $ TypeError $ "Record does not contain a field called " <> show name
-      (ty, _) -> throwError $ TypeError $ "Expected a record type but got " <> show ty
+  f <- runCheck leftTac (FuncTy a ty)
+  g <- runCheck rightTac (FuncTy b ty)
+  pure $ SSumCase scrut ty f g
 
 -- | ADT Introduction
 --
@@ -1244,31 +1277,25 @@ recordElim name (Synth fieldTac) =
 --     ⇐ Tₘ₊₁ → ... → Tₙ → T
 adtIntro :: DtCnstrName -> [Check] -> Check
 adtIntro nm chks = Check $ \expectedTy -> do
+  adtMap <- asks adtEnv
   let (returnTy, _) = decomposeFunction expectedTy
-  case returnTy of
-    AdtTy tyName -> do
-      adtMap <- asks adtEnv
-      case lookupCnstrInType tyName nm adtMap of
-        Just dtSpec -> do
-          let constrTy = dtSpec.cnstrType
-              (_returnTy, paramTys) = decomposeFunction constrTy
-          when (length chks > length paramTys) $
-            throwError $
-              TypeError $
-                "Data Constructor '"
-                  <> show nm
-                  <> "' expects "
-                  <> show (length paramTys)
-                  <> " arguments but got "
-                  <> show (length chks)
-          let scnstr = etaExpandCnstr (length paramTys) (SCnstr nm [])
-          params <- zipWithM runCheck chks paramTys
-          pure $ foldl' SAp scnstr params
-        Nothing ->
-          case lookupCnstr nm adtMap of
-            Nothing -> throwError $ UnknownDataConstructor nm
-            Just (actualTy, _) -> throwError $ ConstructorTypeMismatch nm tyName actualTy
-    ty -> throwError $ TypeError $ "Expected an ADT type but got: " <> show ty
+  case lookupCnstr nm adtMap of
+    Nothing -> throwError (UnknownDataConstructor nm)
+    Just (tyName, dtSpec) -> do
+      unify returnTy (AdtTy tyName)
+      let (_, paramTys) = decomposeFunction dtSpec.cnstrType
+      when (length chks > length paramTys) $
+        throwError $
+          TypeError $
+            "Data Constructor '"
+              <> show nm
+              <> "' expects "
+              <> show (length paramTys)
+              <> " arguments but got "
+              <> show (length chks)
+      let scnstr = etaExpandCnstr (length paramTys) (SCnstr nm [])
+      params <- zipWithM runCheck chks paramTys
+      pure $ foldl' SAp scnstr params
 
 -- | Decompose a function into its return type and a list of its args.
 decomposeFunction :: Type -> (Type, [Type])
@@ -1322,24 +1349,41 @@ etaExpandCnstr n t = uncurry ($) $ go n (id, t)
 --
 -- with goal type Bool checks the Nil body against @Bool@ and the Cons
 -- body against @Bool -> ListBool -> Bool@.
+--
+-- The ADT is resolved from the branch constructors, which are globally
+-- unique, and the scrutinee's type is unified against it: a hole is
+-- solved to that ADT (imitation), and a concrete scrutinee is checked to
+-- match. With no branches there is nothing to resolve, so the scrutinee's
+-- type must already be a known ADT.
 adtElim :: Synth -> [(DtCnstrName, Check)] -> Check
 adtElim scrut cases = Check $ \motive -> do
+  adtIndex <- asks adtEnv
   (scrutTy, scrut') <- runSynth scrut
-  case scrutTy of
-    AdtTy tyName -> do
-      adtIndex <- asks adtEnv
-      case lookupType tyName adtIndex of
-        Just dtSpec -> do
-          let branchTypes = Map.fromList $ caseBranchTypes motive dtSpec
-              checks = Map.fromList cases
-              alignCases = \case
-                These ty chk -> runCheck chk ty
-                This _ty -> throwError $ TypeError $ "Missing case for constructor of type '" <> show tyName <> "'"
-                That _chk -> throwError $ TypeError $ "Extra case branch not in type '" <> show tyName <> "'"
-          cases' <- Map.toList <$> alignWithM alignCases branchTypes checks
-          pure $ SCase scrut' motive cases'
-        Nothing -> throwError $ UnknownDataType tyName
-    ty -> throwError $ TypeError $ "Expected an ADT type but got: " <> show ty
+
+  -- Resolve the ADT name. With branches, any constructor names it (they're
+  -- globally unique); with none, only the scrutinee can.
+  tyName <- case cases of
+    ((cn, _) : _) -> case lookupCnstr cn adtIndex of
+      Just (n, _) -> pure n
+      Nothing -> throwError (UnknownDataConstructor cn)
+    [] ->
+      force scrutTy >>= \case
+        AdtTy n -> pure n
+        other -> throwError $ TypeError $ "Cannot infer ADT for an empty case: " <> show other
+
+  unify scrutTy (AdtTy tyName)
+
+  case lookupType tyName adtIndex of
+    Just dtSpec -> do
+      let branchTypes = Map.fromList $ caseBranchTypes motive dtSpec
+          checks = Map.fromList cases
+          alignCases = \case
+            These ty chk -> runCheck chk ty
+            This _ty -> throwError $ TypeError $ "Missing case for constructor of type '" <> show tyName <> "'"
+            That _chk -> throwError $ TypeError $ "Extra case branch not in type '" <> show tyName <> "'"
+      cases' <- Map.toList <$> alignWithM alignCases branchTypes checks
+      pure $ SCase scrut' motive cases'
+    Nothing -> throwError $ UnknownDataType tyName
 
 -- | The type a single case branch is checked against: each constructor
 -- field becomes a function argument, ending in the goal type.
@@ -1361,24 +1405,39 @@ caseBranchTypes motiveTy (DataTypeSpec _ specs) = fmap (constrBranchType motiveT
 --  for each i:   Γ ⊢ mᵢ ⇐ methodType(cᵢ, A)
 --  ──────────────────────────────────────────────────────── Rec⇐
 --  Γ ⊢ Rec scrut [(cᵢ,mᵢ)] ⇐ A
+--
+-- The inductive type @D@ is resolved from the method constructors, which
+-- are globally unique, and unified against the scrutinee's type, so a
+-- hole scrutinee is imitated and a concrete one is checked.
 adtRecElim :: Synth -> [(DtCnstrName, Check)] -> Check
 adtRecElim scrut cases = Check $ \motive -> do
+  adtIndex <- asks adtEnv
   (scrutTy, scrut') <- runSynth scrut
-  case scrutTy of
-    AdtTy tyName -> do
-      adtIndex <- asks adtEnv
-      case lookupType tyName adtIndex of
-        Just dtSpec -> do
-          let branchTypes = Map.fromList $ recBranchTypes motive dtSpec
-              checks = Map.fromList cases
-              alignCases = \case
-                These ty chk -> runCheck chk ty
-                This _ty -> throwError $ TypeError $ "Missing case for constructor of type '" <> show tyName <> "'"
-                That _chk -> throwError $ TypeError $ "Extra case branch not in type '" <> show tyName <> "'"
-          cases' <- Map.toList <$> alignWithM alignCases branchTypes checks
-          pure $ SRec scrut' motive cases'
-        Nothing -> throwError $ UnknownDataType tyName
-    ty -> throwError $ TypeError $ "Expected an ADT type but got: " <> show ty
+
+  -- Resolve the ADT name. With branches, any constructor names it (they're
+  -- globally unique); with none, only the scrutinee can.
+  tyName <- case cases of
+    ((cn, _) : _) -> case lookupCnstr cn adtIndex of
+      Just (n, _) -> pure n
+      Nothing -> throwError (UnknownDataConstructor cn)
+    [] ->
+      force scrutTy >>= \case
+        AdtTy n -> pure n
+        other -> throwError $ TypeError $ "Cannot infer ADT for an empty case: " <> show other
+
+  unify scrutTy (AdtTy tyName)
+
+  case lookupType tyName adtIndex of
+    Just dtSpec -> do
+      let branchTypes = Map.fromList $ recBranchTypes motive dtSpec
+          checks = Map.fromList cases
+          alignCases = \case
+            These ty chk -> runCheck chk ty
+            This _ty -> throwError $ TypeError $ "Missing case for constructor of type '" <> show tyName <> "'"
+            That _chk -> throwError $ TypeError $ "Extra case branch not in type '" <> show tyName <> "'"
+      cases' <- Map.toList <$> alignWithM alignCases branchTypes checks
+      pure $ SRec scrut' motive cases'
+    Nothing -> throwError $ UnknownDataType tyName
 
 -- | The type a single recursor method is checked against. Each constructor
 -- field becomes a function argument ending in the motive type, and every
@@ -1403,94 +1462,6 @@ recBranchTypes :: Type -> DataTypeSpec -> [(DtCnstrName, Type)]
 recBranchTypes motiveTy (DataTypeSpec tyName specs) = fmap (constrRecBranchType tyName motiveTy) specs
 
 --------------------------------------------------------------------------------
--- Subsumption
---
--- Subsumption is the mechanism that connects subtyping to typechecking. The sub
--- tactic (used in 'check') synthesizes a type for a term and then verifies
--- that the synthesized type is a subtype of the expected type. If it is, the
--- term passes through unchanged.
---
--- This is subsumptive (not coercive) subtyping: no conversion term is inserted
--- during elaboration. It works because all our subtypes share the same runtime
--- representation (e.g., a natural literal is already a valid integer literal).
--- A coercive system would need to wrap the term in a conversion function when
--- the representations differ (e.g., Peano nats to machine integers).
---
--- The subtyping judgment itself is defined by 'isSubtypeOf' below, with
--- dedicated tactics for records (width and depth) and functions
--- (contravariant in the domain, covariant in the codomain).
-
--- | The subtyping relationship T₁ <: T₂ can be read as "T₁ is a subtype of T₂".
--- It can be understood as stating that anywhere a T₂ can be used, we can use a
--- T₁.
-isSubtypeOf :: Type -> Type -> Bool
-isSubtypeOf s@FuncTy {} t@FuncTy {} = functionSubtype s t
-isSubtypeOf s@RecordTy {} t@RecordTy {} = recordSubtype s t
-isSubtypeOf NaturalTy IntegerTy = True
-isSubtypeOf NaturalTy RealTy = True
-isSubtypeOf IntegerTy RealTy = True
-isSubtypeOf super sub = super == sub
-
--- | Function Subtyping
---
--- A subtype of T₁ → T₂ is any type S₁ → S₂ such that T₁ <: S₁ and S₂ <: T₂.
---
--- For example:
---
--- (ℤ → ℕ) <: (ℕ → ℤ)
---
--- These feels backwards at first glance, but the received parameter T₁/S₁ is
--- contravariant. This reverses the subtyping relationship.
---
--- Another way of stating the example above is that you can replace a function ℕ
--- → ℤ with a function ℤ → ℕ.
---
--- This works because any ℕ you would have applied to the supertype function is
--- also an ℤ which can also be applied to the subtype function.
---
--- Likewise the ℕ produced by the subtype function is also a ℤ and thus
--- satisfies the super type's return param.
---
--- Thus our typing rule for function subtyping is:
---
--- T₁ <: S₁  S₂ <: T₂
--- ────────────────── Func-Sub
--- S₁ → S₂ <: T₁ → T₂
-functionSubtype :: Type -> Type -> Bool
-functionSubtype (s1 `FuncTy` s2) (t1 `FuncTy` t2) =
-  t1 `isSubtypeOf` s1 && s2 `isSubtypeOf` t2
-functionSubtype _ _ = error "impossible case in functionSubtype"
-
--- | Record Depth Subtyping
---
--- Any field of a record can be replaced by its subtype. Since any operation
--- supported for a field in the supertype is supported for its subtype, any
--- operation feasible on the record supertype is supported by the record
--- subtype.
---
--- For example:
---
--- { foo : ℕ } <: { foo : ℤ }
---
--- We can write our typing rule as:
---
---              Sᵢ <: Tᵢ (i ∈ 1..n)
--- ──────────────────────────────────────────────── RecordDepth
--- { lᵢ : Sᵢ (i ∈ I..n) } <: { lᵢ : Tᵢ (i ∈ I..n) }
---
--- Record width subtyping falls out of 'Map.isSubmapOfBy': the expected record's
--- keys must be a subset of the actual record's keys, so extra fields in the
--- actual record are ignored.
---
--- { foo :: Nat, bar :: Bool } <: { foo :: Nat }
-recordSubtype :: Type -> Type -> Bool
-recordSubtype (RecordTy s) (RecordTy t) =
-  let s' = Map.fromList s
-      t' = Map.fromList t
-   in Map.isSubmapOfBy (flip isSubtypeOf) t' s'
-recordSubtype _ _ = error "impossible case in rec"
-
---------------------------------------------------------------------------------
 -- Evaluator
 --
 -- The evaluator operates on 'Syntax' (the elaborated core IR) rather than
@@ -1507,12 +1478,14 @@ recordSubtype _ _ = error "impossible case in rec"
 -- - 'SAp': evaluate both sides, then apply. This is where beta reduction
 --          happens, by instantiating the closure with the argument.
 --
--- Subtyping is a typechecking concern and does not affect evaluation.
---
 -- Constructors evaluate to 'VCnstr' by evaluating each argument. Case
 -- expressions evaluate the scrutinee, match on the 'VCnstr' name, and apply the
 -- branch body to the constructor's arguments. A case on a neutral produces a
 -- stuck 'VCase' frame.
+--
+-- Recursion ('Rec') evaluates like case, except each recursive field is also
+-- followed by the result of recursively eliminating it. On a neutral
+-- scrutinee it produces a stuck 'VRec' frame.
 
 newtype EvalM a = EvalM {runEvalM :: EvalEnv -> a}
   deriving
@@ -1556,11 +1529,6 @@ eval = \case
     t2' <- eval t2
     t3' <- eval t3
     doSumCase t1' motive t2' t3'
-  SNatural n -> pure $ VNatural n
-  SInteger z -> pure $ VInteger z
-  SReal r -> pure $ VReal r
-  SRecord fields -> doRecord fields
-  SGet name tm -> eval tm >>= doGet name
   SCnstr nm bndrs -> doConstructor nm bndrs
   SCase scrut mot patterns -> doCase scrut mot patterns
   SRec scrut mot patterns -> do
@@ -1598,16 +1566,6 @@ doIf VTru _ t1 _ = pure t1
 doIf VFls _ _ t2 = pure t2
 doIf (VNeutral _ neu) motive t1 t2 = pure $ VNeutral motive (pushFrame neu (VIf motive t1 t2))
 doIf _ _ _ _ = error "impossible case in doIf"
-
-doRecord :: [(Name, Syntax)] -> EvalM Value
-doRecord fields = VRecord <$> traverse (traverse eval) fields
-
-doGet :: Name -> Value -> EvalM Value
-doGet name (VRecord fields) =
-  case lookup name fields of
-    Nothing -> error "impossible case in doGet lookup"
-    Just field -> pure field
-doGet _ _ = error "impossible case in doGet"
 
 doConstructor :: DtCnstrName -> [Syntax] -> EvalM Value
 doConstructor nm args = do
@@ -1709,10 +1667,6 @@ quote _ _ VFls = pure SFls
 quote _ _ VUnit = pure SUnit
 quote l (SumTy a _b) (VInL tm) = SInL <$> quote l a tm
 quote l (SumTy _a b) (VInR tm) = SInR <$> quote l b tm
-quote _ _ (VNatural n) = pure $ SNatural n
-quote _ _ (VInteger z) = pure $ SInteger z
-quote _ _ (VReal r) = pure $ SReal r
-quote l ty (VRecord fields) = SRecord <$> traverse (traverse (quote l ty)) fields
 quote l (AdtTy tyName) (VCnstr nm args) = do
   adtEnv <- asks envAdtEnv
   case lookupCnstrInType tyName nm adtEnv of
@@ -1745,7 +1699,6 @@ quoteFrame l tm = \case
     g' <- quote l tyG g
     pure $ SSumCase tm mot f' g'
   -- NOTE: This never get constructed. Do I need them in STLC?
-  VGet name -> pure $ SGet name tm
   VCase (AdtTy scrut) mot cases -> do
     adtEnv <- asks envAdtEnv
     patterns' <- forM cases $ \(dtName, val) -> do
@@ -1781,21 +1734,27 @@ bindVar ty lvl f =
 
 run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
 run term =
-  case runTypecheckM (runSynth $ synth term) initEnv of
-    (Left err, holes) -> Left (err, holes)
-    (Right (type', syntax), holes) -> do
-      let evalEnv = EvalEnv Nil stockADTs
-          result = flip runEvalM evalEnv $ do
-            value <- eval syntax
-            quote initLevel type' value
-      pure (RunResult syntax type' result, holes)
+  let action = do
+        ((ty, syn), hs) <- listen (runSynth (synth term))
+        ty' <- zonk ty
+        hs' <- traverse zonk (getHoles hs)
+        zonkedSyn <- zonkSyntax syn
+        pure (ty', zonkedSyn, Holes hs')
+   in case runTypecheckM action initMetas initEnv of
+        ((Left err, holes), _metas) -> Left (err, holes)
+        ((Right (type', syntax, holes), _unZonkedHoles), _metas) -> do
+          let evalEnv = EvalEnv Nil stockADTs
+              result = flip runEvalM evalEnv $ do
+                value <- eval syntax
+                quote initLevel type' value
+          pure (RunResult syntax type' result, holes)
 
 main :: IO ()
 main = do
   let test = runTest run
       testErr = runTestErr run
 
-  putStrLn "=== Nominal Inductive Types ==="
+  putStrLn "=== First Order Unification ==="
   putStrLn ""
 
   -- Lambda / application
@@ -1865,42 +1824,6 @@ main = do
   test
     "if False then False else True ==> True"
     (Anno BoolTy (If Fls Fls Tru))
-  putStrLn ""
-
-  -- Records
-  section "Records"
-  test
-    "get foo { foo = True, bar = () } ==> True"
-    ( Get
-        "foo"
-        (Anno (RecordTy [("foo", BoolTy), ("bar", UnitTy)]) (Record [("foo", Tru), ("bar", Unit)]))
-    )
-  putStrLn ""
-
-  -- Numeric subtyping
-  section "Numeric Subtyping"
-  test
-    "Natural 42 as Integer"
-    (Anno IntegerTy (Natural 42))
-  test
-    "Natural 42 as Real"
-    (Anno RealTy (Natural 42))
-  test
-    "Integer -3 as Real"
-    (Anno RealTy (Integer (-3)))
-  putStrLn ""
-
-  -- Record subtyping
-  section "Record Subtyping"
-  test
-    "({ foo : Bool, bar : Unit, baz : Unit } -> Bool) applied to wider record"
-    ( Ap
-        ( Anno
-            (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
-            (Lam "x" (Get "foo" (Var "x")))
-        )
-        (Anno (RecordTy [("foo", BoolTy), ("bar", UnitTy), ("baz", UnitTy)]) (Record [("foo", Tru), ("bar", Unit), ("baz", Unit)]))
-    )
   putStrLn ""
 
   -- Constructor tests
@@ -2053,6 +1976,62 @@ main = do
   test
     "Cons ? Nil (hole in constructor arg)"
     (Anno (AdtTy "ListBool") (Cnstr "Cons" [Hole, Cnstr "Nil" []]))
+  putStrLn ""
+
+  -- Unification: a hole in synthesizing position no longer fails. It mints a
+  -- fresh metavariable, survives elaboration, and reports whatever skeleton the
+  -- surrounding eliminators carve out for it. A hole pinned by the types that
+  -- flow in around it gets fully solved.
+  section "Unification (solvable holes)"
+  test
+    "bare _ synthesizes an unsolved metavariable"
+    Hole
+  test
+    "fst _ : the hole is forced to a pair skeleton"
+    (Fst Hole)
+  test
+    "fst (snd _) : nested skeleton, ?a * (?b * ?c)"
+    (Fst (Snd Hole))
+  test
+    "_ () : the hole is forced to a function, domain solved by the arg"
+    (Ap Hole Unit)
+  test
+    "(_ () : Unit) : argument and result pin the hole to Unit -> Unit"
+    (Anno UnitTy (Ap Hole Unit))
+  test
+    "case _ of Nil/Cons : the scrutinee hole is imitated to ListBool"
+    ( Anno
+        BoolTy
+        (Case Hole [("Nil", [], Fls), ("Cons", ["h", "t"], Var "h")])
+    )
+  test
+    "rec _ of Nil/Cons : the recursor hole is imitated to ListBool"
+    ( Anno
+        BoolTy
+        ( Rec
+            Hole
+            [("Nil", Fls), ("Cons", Lam "h" (Lam "t" (Lam "r" (If (Var "h") Tru (Var "r")))))]
+        )
+    )
+  test
+    "_ (Cons True Nil) : the hole's domain is imitated to ListBool"
+    (Ap Hole (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
+  test
+    "case _ of InL/InR : the scrutinee hole is imitated to a sum"
+    (Anno BoolTy (SumCase Hole ("x", Var "x") ("y", Var "y")))
+  test
+    "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
+    (Ap Hole (InL Tru))
+  putStrLn ""
+
+  -- Unification: rigid mismatches and the occurs check.
+  section "Unification (expected failures)"
+  testErr
+    "(_, ()) : Bool : a pair cannot unify with Bool"
+    (Anno BoolTy (Pair Hole Unit))
+  testErr
+    "case _ of {} : an empty case on a hole cannot infer the ADT"
+    (Anno BoolTy (Case Hole []))
   putStrLn ""
 
   -- Error cases

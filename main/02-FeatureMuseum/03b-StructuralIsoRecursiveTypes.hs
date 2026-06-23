@@ -1,22 +1,29 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE OverloadedRecordDot #-}
-{-# LANGUAGE TupleSections #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
--- | Record Types.
+{- HLINT ignore "Use >=>" -}
+
+-- | Structural Iso-Recursive Types: recursion via explicit fold\/unfold.
 --
--- Adds named record types ('RecordTy') with labeled fields. Records are
--- introduced by providing a value for each field and eliminated by projection
--- ('Get'). The typechecker uses 'alignWithM' over maps to verify that the
--- term's fields match the type's fields exactly, catching missing fields, extra
--- fields, and per-field type mismatches. Field order in the source is
--- irrelevant.
+-- Recursive types are written directly as @mu X. T@, with @X@ free in @T@.
+-- There are no data declarations or named constructors: a value of a
+-- recursive type is built with an explicit @fold@ and taken apart with an
+-- explicit @unfold@, over structural sums and products. So @ListBool@ is
+-- @mu L. Unit + (Bool * L)@, @Nil@ is @fold (inl ())@, and @Cons b xs@ is
+-- @fold (inr (b, xs))@.
+--
+-- The encoding is iso-recursive: a @mu@-type and its one-step unrolling are
+-- isomorphic but not equal, bridged by @fold@ and @unfold@ ('substTy' does
+-- the unrolling). Type equality is structural, comparing @mu@-types by shape.
+-- A strict positivity check ('strictPositivity') rejects negative types like
+-- @mu X. X -> X@, which would otherwise break normalization, keeping the
+-- language total.
 module Main where
 
 --------------------------------------------------------------------------------
 
-import Control.Arrow ((&&&))
-import Control.Monad (foldM, void, zipWithM, (>=>))
+import Control.Monad (foldM, unless, (>=>))
 import Control.Monad.Except (MonadError (..))
 import Control.Monad.Identity
 import Control.Monad.Reader (MonadReader (..))
@@ -27,15 +34,15 @@ import Control.Monad.Trans.State.Strict (StateT (..))
 import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
 import Data.Foldable (find)
+import Data.List (elemIndex)
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String
-import Data.These
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), runTest, runTestErr, section)
-import Utils (SnocList (..), alignWithM, nth)
+import Utils (SnocList (..), nth)
 
 --------------------------------------------------------------------------------
 -- Syntax
@@ -44,7 +51,7 @@ import Utils (SnocList (..), alignWithM, nth)
 --
 -- 1. 'Term': surface syntax with named variables, what the programmer writes.
 -- 2. 'Syntax': core IR with de Bruijn indices, produced by elaboration.
--- 3. 'Value': semantic domain with closures and neutrals, produced by evaluation.
+-- 3. 'Value': semantic domain with closures and neutrals, from evaluation.
 --
 -- 'Term' uses named variables ('Name') instead of de Bruijn indices. The
 -- typechecker resolves names to indices during elaboration, producing 'Syntax'.
@@ -70,27 +77,27 @@ data Term
     Fst Term
   | -- | Second projection of a pair. @snd p@
     Snd Term
-  | -- | Boolean true. @true@
-    Tru
-  | -- | Boolean false. @false@
-    Fls
-  | -- | Conditional. @if scrut then t else f@
-    If Term Term Term
-  | -- | The unit value. @()@
-    Unit
-  | -- | Void elimination. Can produce any type from a value of type 'Void',
-    -- since no such value exists.
-    Absurd Term
   | -- | Left injection into a sum type.
     InL Term
   | -- | Right injection into a sum type.
     InR Term
   | -- | Binary sum elimination. Binds a variable in each branch.
     SumCase Term (Name, Term) (Name, Term)
-  | -- | A record literal: a list of named fields with values.
-    Record [(Name, Term)]
-  | -- | Field projection from a record.
-    Get Name Term
+  | -- | Void elimination. Can produce any type from a value of type 'Void',
+    -- since no such value exists.
+    Absurd Term
+  | -- | The unit value. @()@
+    Unit
+  | -- | Boolean true. @true@
+    Tru
+  | -- | Boolean false. @false@
+    Fls
+  | -- | Conditional. @if scrut then t else f@
+    If Term Term Term
+  | -- | Fold: wrap a value into a mu-type.
+    Fold Term
+  | -- | Unfold: unwrap a mu-type to expose the inner sum of products.
+    Unfold Term
   deriving stock (Show, Eq, Ord)
 
 prettyTerm :: Prec -> Term -> PP.Doc ann
@@ -147,14 +154,12 @@ prettyTerm p (SumCase scrut (ln, l) (rn, r)) =
         PP.<+> PP.pretty (getName rn)
         PP.<+> arrowSym
         PP.<+> prettyTerm lamPrec r
-prettyTerm _ (Record fields) =
-  PP.braces $
-    PP.sep $
-      PP.punctuate PP.comma $
-        map (\(n, e) -> PP.pretty (getName n) PP.<+> "=" PP.<+> prettyTerm lamPrec e) fields
-prettyTerm p (Get n e) =
+prettyTerm p (Fold e) =
   parensIf (p > appPrec) $
-    prettyTerm atomPrec e <> "." <> PP.pretty (getName n)
+    "fold" PP.<+> prettyTerm atomPrec e
+prettyTerm p (Unfold e) =
+  parensIf (p > appPrec) $
+    "unfold" PP.<+> prettyTerm atomPrec e
 
 instance PP.Pretty Term where
   pretty = prettyTerm lamPrec
@@ -166,26 +171,27 @@ data Type
     FuncTy Type Type
   | -- | Pair type. @A * B@.
     PairTy Type Type
-  | -- | Bool Type. @Bool@.
-    BoolTy
-  | -- | Unit type. @Unit@.
-    UnitTy
-  | -- | The empty type. No values inhabit it.
-    VoidTy
   | -- | Binary sum: @A + B@.
     SumTy Type Type
-  | -- | A record type: a list of named fields with their types.
-    RecordTy [(Name, Type)]
-  | -- | A metavariable: an unknown type, to be solved by unification.
-    MetaTy MetaId
-  deriving stock (Show, Eq, Ord)
+  | -- | The empty type. No values inhabit it.
+    VoidTy
+  | -- | Unit type. @Unit@.
+    UnitTy
+  | -- | Bool Type. @Bool@.
+    BoolTy
+  | -- | An iso-recursive type: @mu a. T@ where @a@ may appear in @T@ as a
+    -- recursive reference. Unrolled by substituting the whole mu-type for @a@.
+    MuTy Name Type
+  | -- | A type variable, bound by 'MuTy'.
+    TVar Name
+  deriving (Eq, Ord, Show)
 
 -- | A metavariable identifier. A metavariable is an unknown type; it
 -- rides through 'Syntax' and 'Value' as an opaque atomic head, since a
 -- hole evaluates to a neutral and quoting a neutral ignores its type. It
 -- is resolved only in the typechecker, never by the evaluator.
 newtype MetaId = MetaId Int
-  deriving (Eq, Ord, Show)
+  deriving stock (Show, Eq, Ord)
 
 prettyType :: Prec -> Type -> PP.Doc ann
 prettyType p (FuncTy a b) =
@@ -200,12 +206,10 @@ prettyType _ VoidTy = "Void"
 prettyType p (SumTy a b) =
   parensIf (p > sumPrec) $
     prettyType (sumPrec + 1) a PP.<+> "+" PP.<+> prettyType sumPrec b
-prettyType _ (RecordTy fields) =
-  PP.braces $
-    PP.sep $
-      PP.punctuate PP.comma $
-        map (\(n, ty) -> PP.pretty (getName n) <> ":" PP.<+> prettyType lamPrec ty) fields
-prettyType _ (MetaTy (MetaId n)) = "?" <> PP.pretty n
+prettyType p (MuTy n ty) =
+  parensIf (p > lamPrec) $
+    "μ" <> PP.pretty n <> "." PP.<+> prettyType lamPrec ty
+prettyType _ (TVar n) = PP.pretty n
 
 instance PP.Pretty Type where
   pretty = prettyType lamPrec
@@ -224,7 +228,7 @@ data Syntax
     SAp Syntax Syntax
   | -- | A hole carrying the expected type. Evaluates to a
     -- neutral so it propagates through NbE.
-    SHole Type
+    SHole SType
   | -- | Pair introduction.
     SPair Syntax Syntax
   | -- | First projection of a pair.
@@ -236,21 +240,47 @@ data Syntax
   | -- | Boolean false.
     SFls
   | -- | Conditional. @if scrut then t else f@.
-    SIf Syntax Type Syntax Syntax
+    SIf Syntax SType Syntax Syntax
   | -- | The unit value.
     SUnit
   | -- | Elimination of the empty type. @absurd t@.
-    SAbsurd Type Syntax
+    SAbsurd SType Syntax
   | -- | Left injection into a sum type. @inl x@.
     SInL Syntax
   | -- | Right injection into a sum type. @inr x@.
     SInR Syntax
   | -- | Case analysis on a sum type. @case scrut of inl x -> l; inr y -> r@.
-    SSumCase Syntax Type Syntax Syntax
-  | -- | Record introduction. A list of named fields.
-    SRecord [(Name, Syntax)]
-  | -- | Record field projection. @r.field@.
-    SGet Name Syntax
+    SSumCase Syntax SType Syntax Syntax
+  | -- | Fold: wrap a value into a mu-type. Written explicitly in the surface
+    -- as @fold e@.
+    SFold Syntax
+  | -- | Unfold: unwrap a mu-type to expose the inner sum of products. Written
+    -- explicitly in the surface as @unfold e@. Carries the mu-type for
+    -- read-back of a stuck unfold.
+    SUnfold Syntax SType
+  deriving stock (Show, Eq, Ord)
+
+data SType
+  = -- | Function type. @A -> B@.
+    SFuncTy SType SType
+  | -- | Pair type. @A * B@.
+    SPairTy SType SType
+  | -- | Binary sum: @A + B@.
+    SSumTy SType SType
+  | -- | The empty type. No values inhabit it.
+    SVoidTy
+  | -- | Unit type. @Unit@.
+    SUnitTy
+  | -- | Bool Type. @Bool@.
+    SBoolTy
+  | -- | An iso-recursive type. The body refers back to it with a de Bruijn
+    -- 'STVar' (index 0 at the binder); the 'Name' is kept only for display.
+    -- Unrolled by substituting the whole mu-type for that variable.
+    SMuTy Name SType
+  | -- | A type variable as a de Bruijn index, bound by an enclosing 'SMuTy'.
+    STVar Ix
+  | -- | A metavariable: an unknown type, to be solved by unification.
+    SMetaTy MetaId
   deriving stock (Show, Eq, Ord)
 
 -- | The result of evaluation.
@@ -264,9 +294,9 @@ data Syntax
 -- look them up at use sites.
 data Value
   = -- | A stuck computation, a variable applied to arguments that can't reduce.
-    -- The 'Type' annotation is needed so quoting knows how to eta-expand (e.g.,
-    -- a neutral at function type gets wrapped in a lambda).
-    VNeutral Type Neutral
+    -- The 'SType' annotation is needed so quoting knows how to eta-expand
+    -- (e.g., a neutral at function type gets wrapped in a lambda).
+    VNeutral SType Neutral
   | -- | A closure: the lambda body paired with its defining environment.
     -- Application triggers beta reduction by extending this environment.
     VLam Name Closure
@@ -282,8 +312,8 @@ data Value
     VInL Value
   | -- | Right injection value.
     VInR Value
-  | -- | An evaluated record.
-    VRecord [(Name, Value)]
+  | -- | A folded value inside a mu-type. Unfolding extracts the inner value.
+    VFold Value
   deriving stock (Show, Eq, Ord)
 
 -- | De Bruijn Indices.
@@ -319,7 +349,7 @@ incLevel :: Lvl -> Lvl
 incLevel (Lvl n) = Lvl (1 + n)
 
 newtype Name = Name {getName :: String}
-  deriving newtype (Show, Eq, Ord, IsString)
+  deriving newtype (Show, Eq, Ord, IsString, PP.Pretty)
 
 -- | A neutral term is a head (a variable) applied to a spine of eliminators. We
 -- can't reduce it because the head is a variable, we don't know what it is. For
@@ -330,23 +360,23 @@ data Neutral = Neutral {head :: Head, spine :: SnocList Frame}
 
 data Head
   = VVar Lvl
-  | VHole Type
+  | VHole SType
   deriving (Show, Eq, Ord)
 
 -- | A single eliminator in a neutral's spine.
 data Frame
-  = VApp Type Value
+  = VApp SType Value
   | VFst
   | VSnd
   | -- | A stuck if-then-else: the condition is neutral, so we can't choose a
     -- branch. Carries the motive type and both branch values.
-    VIf Type Value Value
+    VIf SType Value Value
   | -- | A stuck absurd: the scrutinee is neutral at 'VoidTy'.
-    VAbsurd Type
+    VAbsurd SType
   | -- | A stuck case: the scrutinee is neutral.
-    VSumCase Type Type Type Value Value
-  | -- | A stuck record projection.
-    VGet Name
+    VSumCase SType SType SType Value Value
+  | -- | A stuck unfold on a neutral mu-typed value.
+    VUnfold SType
   deriving stock (Show, Eq, Ord)
 
 pushFrame :: Neutral -> Frame -> Neutral
@@ -356,8 +386,74 @@ pushFrame Neutral {..} frame = Neutral {head = head, spine = Snoc spine frame}
 -- Instantiation extends the captured environment with the argument rather than
 -- substituting. Closures also appear inside neutrals (as arguments in 'VApp'
 -- frames).
-data Closure = Closure {env :: EvalEnv, body :: Syntax}
+data Closure = Closure {env :: SnocList Value, body :: Syntax}
   deriving stock (Show, Eq, Ord)
+
+--------------------------------------------------------------------------------
+-- Recursive Types
+
+-- | Check that the type variable at de Bruijn index @j@ occurs only
+-- positively in an 'SMuTy' body: it must never appear to the left of an
+-- arrow.
+--
+-- A negative occurrence breaks normalization using only fold and unfold.
+-- Take @Bad = mu X. X -> X@. Then @selfApp = λx. (unfold x) x@ applied to
+-- @fold selfApp@ diverges. So a recursive occurrence left of an arrow is
+-- rejected when the type is admitted, to keep the language normalizing.
+--
+-- Every type former is positive in both components, except the domain of
+-- a function, where @j@ must not occur at all.
+strictPositivity :: Ix -> SType -> Bool
+strictPositivity = pos
+  where
+    pos j = \case
+      SFuncTy a b -> not (occurs j a) && pos j b
+      SPairTy a b -> pos j a && pos j b
+      SSumTy a b -> pos j a && pos j b
+      SMuTy _ body -> pos (incIx j) body
+      _ -> True
+
+    occurs j = \case
+      STVar i -> i == j
+      SFuncTy a b -> occurs j a || occurs j b
+      SPairTy a b -> occurs j a || occurs j b
+      SSumTy a b -> occurs j a || occurs j b
+      SMuTy _ body -> occurs (incIx j) body
+      _ -> False
+
+    incIx (Ix n) = Ix (n + 1)
+
+positiveType :: SType -> Bool
+positiveType = \case
+  SMuTy _ body -> strictPositivity (Ix 0) body && positiveType body
+  SFuncTy a b -> positiveType a && positiveType b
+  SPairTy a b -> positiveType a && positiveType b
+  SSumTy a b -> positiveType a && positiveType b
+  _ -> True
+
+-- | Substitute @u@ for the type variable at de Bruijn index @j@, bumping the
+-- index under each 'SMuTy' binder. Assumes @u@ is closed (which holds for
+-- 'unrollMuTy', where it is a complete mu-type), so it needs no shifting.
+substTy :: Ix -> SType -> SType -> SType
+substTy j u = \case
+  STVar i
+    | i == j -> u
+    | otherwise -> STVar i
+  SMuTy bndr body -> SMuTy bndr (substTy (incIx j) u body)
+  SFuncTy a b -> SFuncTy (substTy j u a) (substTy j u b)
+  SPairTy a b -> SPairTy (substTy j u a) (substTy j u b)
+  SSumTy a b -> SSumTy (substTy j u a) (substTy j u b)
+  other -> other
+  where
+    incIx (Ix n) = Ix (n + 1)
+
+-- | Unroll a μ-type by substituting the μ-type itself for the bound variable in
+-- the body. For example:
+--
+-- unrollMuTy (μL. Unit + (Bool × L)) = Unit + (Bool × (μL. Unit + (Bool × L)))
+unrollMuTy :: SType -> SType
+unrollMuTy mu@(SMuTy _ body) = substTy (Ix 0) mu body
+unrollMuTy ty = ty
 
 --------------------------------------------------------------------------------
 -- Environment
@@ -371,7 +467,7 @@ data Closure = Closure {env :: EvalEnv, body :: Syntax}
 -- applied to) or an actual value for let-bound variables.
 data Cell = Cell
   { cellName :: Name,
-    cellType :: Type,
+    cellType :: SType,
     cellValue :: Value
   }
   deriving stock (Show, Eq, Ord)
@@ -429,12 +525,12 @@ resolveCell TypeCheckEnv {..} bndr = find ((== bndr) . cellName) localNames
 
 -- | Create a fresh neutral variable at the current depth. Used for lambda-bound
 -- variables where we don't know the value.
-freshVar :: TypeCheckEnv -> Type -> Value
+freshVar :: TypeCheckEnv -> SType -> Value
 freshVar TypeCheckEnv {size} ty = VNeutral ty $ Neutral (VVar $ Lvl size) Nil
 
 -- | Create a fresh cell for a lambda-bound variable. The value is a neutral
 -- because we don't know the argument yet.
-freshCell :: TypeCheckEnv -> Name -> Type -> Cell
+freshCell :: TypeCheckEnv -> Name -> SType -> Cell
 freshCell ctx name ty = Cell name ty (freshVar ctx ty)
 
 --------------------------------------------------------------------------------
@@ -457,7 +553,7 @@ freshCell ctx name ty = Cell name ty (freshVar ctx ty)
 
 -- | The unification state: a counter for minting fresh metavariables and
 -- a map from each metavariable to its solution.
-data MetaCtx = MetaCtx {next :: MetaId, solutions :: Map MetaId Type}
+data MetaCtx = MetaCtx {next :: MetaId, solutions :: Map MetaId SType}
 
 -- | The empty unification state: no metavariables minted, none solved.
 initMetas :: MetaCtx
@@ -469,11 +565,11 @@ nextMetaId (MetaId n) = MetaId (n + 1)
 
 -- | Mint a fresh, unsolved metavariable. Bumps the counter and returns
 -- the new 'MetaTy'.
-freshMeta :: TypecheckM Type
+freshMeta :: TypecheckM SType
 freshMeta = do
   i <- gets next
   modify (\m -> m {next = nextMetaId m.next})
-  pure $ MetaTy i
+  pure $ SMetaTy i
 
 -- | Record the solution @meta := ty@, guarded by an occurs check.
 --
@@ -482,7 +578,7 @@ freshMeta = do
 -- the solution would be infinite (e.g. @?a := ?a -> ?a@), so we reject it
 -- with 'InfiniteTypeError'. Otherwise we store the forced @ty@, keeping
 -- the map free of stale metavariable heads.
-solveMeta :: MetaId -> Type -> TypecheckM ()
+solveMeta :: MetaId -> SType -> TypecheckM ()
 solveMeta meta ty = do
   occured <- occurs ty
   if occured
@@ -493,11 +589,10 @@ solveMeta meta ty = do
   where
     occurs =
       force >=> \case
-        MetaTy m -> pure (m == meta)
-        FuncTy a b -> (||) <$> occurs a <*> occurs b
-        PairTy a b -> (||) <$> occurs a <*> occurs b
-        SumTy a b -> (||) <$> occurs a <*> occurs b
-        RecordTy fields -> or <$> traverse (occurs . snd) fields
+        SMetaTy m -> pure (m == meta)
+        SFuncTy a b -> (||) <$> occurs a <*> occurs b
+        SPairTy a b -> (||) <$> occurs a <*> occurs b
+        SSumTy a b -> (||) <$> occurs a <*> occurs b
         _ -> pure False
 
 -- | Resolve a type's head. A solved metavariable is chased to its
@@ -506,25 +601,25 @@ solveMeta meta ty = do
 -- the interior, which is all a consumer needs to tell whether the head is
 -- rigid or flexible. Termination relies on the solution map being
 -- acyclic, which the occurs check in 'solveMeta' guarantees.
-force :: Type -> TypecheckM Type
+force :: SType -> TypecheckM SType
 force = \case
-  MetaTy m ->
+  SMetaTy m ->
     gets (Map.lookup m . solutions) >>= \case
       Just ty -> force ty
-      Nothing -> pure (MetaTy m)
+      Nothing -> pure (SMetaTy m)
   ty -> pure ty
 
 -- | Resolve every metavariable in a type, head and interior alike. The
 -- deep counterpart of 'force', used for display and before a type crosses
 -- into the evaluator. A metavariable that survives a zonk is genuinely
 -- unsolved and is shown as @?n@.
-zonk :: Type -> TypecheckM Type
+zonk :: SType -> TypecheckM SType
 zonk =
   force >=> \case
-    FuncTy a b -> FuncTy <$> zonk a <*> zonk b
-    PairTy a b -> PairTy <$> zonk a <*> zonk b
-    SumTy a b -> SumTy <$> zonk a <*> zonk b
-    RecordTy fields -> RecordTy <$> traverse (traverse zonk) fields
+    SFuncTy a b -> SFuncTy <$> zonk a <*> zonk b
+    SPairTy a b -> SPairTy <$> zonk a <*> zonk b
+    SSumTy a b -> SSumTy <$> zonk a <*> zonk b
+    SMuTy bndr ty -> SMuTy bndr <$> zonk ty
     ty -> pure ty
 
 -- | Resolve every metavariable embedded in an elaborated term. The core
@@ -545,8 +640,8 @@ zonkSyntax = \case
   SInL tm -> SInL <$> zonkSyntax tm
   SInR tm -> SInR <$> zonkSyntax tm
   SSumCase scrut ty f g -> SSumCase <$> zonkSyntax scrut <*> zonk ty <*> zonkSyntax f <*> zonkSyntax g
-  SRecord fields -> SRecord <$> traverse (traverse zonkSyntax) fields
-  SGet nm tm -> SGet nm <$> zonkSyntax tm
+  SFold tm -> SFold <$> zonkSyntax tm
+  SUnfold tm ty -> SUnfold <$> zonkSyntax tm <*> zonk ty
   syn -> pure syn
 
 -- | Make two types equal by solving metavariables.
@@ -557,25 +652,21 @@ zonkSyntax = \case
 -- unified componentwise. Anything else is a rigid mismatch. This is first
 -- order and syntactic, so it is complete: if a unifier exists, it is
 -- found.
-unify :: Type -> Type -> TypecheckM ()
+unify :: SType -> SType -> TypecheckM ()
 unify a b = do
   a' <- force a
   b' <- force b
   case (a', b') of
-    (MetaTy m, MetaTy n)
+    (SMetaTy m, SMetaTy n)
       | m == n -> pure ()
       | otherwise -> solveMeta m b'
-    (MetaTy m, _) -> solveMeta m b'
-    (_, MetaTy n) -> solveMeta n a'
-    (FuncTy x1 y1, FuncTy x2 y2) -> unify x1 x2 >> unify y1 y2
-    (SumTy x1 y1, SumTy x2 y2) -> unify x1 x2 >> unify y1 y2
-    (PairTy x1 y1, PairTy x2 y2) -> unify x1 x2 >> unify y1 y2
-    (RecordTy fields1, RecordTy fields2) ->
-      void $
-        alignWithM
-          (\case These x y -> unify x y; _ -> throwError (UnificationError a' b'))
-          (Map.fromList fields1)
-          (Map.fromList fields2)
+    (SMetaTy m, _) -> solveMeta m b'
+    (_, SMetaTy n) -> solveMeta n a'
+    (SFuncTy x1 y1, SFuncTy x2 y2) -> unify x1 x2 >> unify y1 y2
+    (SSumTy x1 y1, SSumTy x2 y2) -> unify x1 x2 >> unify y1 y2
+    (SPairTy x1 y1, SPairTy x2 y2) -> unify x1 x2 >> unify y1 y2
+    (SMuTy _ tm1, SMuTy _ tm2) -> unify tm1 tm2
+    (STVar m, STVar n) | m == n -> pure ()
     _
       | a' == b' -> pure ()
       | otherwise -> throwError (UnificationError a' b')
@@ -590,22 +681,28 @@ unify a b = do
 --
 -- Terms that introduce a type former (lambdas, pairs, unit) are checked. Terms
 -- that eliminate one (application, projection) or carry an annotation are
--- synthesized. The 'switchTactic' bridges the two directions.
+-- synthesized. The 'switchTactic' rule bridges the two directions.
 --
--- Each tactic returns the elaborated core IR: 'Check' returns @Type ->
--- TypecheckM Syntax@ and 'Synth' returns @TypecheckM (Type, Syntax)@. This is
+-- Each rule returns the elaborated core IR: 'Check' returns @SType ->
+-- TypecheckM Syntax@ and 'Synth' returns @TypecheckM (SType, Syntax)@. This is
 -- the "elaboration." Typechecking and translation happen in one pass.
+--
+-- The recursive-type rules: 'foldIntro' checks @fold e@ against a mu-type by
+-- unrolling it one step and checking @e@ against the unrolling, and
+-- 'unfoldElim' synthesizes @unfold e@ by reading the mu-type off the
+-- scrutinee and returning its one-step unrolling.
 
 data Error
   = TypeError String
   | UnknownVariable Name
-  | InfiniteTypeError Type
-  | UnificationError Type Type
+  | InfiniteTypeError SType
+  | UnificationError SType SType
+  | NonStrictlyPositive SType
   deriving (Show)
 
 -- | Accumulated hole types from typechecking. Each time the typechecker
 -- encounters a 'Hole' in check position, it 'tell's the expected type here.
-newtype Holes = Holes {getHoles :: [Type]}
+newtype Holes = Holes {getHoles :: [SType]}
   deriving newtype (Show, Semigroup, Monoid)
 
 newtype TypecheckM a = TypecheckM {runTypecheckM :: MetaCtx -> TypeCheckEnv -> ((Either Error a, Holes), MetaCtx)}
@@ -613,19 +710,19 @@ newtype TypecheckM a = TypecheckM {runTypecheckM :: MetaCtx -> TypeCheckEnv -> (
     (Functor, Applicative, Monad, MonadState MetaCtx, MonadReader TypeCheckEnv, MonadError Error, MonadWriter Holes)
     via (ExceptT Error (WriterT Holes (StateT MetaCtx (Reader TypeCheckEnv))))
 
-newtype Check = Check {runCheck :: Type -> TypecheckM Syntax}
+newtype Check = Check {runCheck :: SType -> TypecheckM Syntax}
 
-newtype Synth = Synth {runSynth :: TypecheckM (Type, Syntax)}
+newtype Synth = Synth {runSynth :: TypecheckM (SType, Syntax)}
 
 synth :: Term -> Synth
 synth = \case
   Var bndr -> varTactic bndr
   Ap tm1 tm2 -> lamElim (synth tm1) (check tm2)
   Anno ty tm -> annoTactic ty (check tm)
-  Hole -> holeSynthTactic
+  Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
   Fst tm -> pairElimFst (synth tm)
   Snd tm -> pairElimSnd (synth tm)
-  Get name tm -> recordElim name (synth tm)
+  Unfold tm -> unfoldElim (synth tm)
   tm -> Synth $ throwError $ TypeError $ "Cannot synthesize type for " <> show tm
 
 check :: Term -> Check
@@ -640,7 +737,7 @@ check (Absurd tm) = voidElim (synth tm)
 check (InL tm1) = sumIntroL (check tm1)
 check (InR tm2) = sumIntroR (check tm2)
 check (SumCase scrut (bndr1, t1) (bndr2, t2)) = sumElim (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
-check (Record fields) = recordIntro (fmap (fmap (id &&& check)) fields)
+check (Fold tm) = foldIntro (check tm)
 check tm = switchTactic (synth tm)
 
 -- | Variable Resolution
@@ -703,8 +800,43 @@ switchTactic switchTac = Check $ \ty1 -> do
 -- Γ ⊢ (e : A) ⇒ A
 annoTactic :: Type -> Check -> Synth
 annoTactic ty termTac = Synth $ do
-  tm <- runCheck termTac ty
-  pure (ty, tm)
+  sty <- elaborateType ty
+  unless (positiveType sty) $ throwError (NonStrictlyPositive sty)
+  tm <- runCheck termTac sty
+  pure (sty, tm)
+
+-- | Elaborate a surface 'Type' into a core 'SType'. Resolves named type
+-- variables to de Bruijn indices and recurses into composite types. For @TVar@,
+-- looks up the name in the type context to find the corresponding level, then
+-- converts to an index via 'quoteLevel'. For @Forall@, introduces a fresh type
+-- variable and elaborates the body in the extended context.
+elaborateType :: Type -> TypecheckM SType
+elaborateType = go []
+  where
+    go :: [Name] -> Type -> TypecheckM SType
+    go ctx = \case
+      MuTy bndr ty -> do
+        ty <- go (bndr : ctx) ty
+        pure $ SMuTy bndr ty
+      TVar bndr ->
+        case elemIndex bndr ctx of
+          Just ix -> pure $ STVar $ Ix ix
+          Nothing -> throwError (TypeError ("unbound type variable " <> show bndr))
+      FuncTy ty1 ty2 -> do
+        ty1 <- go ctx ty1
+        ty2 <- go ctx ty2
+        pure $ SFuncTy ty1 ty2
+      PairTy ty1 ty2 -> do
+        ty1 <- go ctx ty1
+        ty2 <- go ctx ty2
+        pure $ SPairTy ty1 ty2
+      SumTy ty1 ty2 -> do
+        ty1 <- go ctx ty1
+        ty2 <- go ctx ty2
+        pure $ SSumTy ty1 ty2
+      BoolTy -> pure SBoolTy
+      UnitTy -> pure SUnitTy
+      VoidTy -> pure SVoidTy
 
 -- | Lambda Introduction
 --
@@ -727,7 +859,7 @@ lamIntro :: Name -> Check -> Check
 lamIntro bndr bodyTac = Check $ \ty -> do
   a <- freshMeta
   b <- freshMeta
-  unify ty (FuncTy a b)
+  unify ty (SFuncTy a b)
   a' <- force a
 
   ctx <- ask
@@ -754,7 +886,7 @@ lamElim funcTac argTac = Synth $ do
   (ty, f) <- runSynth funcTac
   a <- freshMeta
   b <- freshMeta
-  unify ty (FuncTy a b)
+  unify ty (SFuncTy a b)
 
   arg <- runCheck argTac a
   pure (b, SAp f arg)
@@ -798,7 +930,7 @@ pairIntro :: Check -> Check -> Check
 pairIntro checkFst checkSnd = Check $ \ty -> do
   a <- freshMeta
   b <- freshMeta
-  unify ty (PairTy a b)
+  unify ty (SPairTy a b)
 
   tm1 <- runCheck checkFst a
   tm2 <- runCheck checkSnd b
@@ -819,7 +951,7 @@ pairElimFst fstTac = Synth $ do
   (ty, tm) <- runSynth fstTac
   a <- freshMeta
   b <- freshMeta
-  unify ty (PairTy a b)
+  unify ty (SPairTy a b)
 
   pure (a, SFst tm)
 
@@ -835,7 +967,7 @@ pairElimSnd sndTac = Synth $ do
   (ty, tm) <- runSynth sndTac
   a <- freshMeta
   b <- freshMeta
-  unify ty (PairTy a b)
+  unify ty (SPairTy a b)
 
   pure (b, SSnd tm)
 
@@ -846,7 +978,7 @@ pairElimSnd sndTac = Synth $ do
 -- ──────────────── True⇐
 -- Γ ⊢ True ⇐ Bool
 boolIntroTrue :: Check
-boolIntroTrue = Check $ \ty -> unify ty BoolTy >> pure STru
+boolIntroTrue = Check $ \ty -> unify ty SBoolTy >> pure STru
 
 -- | Bool-False Introduction
 --
@@ -855,7 +987,7 @@ boolIntroTrue = Check $ \ty -> unify ty BoolTy >> pure STru
 -- ──────────────── False⇐
 -- Γ ⊢ False ⇐ Bool
 boolIntroFalse :: Check
-boolIntroFalse = Check $ \ty -> unify ty BoolTy >> pure SFls
+boolIntroFalse = Check $ \ty -> unify ty SBoolTy >> pure SFls
 
 -- | Bool Elimination
 --
@@ -868,7 +1000,7 @@ boolIntroFalse = Check $ \ty -> unify ty BoolTy >> pure SFls
 --   Γ ⊢ If t₁ then t₂ else t₃ ⇐ T
 boolElim :: Check -> Check -> Check -> Check
 boolElim pTac tTac fTac = Check $ \ty -> do
-  tm1 <- runCheck pTac BoolTy
+  tm1 <- runCheck pTac SBoolTy
   tm2 <- runCheck tTac ty
   tm3 <- runCheck fTac ty
   pure (SIf tm1 ty tm2 tm3)
@@ -881,7 +1013,7 @@ boolElim pTac tTac fTac = Check $ \ty -> do
 -- ───────────── Unit⇐
 -- Γ ⊢ () ⇐ Unit
 unitIntro :: Check
-unitIntro = Check $ \ty -> unify ty UnitTy >> pure SUnit
+unitIntro = Check $ \ty -> unify ty SUnitTy >> pure SUnit
 
 -- | Void Elimination
 --
@@ -895,7 +1027,7 @@ unitIntro = Check $ \ty -> unify ty UnitTy >> pure SUnit
 voidElim :: Synth -> Check
 voidElim voidTac = Check $ \ty -> do
   (scrutTy, scrut) <- runSynth voidTac
-  unify scrutTy VoidTy
+  unify scrutTy SVoidTy
 
   pure $ SAbsurd ty scrut
 
@@ -913,7 +1045,7 @@ sumIntroL :: Check -> Check
 sumIntroL inlTac = Check $ \ty -> do
   a <- freshMeta
   b <- freshMeta
-  unify ty (SumTy a b)
+  unify ty (SSumTy a b)
 
   tm <- runCheck inlTac a
   pure (SInL tm)
@@ -932,7 +1064,7 @@ sumIntroR :: Check -> Check
 sumIntroR inrTac = Check $ \ty -> do
   a <- freshMeta
   b <- freshMeta
-  unify ty (SumTy a b)
+  unify ty (SSumTy a b)
 
   tm <- runCheck inrTac b
   pure (SInR tm)
@@ -953,51 +1085,24 @@ sumElim scrutTac leftTac rightTac = Check $ \ty -> do
   (scrutTy, scrut) <- runSynth scrutTac
   a <- freshMeta
   b <- freshMeta
-  unify scrutTy (SumTy a b)
+  unify scrutTy (SSumTy a b)
 
-  f <- runCheck leftTac (FuncTy a ty)
-  g <- runCheck rightTac (FuncTy b ty)
+  f <- runCheck leftTac (SFuncTy a ty)
+  g <- runCheck rightTac (SFuncTy b ty)
   pure $ SSumCase scrut ty f g
 
--- | Record Introduction
---
--- Checked against a record type. A template record type is built from the
--- literal's field names with a fresh metavariable per field, and the
--- expected type is unified against it. When the expected type is a known
--- record, unification aligns the two by label and checks that the field
--- sets match (a label on only one side is a mismatch); when it is a
--- flexible metavariable, unification solves it to that record shape
--- (imitation). Each field is then checked against its metavariable. Field
--- order is irrelevant because unification aligns records by label.
---
---         for each i  Γ ⊢ tᵢ ⇐ Tᵢ
--- ─────────────────────────────────────── Record⇐
--- Γ ⊢ { lᵢ = tᵢ} ⇐ { lᵢ : Tᵢ (i ∈ I..n) }
-recordIntro :: [(Name, (Term, Check))] -> Check
-recordIntro fields = Check $ \ty -> do
-  metas <- traverse (\(name, _) -> (name,) <$> freshMeta) fields
-  unify ty (RecordTy metas)
-  fields' <- zipWithM (\(name, m) (_, (_, chk)) -> (name,) <$> runCheck chk m) metas fields
-  pure (SRecord fields')
+foldIntro :: Check -> Check
+foldIntro checkTac = Check $ \goal ->
+  force goal >>= \case
+    mu@(SMuTy _ _) -> SFold <$> runCheck checkTac (unrollMuTy mu)
+    other -> throwError $ TypeError $ "fold expects a mu-type, got: " <> show other
 
--- | Record Elimination
---
--- Synthesize the record's type, then look up the projected field by name. A
--- synth rule because the record's type tells us the field's type.
---
--- Γ ⊢ t₁ ⇒ { lᵢ : Tᵢ (i ∈ I..n) }
--- ─────────────────────────────── Get⇒
---       Γ ⊢ Get lⱼ t₁ ⇒ Tⱼ
-recordElim :: Name -> Synth -> Synth
-recordElim name fieldTac =
-  Synth $
-    runSynth fieldTac >>= \(ty, tm) -> do
-      force ty >>= \case
-        RecordTy fields ->
-          case lookup name fields of
-            Just ty -> pure (ty, SGet name tm)
-            Nothing -> throwError $ TypeError $ "Record does not contain a field called " <> show name
-        ty' -> throwError $ TypeError $ "Expected a record type but got " <> show ty'
+unfoldElim :: Synth -> Synth
+unfoldElim scutTac = Synth $ do
+  (ty, scrut) <- runSynth scutTac
+  force ty >>= \case
+    mu@(SMuTy _ _) -> pure (unrollMuTy mu, SUnfold scrut mu)
+    other -> throwError $ TypeError $ "unfold expects a mu-type, got: " <> show other
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -1016,20 +1121,19 @@ recordElim name fieldTac =
 -- - 'SAp': evaluate both sides, then apply. This is where beta reduction
 --          happens, by instantiating the closure with the argument.
 --
--- The eliminators for sums, booleans, and void reduce on a known scrutinee
--- and, on a neutral scrutinee, produce a stuck frame that carries the motive
--- needed for read-back.
+-- 'SFold' evaluates to 'VFold'. 'SUnfold' on a 'VFold' extracts the inner
+-- value; on a neutral it produces a stuck 'VUnfold' frame.
 
 newtype EvalM a = EvalM {runEvalM :: EvalEnv -> a}
   deriving
-    (Functor, Applicative, Monad, MonadReader EvalEnv)
-    via Reader EvalEnv
+    (Functor, Applicative, Monad, MonadReader (SnocList Value))
+    via Reader (SnocList Value)
 
 eval :: Syntax -> EvalM Value
 eval = \case
   SVar (Ix ix) -> do
     env <- ask
-    pure $ fromMaybe (error "internal error") $ nth env.envValues ix
+    pure $ fromMaybe (error "internal error") $ nth env ix
   SLam bndr body -> do
     env <- ask
     pure $ VLam bndr (Closure env body)
@@ -1052,9 +1156,9 @@ eval = \case
     t2' <- eval t2
     doIf p' motive t1' t2'
   SUnit -> pure VUnit
-  SAbsurd ty tm -> do
+  SAbsurd motive tm -> do
     tm' <- eval tm
-    doSumAbsurd tm' ty
+    doSumAbsurd tm' motive
   SInL tm -> VInL <$> eval tm
   SInR tm -> VInR <$> eval tm
   SSumCase t1 motive t2 t3 -> do
@@ -1062,53 +1166,48 @@ eval = \case
     t2' <- eval t2
     t3' <- eval t3
     doSumCase t1' motive t2' t3'
-  SRecord fields -> doRecord fields
-  SGet name tm -> eval tm >>= doGet name
+  SFold tm -> VFold <$> eval tm
+  SUnfold tm muTy -> eval tm >>= doUnfold muTy
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appTermClosure clo arg
-doApply (VNeutral (FuncTy ty1 ty2) neu) arg = pure $ VNeutral ty2 (pushFrame neu (VApp ty1 arg))
+doApply (VNeutral (SFuncTy ty1 ty2) neu) arg = pure $ VNeutral ty2 (pushFrame neu (VApp ty1 arg))
 doApply _ _ = error "impossible case in doApply"
 
 doFst :: Value -> EvalM Value
 doFst (VPair a _b) = pure a
-doFst (VNeutral (PairTy a _) neu) = pure $ VNeutral a (pushFrame neu VFst)
+doFst (VNeutral (SPairTy a _) neu) = pure $ VNeutral a (pushFrame neu VFst)
 doFst _ = error "impossible case in doFst"
 
 doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
-doSnd (VNeutral (PairTy _ b) neu) = pure $ VNeutral b (pushFrame neu VSnd)
+doSnd (VNeutral (SPairTy _ b) neu) = pure $ VNeutral b (pushFrame neu VSnd)
 doSnd _ = error "impossible case in doSnd"
 
-doSumCase :: Value -> Type -> Value -> Value -> EvalM Value
+doSumCase :: Value -> SType -> Value -> Value -> EvalM Value
 doSumCase (VInL v) _motive f _ = doApply f v
 doSumCase (VInR v) _motive _ g = doApply g v
-doSumCase (VNeutral (SumTy a b) neu) motive f g =
-  pure $ VNeutral motive (pushFrame neu (VSumCase (FuncTy a motive) (FuncTy b motive) motive f g))
+doSumCase (VNeutral (SSumTy a b) neu) motive f g =
+  pure $ VNeutral motive (pushFrame neu (VSumCase (SFuncTy a motive) (SFuncTy b motive) motive f g))
 doSumCase _ _ _ _ = error "impossible case in doSumCase"
 
-doSumAbsurd :: Value -> Type -> EvalM Value
+doSumAbsurd :: Value -> SType -> EvalM Value
 doSumAbsurd (VNeutral _ neu) ty = pure $ VNeutral ty (pushFrame neu (VAbsurd ty))
 doSumAbsurd _ _ = error "impossible case in doSumAbsurd"
 
-doIf :: Value -> Type -> Value -> Value -> EvalM Value
+doIf :: Value -> SType -> Value -> Value -> EvalM Value
 doIf VTru _ t1 _ = pure t1
 doIf VFls _ _ t2 = pure t2
 doIf (VNeutral _ neu) motive t1 t2 = pure $ VNeutral motive (pushFrame neu (VIf motive t1 t2))
 doIf _ _ _ _ = error "impossible case in doIf"
 
-doRecord :: [(Name, Syntax)] -> EvalM Value
-doRecord fields = VRecord <$> traverse (traverse eval) fields
-
-doGet :: Name -> Value -> EvalM Value
-doGet name (VRecord fields) =
-  case lookup name fields of
-    Nothing -> error "impossible case in doGet lookup"
-    Just field -> pure field
-doGet _ _ = error "impossible case in doGet"
+doUnfold :: SType -> Value -> EvalM Value
+doUnfold _ (VFold v) = pure v
+doUnfold muTy (VNeutral _ neu) = pure $ VNeutral (unrollMuTy muTy) (pushFrame neu (VUnfold muTy))
+doUnfold _ _ = error "impossible case in doUnfold"
 
 appTermClosure :: Closure -> Value -> EvalM Value
-appTermClosure (Closure env body) v = local (const $ env {envValues = Snoc env.envValues v}) $ eval body
+appTermClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
 
 --------------------------------------------------------------------------------
 -- Quoting
@@ -1126,27 +1225,29 @@ appTermClosure (Closure env body) v = local (const $ env {envValues = Snoc env.e
 --
 -- Produces 'Syntax' rather than 'Term' since that's what the evaluator and
 -- the output both use.
+--
+-- 'VFold' at an 'SMuTy' quotes by unrolling and quoting the inner value.
 
-quote :: Lvl -> Type -> Value -> EvalM Syntax
-quote l (FuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) = do
+quote :: Lvl -> SType -> Value -> EvalM Syntax
+quote l (SFuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) = do
   body <- bindVar ty1 l $ \v l' -> do
     clo <- appTermClosure clo v
     quote l' ty2 clo
   pure $ SLam bndr body
-quote l (FuncTy ty1 ty2) f = do
+quote l (SFuncTy ty1 ty2) f = do
   body <- bindVar ty1 l $ \v l' ->
     doApply f v >>= quote l' ty2
   pure $ SLam "_" body
-quote l (PairTy ty1 ty2) (VPair tm1 tm2) = do
+quote l (SPairTy ty1 ty2) (VPair tm1 tm2) = do
   tm1' <- quote l ty1 tm1
   tm2' <- quote l ty2 tm2
   pure $ SPair tm1' tm2'
 quote _ _ VTru = pure STru
 quote _ _ VFls = pure SFls
 quote _ _ VUnit = pure SUnit
-quote l (SumTy a _b) (VInL tm) = SInL <$> quote l a tm
-quote l (SumTy _a b) (VInR tm) = SInR <$> quote l b tm
-quote l ty (VRecord fields) = SRecord <$> traverse (traverse (quote l ty)) fields
+quote l (SSumTy a _b) (VInL tm) = SInL <$> quote l a tm
+quote l (SSumTy _a b) (VInR tm) = SInR <$> quote l b tm
+quote l (SMuTy name body) (VFold v) = SFold <$> quote l (unrollMuTy (SMuTy name body)) v
 quote l _ (VNeutral _ neu) = quoteNeutral l neu
 quote _ ty tm = error $ "impossible case in quote:\n" <> show ty <> "\n" <> show tm
 
@@ -1171,10 +1272,9 @@ quoteFrame l tm = \case
     f' <- quote l tyF f
     g' <- quote l tyG g
     pure $ SSumCase tm mot f' g'
-  -- NOTE: This never get constructed. Do I need them in STLC?
-  VGet name -> pure $ SGet name tm
+  VUnfold ty -> pure $ SUnfold tm ty
 
-bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
+bindVar :: SType -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
   let v = VNeutral ty $ Neutral (VVar lvl) Nil
    in f v $ incLevel lvl
@@ -1182,7 +1282,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax SType Syntax, Holes)
 run term =
   let action = do
         ((ty, syn), hs) <- listen (runSynth (synth term))
@@ -1204,145 +1304,72 @@ main = do
   let test = runTest run
       testErr = runTestErr run
 
-  putStrLn "=== First Order Unification ==="
+  putStrLn "=== Structural Iso-Recursive Types ==="
   putStrLn ""
 
-  -- Lambda / application
-  section "Lambda & Application"
-  test
-    "identity: (\\x. x) () ==> ()"
-    ( Ap
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-        Unit
-    )
-  test
-    "const: (\\x. \\y. x) () () ==> ()"
-    ( Ap
-        ( Ap
-            (Anno (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy)) (Lam "x" (Lam "_" (Var "x"))))
-            Unit
-        )
-        Unit
-    )
-  test
-    "not True ==> False"
-    ( Ap
-        (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
-        (Anno BoolTy Tru)
-    )
+  -- Nat   = mu N. Unit + N            (Zero = inl (), Succ n = inr n)
+  -- ListBool = mu L. Unit + Bool * L  (Nil  = inl (), Cons b xs = inr (b, xs))
+  let natTy = MuTy "N" (SumTy UnitTy (TVar "N"))
+      zero = Anno natTy (Fold (InL Unit))
+      suc n = Anno natTy (Fold (InR n))
+      one = suc zero
+      two = suc one
+      listTy = MuTy "L" (SumTy UnitTy (PairTy BoolTy (TVar "L")))
+      nil = Anno listTy (Fold (InL Unit))
+      cons b xs = Anno listTy (Fold (InR (Pair b xs)))
+
+  section "Fold (construction)"
+  test "0 : Nat" zero
+  test "2 : Nat" two
+  test "nil : ListBool" nil
+  test "[True, False] : ListBool" (cons Tru (cons Fls nil))
   putStrLn ""
 
-  -- Pairs
-  section "Pairs"
-  test
-    "fst (True, False) ==> True"
-    (Fst (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-  test
-    "snd (True, False) ==> False"
-    (Snd (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
+  section "Unfold cancels Fold"
+  test "unfold 0  ==>  inl ()" (Unfold zero)
+  test "unfold 2  ==>  inr 1" (Unfold two)
+  test "unfold [True, False]  ==>  inr (True, [False])" (Unfold (cons Tru (cons Fls nil)))
   putStrLn ""
 
-  -- Sums
-  section "Sums"
+  section "Elimination (unfold + case)"
   test
-    "case InL True of InL x -> x | InR y -> y ==> True"
-    ( Anno
-        BoolTy
-        ( SumCase
-            (Anno (SumTy BoolTy BoolTy) (InL Tru))
-            ("x", Var "x")
-            ("y", Var "y")
-        )
-    )
+    "pred 2  ==>  1"
+    (Anno natTy (SumCase (Unfold two) ("_", zero) ("p", Var "p")))
   test
-    "case InR False of InL x -> x | InR y -> y ==> False"
-    ( Anno
-        BoolTy
-        ( SumCase
-            (Anno (SumTy BoolTy BoolTy) (InR Fls))
-            ("x", Var "x")
-            ("y", Var "y")
-        )
-    )
+    "isZero 0  ==>  True"
+    (Anno BoolTy (SumCase (Unfold zero) ("_", Tru) ("_", Fls)))
+  test
+    "isZero 2  ==>  False"
+    (Anno BoolTy (SumCase (Unfold two) ("_", Tru) ("_", Fls)))
+  test
+    "head [True, False]  ==>  True"
+    (Anno BoolTy (SumCase (Unfold (cons Tru (cons Fls nil))) ("_", Fls) ("p", Fst (Var "p"))))
   putStrLn ""
 
-  -- Booleans / If
-  section "Booleans"
+  section "Stuck unfold (neutral scrutinee)"
   test
-    "if True then False else True ==> False"
-    (Anno BoolTy (If Tru Fls Tru))
-  test
-    "if False then False else True ==> True"
-    (Anno BoolTy (If Fls Fls Tru))
+    "\\n. unfold n  :  Nat -> Unit + Nat"
+    (Anno (FuncTy natTy (SumTy UnitTy natTy)) (Lam "n" (Unfold (Var "n"))))
   putStrLn ""
 
-  -- Records
-  section "Records"
-  test
-    "get foo { foo = True, bar = () } ==> True"
-    ( Get
-        "foo"
-        (Anno (RecordTy [("foo", BoolTy), ("bar", UnitTy)]) (Record [("foo", Tru), ("bar", Unit)]))
-    )
-  putStrLn ""
-
-  -- Holes
-  section "Holes"
-  test
-    "identity with hole body"
-    ( Anno
-        (UnitTy `FuncTy` UnitTy)
-        (Lam "x" Hole)
-    )
-  putStrLn ""
-
-  -- Unification: a hole in synthesizing position no longer fails. It mints a
-  -- fresh metavariable, survives elaboration, and reports whatever skeleton the
-  -- surrounding eliminators carve out for it. A hole pinned by the types that
-  -- flow in around it gets fully solved.
-  section "Unification (solvable holes)"
-  test
-    "bare _ synthesizes an unsolved metavariable"
-    Hole
-  test
-    "fst _ : the hole is forced to a pair skeleton"
-    (Fst Hole)
-  test
-    "fst (snd _) : nested skeleton, ?a * (?b * ?c)"
-    (Fst (Snd Hole))
-  test
-    "_ () : the hole is forced to a function, domain solved by the arg"
-    (Ap Hole Unit)
-  test
-    "(_ () : Unit) : argument and result pin the hole to Unit -> Unit"
-    (Anno UnitTy (Ap Hole Unit))
-  test
-    "case _ of InL/InR : the scrutinee hole is imitated to a sum"
-    (Anno BoolTy (SumCase Hole ("x", Var "x") ("y", Var "y")))
-  test
-    "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
-    (Ap Hole (InL Tru))
-  test
-    "_ { foo = True, bar = () } : the hole's domain is imitated to a record"
-    (Ap Hole (Record [("foo", Tru), ("bar", Unit)]))
-  putStrLn ""
-
-  -- Unification: rigid mismatches and the occurs check.
-  section "Unification (expected failures)"
-  testErr
-    "(_, ()) : Bool : a pair cannot unify with Bool"
-    (Anno BoolTy (Pair Hole Unit))
-  putStrLn ""
-
-  -- Error cases
   section "Error Cases (expected failures)"
+  testErr "fold against a non-mu type" (Anno BoolTy (Fold Tru))
+  testErr "unfold of a non-mu type" (Unfold (Anno BoolTy Tru))
   testErr
-    "Cannot synthesize lambda"
-    (Lam "x" (Var "x"))
-  testErr
-    "Absurd on non-Void"
-    ( Anno
-        BoolTy
-        (Absurd (Anno BoolTy Tru))
-    )
+    "mu X. X -> X is not strictly positive"
+    (Anno (MuTy "X" (FuncTy (TVar "X") (TVar "X"))) Unit)
   putStrLn ""
+
+  section "Nested mu (positivity)"
+  test
+    "mu X. Bool * (mu Y. Unit + Y)  (nested mu, X positive)"
+    ( Anno
+        (MuTy "X" (PairTy BoolTy (MuTy "Y" (SumTy UnitTy (TVar "Y")))))
+        (Fold (Pair Tru (Fold (InL Unit))))
+    )
+  testErr
+    "mu X. mu Y. (X -> Y)  (negative X under a nested mu)"
+    (Anno (MuTy "X" (MuTy "Y" (FuncTy (TVar "X") (TVar "Y")))) Unit)
+  testErr
+    "mu X. (mu Y. Bool * X) -> Bool  (negative X inside a nested mu)"
+    (Anno (MuTy "X" (FuncTy (MuTy "Y" (PairTy BoolTy (TVar "X"))) BoolTy)) Unit)

@@ -1,4 +1,5 @@
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 -- | System T, natural numbers and primitive recursion.
@@ -13,15 +14,19 @@ module Main where
 
 --------------------------------------------------------------------------------
 
-import Control.Monad (foldM)
+import Control.Monad (foldM, (>=>))
 import Control.Monad.Except (MonadError (..))
 import Control.Monad.Identity
 import Control.Monad.Reader (MonadReader (..))
+import Control.Monad.State.Strict (MonadState (..), gets, modify)
 import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
+import Control.Monad.Trans.State.Strict (StateT (..))
 import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
 import Data.Foldable (find)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf)
@@ -67,14 +72,23 @@ data Term
     Fst Term
   | -- | Second projection of a pair. @snd p@
     Snd Term
+  | -- | Left injection into a sum type.
+    InL Term
+  | -- | Right injection into a sum type.
+    InR Term
+  | -- | Binary sum elimination. Binds a variable in each branch.
+    SumCase Term (Name, Term) (Name, Term)
+  | -- | Void elimination. Can produce any type from a value of type 'Void',
+    -- since no such value exists.
+    Absurd Term
+  | -- | The unit value. @()@
+    Unit
   | -- | Boolean true. @true@
     Tru
   | -- | Boolean false. @false@
     Fls
   | -- | Conditional. @if scrut then t else f@
     If Term Term Term
-  | -- | The unit value. @()@
-    Unit
   | -- | Zero, the base case for natural numbers.
     Zero
   | -- | Successor of a natural number.
@@ -113,6 +127,30 @@ prettyTerm p (Fst e) =
 prettyTerm p (Snd e) =
   parensIf (p > appPrec) $
     "snd" PP.<+> prettyTerm atomPrec e
+prettyTerm p (InL e) =
+  parensIf (p > appPrec) $
+    "inl" PP.<+> prettyTerm atomPrec e
+prettyTerm p (InR e) =
+  parensIf (p > appPrec) $
+    "inr" PP.<+> prettyTerm atomPrec e
+prettyTerm p (SumCase scrut (ln, l) (rn, r)) =
+  parensIf (p > lamPrec) $
+    "case"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "of"
+      PP.<+> "inl"
+      PP.<+> PP.pretty (getName ln)
+      PP.<+> arrowSym
+      PP.<+> prettyTerm lamPrec l
+      <> ";"
+        PP.<+> "inr"
+        PP.<+> PP.pretty (getName rn)
+        PP.<+> arrowSym
+        PP.<+> prettyTerm lamPrec r
+prettyTerm p (Absurd e) =
+  parensIf (p > appPrec) $
+    "absurd" PP.<+> prettyTerm atomPrec e
+prettyTerm _ Unit = "()"
 prettyTerm _ Tru = "True"
 prettyTerm _ Fls = "False"
 prettyTerm p (If scrut t f) =
@@ -123,7 +161,6 @@ prettyTerm p (If scrut t f) =
       PP.<+> prettyTerm lamPrec t
       PP.<+> "else"
       PP.<+> prettyTerm lamPrec f
-prettyTerm _ Unit = "()"
 prettyTerm _ Zero = "0"
 prettyTerm p (Succ e) =
   parensIf (p > appPrec) $
@@ -135,18 +172,31 @@ prettyTerm p (NatRec base step scrut) =
 instance PP.Pretty Term where
   pretty = prettyTerm lamPrec
 
+-- | A metavariable identifier. A metavariable is an unknown type; it
+-- rides through 'Syntax' and 'Value' as an opaque atomic head, since a
+-- hole evaluates to a neutral and quoting a neutral ignores its type. It
+-- is resolved only in the typechecker, never by the evaluator.
+newtype MetaId = MetaId Int
+  deriving (Eq, Ord, Show)
+
 -- | The type language. Functions, pairs, unit, booleans, and natural numbers.
 data Type
   = -- | Function type. @A -> B@.
     FuncTy Type Type
   | -- | Pair type. @A * B@.
     PairTy Type Type
+  | -- | Binary sum: @A + B@.
+    SumTy Type Type
   | -- | Bool Type. @Bool@.
     BoolTy
   | -- | Unit type. @Unit@.
     UnitTy
+  | -- | The empty type. No values inhabit it.
+    VoidTy
   | -- | Natural Numbers Type. @Nat@.
     NatTy
+  | -- | A metavariable: an unknown type, to be solved by unification.
+    MetaTy MetaId
   deriving stock (Show, Eq, Ord)
 
 prettyType :: Prec -> Type -> PP.Doc ann
@@ -156,9 +206,14 @@ prettyType p (FuncTy a b) =
 prettyType p (PairTy a b) =
   parensIf (p > arrowPrec) $
     prettyType (arrowPrec + 1) a PP.<+> "*" PP.<+> prettyType arrowPrec b
-prettyType _ BoolTy = "Bool"
+prettyType p (SumTy a b) =
+  parensIf (p > PP.sumPrec) $
+    prettyType (PP.sumPrec + 1) a PP.<+> "+" PP.<+> prettyType PP.sumPrec b
 prettyType _ UnitTy = "Unit"
+prettyType _ VoidTy = "Void"
+prettyType _ BoolTy = "Bool"
 prettyType _ NatTy = "Nat"
+prettyType _ (MetaTy (MetaId n)) = "?" <> PP.pretty n
 
 instance PP.Pretty Type where
   pretty = prettyType lamPrec
@@ -184,14 +239,22 @@ data Syntax
     SFst Syntax
   | -- | Second projection of a pair.
     SSnd Syntax
+  | -- | Left injection into a sum type. @inl x@.
+    SInL Syntax
+  | -- | Right injection into a sum type. @inr x@.
+    SInR Syntax
+  | -- | Case analysis on a sum type. @case scrut of inl x -> l; inr y -> r@.
+    SSumCase Syntax Type Syntax Syntax
+  | -- | Elimination of the empty type. @absurd t@.
+    SAbsurd Type Syntax
+  | -- | The unit value.
+    SUnit
   | -- | Boolean true.
     STru
   | -- | Boolean false.
     SFls
   | -- | Conditional. @if scrut then t else f@.
     SIf Syntax Type Syntax Syntax
-  | -- | The unit value.
-    SUnit
   | -- | Zero, the base case for natural numbers.
     SZero
   | -- | Successor of a natural number.
@@ -221,6 +284,10 @@ data Value
     VLam Name Closure
   | -- | A fully evaluated pair of values.
     VPair Value Value
+  | -- | Left injection value.
+    VInL Value
+  | -- | Right injection value.
+    VInR Value
   | -- | Boolean true.
     VTru
   | -- | Boolean false.
@@ -287,6 +354,10 @@ data Frame
   = VApp Type Value
   | VFst
   | VSnd
+  | -- | A stuck case: the scrutinee is neutral.
+    VSumCase Type Type Type Value Value
+  | -- | A stuck absurd: the scrutinee is neutral at 'VoidTy'.
+    VAbsurd Type
   | -- | A stuck if-then-else: the condition is neutral, so we can't choose a
     -- branch. Carries the motive type and both branch values.
     VIf Type Value Value
@@ -327,7 +398,7 @@ data Cell = Cell
 -- @locals@ is the evaluator's environment (values by de Bruijn index),
 -- @localNames@ is for name resolution (searched linearly), and @size@ tracks
 -- the current binding depth (used to generate fresh de Bruijn levels).
-data Env = Env
+data TypeCheckEnv = TypeCheckEnv
   { locals :: SnocList Value,
     localNames :: [Cell],
     size :: Int,
@@ -336,36 +407,187 @@ data Env = Env
   }
   deriving stock (Show, Eq, Ord)
 
-initEnv :: Env
-initEnv = Env Nil [] 0 mempty
+-- | The evaluator's environment. Carries two independent snoc lists: one for
+-- term variable bindings ('Value') and one for type variable bindings
+-- ('VType'). The lengths track the current depth in each index space. Used both
+-- as the top-level eval environment and captured inside closures.
+newtype EvalEnv = EvalEnv
+  { -- | Term variable bindings, indexed by de Bruijn index.
+    envValues :: SnocList Value
+  }
+  deriving stock (Show, Eq, Ord)
 
-extendLocalNames :: Env -> Cell -> Env
-extendLocalNames e@Env {localNames} cell = e {localNames = cell : localNames}
+-- | Project the evaluator environment from the typechecker context. The
+-- typechecker carries extra metadata (names, holes, ADT specs) that the
+-- evaluator does not need.
+toEvalEnv :: TypeCheckEnv -> EvalEnv
+toEvalEnv env = EvalEnv {envValues = env.locals}
 
-extendHoles :: Type -> Env -> Env
-extendHoles ty e@Env {holes} = e {holes = ty : holes}
+initEnv :: TypeCheckEnv
+initEnv = TypeCheckEnv Nil [] 0 mempty
 
-bindCell :: Cell -> Env -> Env
-bindCell cell@Cell {..} Env {..} =
-  Env
+extendLocalNames :: TypeCheckEnv -> Cell -> TypeCheckEnv
+extendLocalNames e@TypeCheckEnv {localNames} cell = e {localNames = cell : localNames}
+
+extendHoles :: Type -> TypeCheckEnv -> TypeCheckEnv
+extendHoles ty e@TypeCheckEnv {holes} = e {holes = ty : holes}
+
+bindCell :: Cell -> TypeCheckEnv -> TypeCheckEnv
+bindCell cell@Cell {..} TypeCheckEnv {..} =
+  TypeCheckEnv
     { locals = Snoc locals cellValue,
       localNames = cell : localNames,
       size = size + 1,
       holes = holes
     }
 
-resolveCell :: Env -> Name -> Maybe Cell
-resolveCell Env {..} bndr = find ((== bndr) . cellName) localNames
+resolveCell :: TypeCheckEnv -> Name -> Maybe Cell
+resolveCell TypeCheckEnv {..} bndr = find ((== bndr) . cellName) localNames
 
 -- | Create a fresh neutral variable at the current depth. Used for lambda-bound
 -- variables where we don't know the value.
-freshVar :: Env -> Type -> Value
-freshVar Env {size} ty = VNeutral ty $ Neutral (VVar $ Lvl size) Nil
+freshVar :: TypeCheckEnv -> Type -> Value
+freshVar TypeCheckEnv {size} ty = VNeutral ty $ Neutral (VVar $ Lvl size) Nil
 
 -- | Create a fresh cell for a lambda-bound variable. The value is a neutral
 -- because we don't know the argument yet.
-freshCell :: Env -> Name -> Type -> Cell
+freshCell :: TypeCheckEnv -> Name -> Type -> Cell
 freshCell ctx name ty = Cell name ty (freshVar ctx ty)
+
+--------------------------------------------------------------------------------
+-- Unification
+--
+-- A metavariable is an unknown type, written 'MetaTy' and carried as an
+-- atomic head alongside the other type formers. The evaluator never
+-- inspects one, so the whole solving apparatus lives here in the
+-- typechecker, in the 'TypecheckM' state.
+--
+-- The state is the 'MetaCtx': a counter for minting fresh metavariables
+-- and a map from each to its solution. 'freshMeta' mints a new unknown,
+-- 'force' resolves a head far enough to see whether it is rigid or still
+-- a metavariable, 'solveMeta' records a solution after an occurs check,
+-- and 'unify' makes two types equal by solving metavariables.
+--
+-- 'zonk' and 'zonkSyntax' replace every solved metavariable with its
+-- solution. They run before anything crosses into the evaluator, which
+-- has no access to the solution map.
+
+-- | The unification state: a counter for minting fresh metavariables and
+-- a map from each metavariable to its solution.
+data MetaCtx = MetaCtx {next :: MetaId, solutions :: Map MetaId Type}
+
+-- | The empty unification state: no metavariables minted, none solved.
+initMetas :: MetaCtx
+initMetas = MetaCtx (MetaId 0) mempty
+
+-- | The successor metavariable id.
+nextMetaId :: MetaId -> MetaId
+nextMetaId (MetaId n) = MetaId (n + 1)
+
+-- | Mint a fresh, unsolved metavariable. Bumps the counter and returns
+-- the new 'MetaTy'.
+freshMeta :: TypecheckM Type
+freshMeta = do
+  i <- gets next
+  modify (\m -> m {next = nextMetaId m.next})
+  pure $ MetaTy i
+
+-- | Record the solution @meta := ty@, guarded by an occurs check.
+--
+-- The check forces at every node as it descends, so it catches @meta@
+-- hiding behind an already solved metavariable. If @meta@ occurs in @ty@
+-- the solution would be infinite (e.g. @?a := ?a -> ?a@), so we reject it
+-- with 'InfiniteTypeError'. Otherwise we store the forced @ty@, keeping
+-- the map free of stale metavariable heads.
+solveMeta :: MetaId -> Type -> TypecheckM ()
+solveMeta meta ty = do
+  occured <- occurs ty
+  if occured
+    then throwError $ InfiniteTypeError ty
+    else do
+      ty' <- force ty
+      modify $ \ctx -> ctx {solutions = Map.insert meta ty' ctx.solutions}
+  where
+    occurs =
+      force >=> \case
+        MetaTy m -> pure (m == meta)
+        FuncTy a b -> (||) <$> occurs a <*> occurs b
+        PairTy a b -> (||) <$> occurs a <*> occurs b
+        SumTy a b -> (||) <$> occurs a <*> occurs b
+        _ -> pure False
+
+-- | Resolve a type's head. A solved metavariable is chased to its
+-- solution (and on, until the head is rigid or unsolved); anything else
+-- is returned unchanged. This is shallow: it resolves only the head, not
+-- the interior, which is all a consumer needs to tell whether the head is
+-- rigid or flexible. Termination relies on the solution map being
+-- acyclic, which the occurs check in 'solveMeta' guarantees.
+force :: Type -> TypecheckM Type
+force = \case
+  MetaTy m ->
+    gets (Map.lookup m . solutions) >>= \case
+      Just ty -> force ty
+      Nothing -> pure (MetaTy m)
+  ty -> pure ty
+
+-- | Resolve every metavariable in a type, head and interior alike. The
+-- deep counterpart of 'force', used for display and before a type crosses
+-- into the evaluator. A metavariable that survives a zonk is genuinely
+-- unsolved and is shown as @?n@.
+zonk :: Type -> TypecheckM Type
+zonk =
+  force >=> \case
+    FuncTy a b -> FuncTy <$> zonk a <*> zonk b
+    PairTy a b -> PairTy <$> zonk a <*> zonk b
+    SumTy a b -> SumTy <$> zonk a <*> zonk b
+    ty -> pure ty
+
+-- | Resolve every metavariable embedded in an elaborated term. The core
+-- 'Syntax' carries types: the type of each hole and the motive of each
+-- eliminator. The evaluator cannot resolve a metavariable, so the term is
+-- zonked before evaluation. The traversal recurses through the whole
+-- tree, zonking each embedded type and leaving the term structure intact.
+zonkSyntax :: Syntax -> TypecheckM Syntax
+zonkSyntax = \case
+  SLam nm bdy -> SLam nm <$> zonkSyntax bdy
+  SAp f a -> SAp <$> zonkSyntax f <*> zonkSyntax a
+  SHole ty -> SHole <$> zonk ty
+  SPair a b -> SPair <$> zonkSyntax a <*> zonkSyntax b
+  SFst tm -> SFst <$> zonkSyntax tm
+  SSnd tm -> SSnd <$> zonkSyntax tm
+  SIf s ty t f -> SIf <$> zonkSyntax s <*> zonk ty <*> zonkSyntax t <*> zonkSyntax f
+  SAbsurd ty tm -> SAbsurd <$> zonk ty <*> zonkSyntax tm
+  SInL tm -> SInL <$> zonkSyntax tm
+  SInR tm -> SInR <$> zonkSyntax tm
+  SSumCase scrut ty f g -> SSumCase <$> zonkSyntax scrut <*> zonk ty <*> zonkSyntax f <*> zonkSyntax g
+  SSucc tm -> SSucc <$> zonkSyntax tm
+  SNatRec ty base step scrut -> SNatRec <$> zonk ty <*> zonkSyntax base <*> zonkSyntax step <*> zonkSyntax scrut
+  syn -> pure syn
+
+-- | Make two types equal by solving metavariables.
+--
+-- Both heads are forced first. Two identical metavariables are already
+-- equal. A flexible head (an unsolved metavariable) is solved to the
+-- other side. Two rigid heads of the same former are decomposed and
+-- unified componentwise. Anything else is a rigid mismatch. This is first
+-- order and syntactic, so it is complete: if a unifier exists, it is
+-- found.
+unify :: Type -> Type -> TypecheckM ()
+unify a b = do
+  a' <- force a
+  b' <- force b
+  case (a', b') of
+    (MetaTy m, MetaTy n)
+      | m == n -> pure ()
+      | otherwise -> solveMeta m b'
+    (MetaTy m, _) -> solveMeta m b'
+    (_, MetaTy n) -> solveMeta n a'
+    (FuncTy x1 y1, FuncTy x2 y2) -> unify x1 x2 >> unify y1 y2
+    (SumTy x1 y1, SumTy x2 y2) -> unify x1 x2 >> unify y1 y2
+    (PairTy x1 y1, PairTy x2 y2) -> unify x1 x2 >> unify y1 y2
+    _
+      | a' == b' -> pure ()
+      | otherwise -> throwError (UnificationError a' b')
 
 --------------------------------------------------------------------------------
 -- Typechecker
@@ -377,7 +599,7 @@ freshCell ctx name ty = Cell name ty (freshVar ctx ty)
 --
 -- Terms that introduce a type former (lambdas, pairs, unit) are checked. Terms
 -- that eliminate one (application, projection) or carry an annotation are
--- synthesized. The 'subTactic' bridges the two directions.
+-- synthesized. The 'switchTactic' bridges the two directions.
 --
 -- Each tactic returns the elaborated core IR: 'Check' returns @Type ->
 -- TypecheckM Syntax@ and 'Synth' returns @TypecheckM (Type, Syntax)@. This is
@@ -385,6 +607,9 @@ freshCell ctx name ty = Cell name ty (freshVar ctx ty)
 
 data Error
   = TypeError String
+  | UnknownVariable Name
+  | InfiniteTypeError Type
+  | UnificationError Type Type
   | OutOfScopeError Name
   deriving (Show)
 
@@ -393,10 +618,10 @@ data Error
 newtype Holes = Holes {getHoles :: [Type]}
   deriving newtype (Show, Semigroup, Monoid)
 
-newtype TypecheckM a = TypecheckM {runTypecheckM :: Env -> (Either Error a, Holes)}
+newtype TypecheckM a = TypecheckM {runTypecheckM :: MetaCtx -> TypeCheckEnv -> ((Either Error a, Holes), MetaCtx)}
   deriving
-    (Functor, Applicative, Monad, MonadReader Env, MonadError Error, MonadWriter Holes)
-    via (ExceptT Error (WriterT Holes (Reader Env)))
+    (Functor, Applicative, Monad, MonadState MetaCtx, MonadReader TypeCheckEnv, MonadError Error, MonadWriter Holes)
+    via (ExceptT Error (WriterT Holes (StateT MetaCtx (Reader TypeCheckEnv))))
 
 newtype Check = Check {runCheck :: Type -> TypecheckM Syntax}
 
@@ -424,7 +649,7 @@ check Unit = unitIntro
 check Zero = natIntroZero
 check (Succ tm) = natIntroSucc (check tm)
 check (NatRec tm1 tm2 n) = natElim (check tm1) (check tm2) (check n)
-check tm = subTactic (synth tm)
+check tm = switchTactic (synth tm)
 
 -- | Variable Resolution
 --
@@ -437,6 +662,10 @@ check tm = subTactic (synth tm)
 -- The quoting step is what converts the de Bruijn level in the cell's value to
 -- a de Bruijn index in the syntax.
 --
+-- The cell's type is zonked first. Quoting is type directed and runs in the
+-- evaluator, which cannot resolve a metavariable, so a binder whose type is a
+-- solved metavariable would otherwise crash the quote.
+--
 -- (x : A) ∈ Γ
 -- ─────────── Var⇒
 --  Γ ⊢ x ⇒ A
@@ -446,26 +675,29 @@ varTactic bndr = Synth $ do
 
   case resolveCell ctx bndr of
     Just Cell {..} -> do
-      let quoted = flip runEvalM (locals ctx) $ quote (Lvl $ size ctx) cellType cellValue
-      pure (cellType, quoted)
-    Nothing -> throwError $ OutOfScopeError bndr
+      ty <- zonk cellType
+      let quoted = flip runEvalM (toEvalEnv ctx) $ quote (Lvl $ size ctx) ty cellValue
+      pure (ty, quoted)
+    Nothing -> throwError $ UnknownVariable bndr
 
--- | Subsumption
+-- | Switch
 --
 -- The bridge between synth and check. Synthesize a type for the term, then
--- verify it matches the expected type. This is how a synthesizable term (like a
--- variable or annotation) can appear in a checked position. Every term that
--- doesn't have its own check rule falls through to this.
+-- unify it with the expected type, solving metavariables on either side. This
+-- is how a synthesizable term (like a variable or annotation) can appear in a
+-- checked position. Every term that doesn't have its own check rule falls
+-- through to this. It is the canonical place unification fires: a synthesized
+-- type meeting an expected one.
 --
 -- Γ ⊢ e ⇒ A  A ≡ B
--- ──────────────── Sub⇐
+-- ──────────────── Switch⇐
 --    Γ ⊢ e ⇐ B
-subTactic :: Synth -> Check
-subTactic (Synth synth) = Check $ \ty1 -> do
-  (ty2, tm) <- synth
-  if ty2 == ty1
-    then pure tm
-    else throwError $ TypeError $ "Expected: " <> show ty1 <> ", but got: " <> show ty2
+switchTactic :: Synth -> Check
+switchTactic switchTac = Check $ \ty1 -> do
+  (ty2, tm) <- runSynth switchTac
+  unify ty2 ty1
+
+  pure tm
 
 -- | Annotation
 --
@@ -478,8 +710,8 @@ subTactic (Synth synth) = Check $ \ty1 -> do
 -- ─────────────── Anno⇒
 -- Γ ⊢ (e : A) ⇒ A
 annoTactic :: Type -> Check -> Synth
-annoTactic ty (Check check) = Synth $ do
-  tm <- check ty
+annoTactic ty bndrTac = Synth $ do
+  tm <- runCheck bndrTac ty
   pure (ty, tm)
 
 -- | Lambda Introduction
@@ -489,26 +721,36 @@ annoTactic ty (Check check) = Synth $ do
 -- check the body against the return type (@A₂@). This is why lambdas can't
 -- synthesize. Without the expected function type, we wouldn't know @A₁@.
 --
+-- The expected type is unified with a fresh @?a -> ?b@ rather than matched
+-- directly: if it is already a function type this recovers the domain and
+-- codomain, and if it is a flexible metavariable, unification solves it to
+-- that function shape (imitation).
+--
 -- Elaborates to @SLam name body'@.
 --
 --  Γ, x : A₁ ⊢ e ⇐ A₂
 -- ──────────────────── LamIntro⇐
 -- Γ ⊢ (λx.e) ⇐ A₁ → A₂
 lamIntro :: Name -> Check -> Check
-lamIntro bndr (Check bodyTac) = Check $ \case
-  a `FuncTy` b -> do
-    ctx <- ask
-    let var = freshCell ctx bndr a
-    fiber <- local (bindCell var) $ bodyTac b
-    pure $ SLam bndr fiber
-  ty -> throwError $ TypeError $ "Tried to introduce a lambda at a non-function type: " <> show ty
+lamIntro bndr bodyTac = Check $ \ty -> do
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (FuncTy a b)
+  a' <- force a
+
+  ctx <- ask
+  let var = freshCell ctx bndr a'
+  fiber <- local (bindCell var) $ runCheck bodyTac b
+  pure $ SLam bndr fiber
 
 -- | Lambda Elimination
 --
--- Application is a synth rule. Synthesize the function's type to get @A → B@,
--- then check the argument against @A@, and return @B@. The function type tells
--- us what to check the argument against. Information flows from the function to
--- the argument.
+-- Application is a synth rule. Synthesize the function's type, unify it with a
+-- fresh @?a -> ?b@, check the argument against @?a@, and return @?b@. The
+-- unification recovers the domain and codomain when the function type is
+-- known, and solves a flexible head into a function shape when it is a
+-- metavariable (imitation). Information flows from the function to the
+-- argument.
 --
 -- Elaborates to @SAp f' arg'@.
 --
@@ -516,13 +758,14 @@ lamIntro bndr (Check bodyTac) = Check $ \case
 -- ────────────────────────── LamElim⇒
 --       Γ ⊢ e₁ e₂ ⇒ B
 lamElim :: Synth -> Check -> Synth
-lamElim (Synth funcTac) (Check argTac) =
-  Synth $
-    funcTac >>= \case
-      (a `FuncTy` b, f) -> do
-        arg <- argTac a
-        pure (b, SAp f arg)
-      (ty, _) -> throwError $ TypeError $ "Expected a function type but got " <> show ty
+lamElim funcTac argTac = Synth $ do
+  (ty, f) <- runSynth funcTac
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (FuncTy a b)
+
+  arg <- runCheck argTac a
+  pure (b, SAp f arg)
 
 -- | Let Binding
 --
@@ -539,12 +782,12 @@ lamElim (Synth funcTac) (Check argTac) =
 --  ──────────────────────────────────── Let⇐
 --        Γ ⊢ let x = e in body ⇐ B
 letTactic :: Name -> Synth -> Check -> Check
-letTactic bndr (Synth synth) (Check bodyTac) = Check $ \ty -> do
-  (ty1, tm1) <- synth
+letTactic bndr bndrTac bodyTac = Check $ \ty -> do
+  (ty1, tm1) <- runSynth bndrTac
   ctx <- ask
-  let val = runEvalM (eval tm1) (locals ctx)
+  let val = runEvalM (eval tm1) (toEvalEnv ctx)
       var = Cell bndr ty1 val
-  fiber <- local (bindCell var) $ bodyTac ty
+  fiber <- local (bindCell var) $ runCheck bodyTac ty
   pure $ SAp (SLam bndr fiber) tm1
 
 -- | Type Hole
@@ -564,10 +807,18 @@ holeTactic = Check $ \ty -> do
   tell (Holes [ty])
   pure (SHole ty)
 
+holeSynthTactic :: Synth
+holeSynthTactic = Synth $ do
+  m <- freshMeta
+  tell (Holes [m])
+  pure (m, SHole m)
+
 -- | Pair Introduction
 --
--- Like lambdas, pairs are checked. the expected pair type @A × B@ tells us what
--- to check each component against.
+-- Like lambdas, pairs are checked. The expected type is unified with a fresh
+-- @?a * ?b@: when it is a known pair type this recovers the component types to
+-- check against, and when it is a flexible metavariable, unification solves it
+-- to a pair shape (imitation).
 --
 -- Elaborates to @SPair a' b'@.
 --
@@ -575,27 +826,33 @@ holeTactic = Check $ \ty -> do
 -- ───────────────────── Pair⇐
 --  Γ ⊢ (a , b) ⇐ A × B
 pairIntro :: Check -> Check -> Check
-pairIntro (Check checkFst) (Check checkSnd) = Check $ \case
-  PairTy a b -> do
-    tm1 <- checkFst a
-    tm2 <- checkSnd b
-    pure (SPair tm1 tm2)
-  ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+pairIntro checkFst checkSnd = Check $ \ty -> do
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (PairTy a b)
+
+  tm1 <- runCheck checkFst a
+  tm2 <- runCheck checkSnd b
+  pure (SPair tm1 tm2)
 
 -- | Pair Fst Elimination
 --
--- Projection is a synth rule. Synthesize the pair's type to learn what the
--- components are, then return the appropriate one.
+-- Projection is a synth rule. Synthesize the operand's type and unify it with
+-- a fresh @?a * ?b@, then return the first component. When the operand is a
+-- hole, the unification solves its metavariable to a pair (imitation), so
+-- @fst _@ learns the hole is a pair and reports the skeleton.
 --
 -- Γ ⊢ (t₁ , t₂) ⇒ A × B
 -- ───────────────────── Fst⇒
 --       Γ ⊢ t₁ ⇒ A
 pairElimFst :: Synth -> Synth
-pairElimFst (Synth synth) =
-  Synth $
-    synth >>= \case
-      (PairTy ty1 _ty2, tm) -> pure (ty1, SFst tm)
-      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+pairElimFst fstTac = Synth $ do
+  (ty, tm) <- runSynth fstTac
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (PairTy a b)
+
+  pure (a, SFst tm)
 
 -- | Pair Snd Elimination
 --
@@ -605,22 +862,22 @@ pairElimFst (Synth synth) =
 -- ───────────────────── Snd⇒
 --       Γ ⊢ t₂ ⇒ B
 pairElimSnd :: Synth -> Synth
-pairElimSnd (Synth synth) =
-  Synth $
-    synth >>= \case
-      (PairTy _ty1 ty2, tm) -> pure (ty2, SSnd tm)
-      (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+pairElimSnd sndTac = Synth $ do
+  (ty, tm) <- runSynth sndTac
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (PairTy a b)
+
+  pure (b, SSnd tm)
 
 -- | Bool-True Introduction
 --
--- Checked against 'BoolTy'. Elaborates to 'STru'.
+-- Checked against 'BoolTy'.
 --
 -- ──────────────── True⇐
 -- Γ ⊢ True ⇐ Bool
 boolIntroTrue :: Check
-boolIntroTrue = Check $ \case
-  BoolTy -> pure STru
-  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+boolIntroTrue = Check $ \ty -> unify ty BoolTy >> pure STru
 
 -- | Bool-False Introduction
 --
@@ -629,9 +886,7 @@ boolIntroTrue = Check $ \case
 -- ──────────────── False⇐
 -- Γ ⊢ False ⇐ Bool
 boolIntroFalse :: Check
-boolIntroFalse = Check $ \case
-  BoolTy -> pure SFls
-  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+boolIntroFalse = Check $ \ty -> unify ty BoolTy >> pure SFls
 
 -- | Bool Elimination
 --
@@ -643,25 +898,97 @@ boolIntroFalse = Check $ \case
 -- ───────────────────────────────────── If⇐
 --   Γ ⊢ If t₁ then t₂ else t₃ ⇐ T
 boolElim :: Check -> Check -> Check -> Check
-boolElim (Check checkT1) (Check checkT2) (Check checkT3) = Check $ \ty -> do
-  tm1 <- checkT1 BoolTy
-  tm2 <- checkT2 ty
-  tm3 <- checkT3 ty
+boolElim pTac tTac fTac = Check $ \ty -> do
+  tm1 <- runCheck pTac BoolTy
+  tm2 <- runCheck tTac ty
+  tm3 <- runCheck fTac ty
   pure (SIf tm1 ty tm2 tm3)
 
 -- | Unit Introduction
 --
--- Unit is a check rule, we verify the expected type is 'UnitTy'. There's
--- nothing to synthesize since @()@ doesn't carry type information.
---
--- Elaborates to 'SUnit'.
+-- Unify the expected type with 'UnitTy'. When the expected type is a
+-- flexible metavariable, this solves it to 'UnitTy'.
 --
 -- ───────────── Unit⇐
 -- Γ ⊢ () ⇐ Unit
 unitIntro :: Check
-unitIntro = Check $ \case
-  UnitTy -> pure SUnit
-  ty -> throwError $ TypeError $ "Expected Unit type but got: " <> show ty
+unitIntro = Check $ \ty -> unify ty UnitTy >> pure SUnit
+
+-- | Void Elimination
+--
+-- Synthesize the scrutinee and verify it has type 'VoidTy'. Since no value of
+-- type 'Void' exists, this branch is unreachable, but it can produce any type
+-- @C@.
+--
+--  Γ ⊢ e ⇒ Void
+--  ─────────────── Absurd⇐
+--  Γ ⊢ absurd e ⇐ C
+voidElim :: Synth -> Check
+voidElim voidTac = Check $ \ty -> do
+  (scrutTy, scrut) <- runSynth voidTac
+  unify scrutTy VoidTy
+
+  pure $ SAbsurd ty scrut
+
+-- | Sum Left Introduction
+--
+-- Checked against a sum type. The expected type is unified with a fresh
+-- @?a + ?b@ and the payload is checked against the left component @?a@.
+-- Building a left injection says nothing about the right summand, so @?b@
+-- is left unsolved.
+--
+--      Γ ⊢ e ⇐ A
+--  ───────────────── InL⇐
+--  Γ ⊢ InL e ⇐ A + B
+sumIntroL :: Check -> Check
+sumIntroL inlTac = Check $ \ty -> do
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (SumTy a b)
+
+  tm <- runCheck inlTac a
+  pure (SInL tm)
+
+-- | Sum Right Introduction
+--
+-- Checked against a sum type. The expected type is unified with a fresh
+-- @?a + ?b@ and the payload is checked against the right component @?b@.
+-- Building a right injection says nothing about the left summand, so @?a@
+-- is left unsolved.
+--
+--  Γ ⊢ e ⇐ B
+--  ──────────────── InR⇐
+--  Γ ⊢ InR e ⇐ A + B
+sumIntroR :: Check -> Check
+sumIntroR inrTac = Check $ \ty -> do
+  a <- freshMeta
+  b <- freshMeta
+  unify ty (SumTy a b)
+
+  tm <- runCheck inrTac b
+  pure (SInR tm)
+
+-- | Sum Elimination
+--
+-- Synthesize the scrutinee's type and unify it with a fresh @?a + ?b@,
+-- then check each branch as a function from its payload type to the
+-- motive. The branches are elaborated as lambdas that bind the payload.
+-- When the scrutinee is a hole, the unification solves its metavariable
+-- to a sum (imitation), so @case _ of …@ learns the hole is a sum.
+--
+--  Γ ⊢ e ⇒ A + B    Γ ⊢ f ⇐ A → C    Γ ⊢ g ⇐ B → C
+--  ─────────────────────────────────────────────── SumCase⇐
+--                Γ ⊢ SumCase e f g ⇐ C
+sumElim :: Synth -> Check -> Check -> Check
+sumElim scrutTac leftTac rightTac = Check $ \ty -> do
+  (scrutTy, scrut) <- runSynth scrutTac
+  a <- freshMeta
+  b <- freshMeta
+  unify scrutTy (SumTy a b)
+
+  f <- runCheck leftTac (FuncTy a ty)
+  g <- runCheck rightTac (FuncTy b ty)
+  pure $ SSumCase scrut ty f g
 
 -- | Nat Zero Introduction
 --
@@ -670,9 +997,7 @@ unitIntro = Check $ \case
 -- ───────── Zero⇐
 -- Γ ⊢ 0 ⇐ ℕ
 natIntroZero :: Check
-natIntroZero = Check $ \case
-  NatTy -> pure SZero
-  ty -> throwError $ TypeError $ "Expected ℕ type but got: " <> show ty
+natIntroZero = Check $ \ty -> unify ty NatTy >> pure SZero
 
 -- | Nat Succ Introduction
 --
@@ -683,9 +1008,9 @@ natIntroZero = Check $ \case
 -- ────────────── Succ⇐
 -- Γ ⊢ Succ t ⇐ ℕ
 natIntroSucc :: Check -> Check
-natIntroSucc (Check check) = Check $ \case
-  NatTy -> SSucc <$> check NatTy
-  ty -> throwError $ TypeError $ "Expected ℕ type but got: " <> show ty
+natIntroSucc baseTac = Check $ \ty -> do
+  unify ty NatTy
+  SSucc <$> runCheck baseTac NatTy
 
 -- | Nat Elimination (Gödel's primitive recursor)
 --
@@ -699,11 +1024,11 @@ natIntroSucc (Check check) = Check $ \case
 -- ───────────────────────────────────────── ℕ-Elim⇐
 --           Γ ⊢ elim t₁ t₂ s ⇐ T
 natElim :: Check -> Check -> Check -> Check
-natElim (Check zeroTac) (Check succTac) (Check scrutTac) =
+natElim zeroTac succTac scrutTac =
   Check $ \motive -> do
-    scrutinee <- scrutTac NatTy
-    base <- zeroTac motive
-    step <- succTac (NatTy `FuncTy` (motive `FuncTy` motive))
+    scrutinee <- runCheck scrutTac NatTy
+    base <- runCheck zeroTac motive
+    step <- runCheck succTac (NatTy `FuncTy` (motive `FuncTy` motive))
     pure (SNatRec motive base step scrutinee)
 
 --------------------------------------------------------------------------------
@@ -723,7 +1048,7 @@ natElim (Check zeroTac) (Check succTac) (Check scrutTac) =
 -- - 'SAp': evaluate both sides, then apply. This is where beta reduction
 --          happens, by instantiating the closure with the argument.
 
-newtype EvalM a = EvalM {runEvalM :: SnocList Value -> a}
+newtype EvalM a = EvalM {runEvalM :: EvalEnv -> a}
   deriving
     (Functor, Applicative, Monad, MonadReader (SnocList Value))
     via Reader (SnocList Value)
@@ -747,6 +1072,17 @@ eval = \case
     pure $ VPair tm1' tm2'
   SFst tm -> eval tm >>= doFst
   SSnd tm -> eval tm >>= doSnd
+  SInL tm -> VInL <$> eval tm
+  SInR tm -> VInR <$> eval tm
+  SSumCase t1 motive t2 t3 -> do
+    t1' <- eval t1
+    t2' <- eval t2
+    t3' <- eval t3
+    doSumCase t1' motive t2' t3'
+  SAbsurd ty tm -> do
+    tm' <- eval tm
+    doSumAbsurd tm' ty
+  SUnit -> pure VUnit
   STru -> pure VTru
   SFls -> pure VFls
   SIf p motive t1 t2 -> do
@@ -754,7 +1090,6 @@ eval = \case
     t1' <- eval t1
     t2' <- eval t2
     doIf p' motive t1' t2'
-  SUnit -> pure VUnit
   SZero -> pure VZero
   SSucc tm -> VSucc <$> eval tm
   SNatRec motive base step n -> do
@@ -777,6 +1112,17 @@ doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
 doSnd (VNeutral (PairTy _ b) neu) = pure $ VNeutral b (pushFrame neu VSnd)
 doSnd _ = error "impossible case in doSnd"
+
+doSumCase :: Value -> Type -> Value -> Value -> EvalM Value
+doSumCase (VInL v) _motive f _ = doApply f v
+doSumCase (VInR v) _motive _ g = doApply g v
+doSumCase (VNeutral (SumTy a b) neu) motive f g =
+  pure $ VNeutral motive (pushFrame neu (VSumCase (FuncTy a motive) (FuncTy b motive) motive f g))
+doSumCase _ _ _ _ = error "impossible case in doSumCase"
+
+doSumAbsurd :: Value -> Type -> EvalM Value
+doSumAbsurd (VNeutral _ neu) ty = pure $ VNeutral ty (pushFrame neu (VAbsurd ty))
+doSumAbsurd _ _ = error "impossible case in doSumAbsurd"
 
 doIf :: Value -> Type -> Value -> Value -> EvalM Value
 doIf VTru _ p _ = pure p
@@ -835,9 +1181,11 @@ quote l (PairTy ty1 ty2) (VPair tm1 tm2) = do
   tm1' <- quote l ty1 tm1
   tm2' <- quote l ty2 tm2
   pure $ SPair tm1' tm2'
+quote l (SumTy a _b) (VInL tm) = SInL <$> quote l a tm
+quote l (SumTy _a b) (VInR tm) = SInR <$> quote l b tm
+quote _ _ VUnit = pure SUnit
 quote _ _ VTru = pure STru
 quote _ _ VFls = pure SFls
-quote _ _ VUnit = pure SUnit
 quote _ _ VZero = pure SZero
 quote l ty (VSucc tm) = SSucc <$> quote l ty tm
 quote l _ (VNeutral _ neu) = quoteNeutral l neu
@@ -858,6 +1206,11 @@ quoteFrame l scrut = \case
   VApp ty arg -> SAp scrut <$> quote l ty arg
   VFst -> pure $ SFst scrut
   VSnd -> pure $ SSnd scrut
+  VSumCase tyF tyG mot f g -> do
+    f' <- quote l tyF f
+    g' <- quote l tyG g
+    pure $ SSumCase scrut mot f' g'
+  VAbsurd ty -> pure $ SAbsurd ty scrut
   VIf motive p q -> liftA2 (SIf scrut motive) (quote l motive p) (quote l motive q)
   VNatRec motive base step -> do
     sbase <- quote l motive base
@@ -874,13 +1227,20 @@ bindVar ty lvl f =
 
 run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
 run term =
-  case runTypecheckM (runSynth $ synth term) initEnv of
-    (Left err, holes) -> Left (err, holes)
-    (Right (type', syntax), holes) -> do
-      let result = flip runEvalM Nil $ do
-            value <- eval syntax
-            quote initLevel type' value
-      pure (RunResult syntax type' result, holes)
+  let action = do
+        ((ty, syn), hs) <- listen (runSynth (synth term))
+        ty' <- zonk ty
+        hs' <- traverse zonk (getHoles hs)
+        zonkedSyn <- zonkSyntax syn
+        pure (ty', zonkedSyn, Holes hs')
+   in case runTypecheckM action initMetas initEnv of
+        ((Left err, holes), _metas) -> Left (err, holes)
+        ((Right (type', syntax, holes), _unZonkedHoles), _metas) -> do
+          let evalEnv = EvalEnv Nil
+              result = flip runEvalM evalEnv $ do
+                value <- eval syntax
+                quote initLevel type' value
+          pure (RunResult syntax type' result, holes)
 
 main :: IO ()
 main = do
