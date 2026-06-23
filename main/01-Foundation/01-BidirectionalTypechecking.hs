@@ -20,7 +20,7 @@ import Control.Monad.Reader (MonadReader (..))
 import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Data.String
-import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf)
+import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), runTest, runTestErr, section)
 import Utils (SnocList (..), nth)
@@ -56,8 +56,20 @@ data Term
     Fst Term
   | -- | Second projection of a pair. @snd p@
     Snd Term
+  | -- | Left injection into a sum type.
+    InL Term
+  | -- | Right injection into a sum type.
+    InR Term
+  | -- | Binary sum elimination. Binds a variable in each branch.
+    Case Term (Name, Term) (Name, Term)
   | -- | The unit value. @()@
     Unit
+  | -- | Boolean true. @true@
+    Tru
+  | -- | Boolean false. @false@
+    Fls
+  | -- | Conditional. @if scrut then t else f@
+    If Term Term Term
   deriving stock (Show, Eq, Ord)
 
 prettyTerm :: Prec -> Term -> PP.Doc ann
@@ -80,6 +92,36 @@ prettyTerm p (Snd e) =
   parensIf (p > appPrec) $
     "snd" PP.<+> prettyTerm atomPrec e
 prettyTerm _ Unit = "()"
+prettyTerm _ Tru = "True"
+prettyTerm _ Fls = "False"
+prettyTerm p (If scrut t f) =
+  parensIf (p > lamPrec) $
+    "if"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "then"
+      PP.<+> prettyTerm lamPrec t
+      PP.<+> "else"
+      PP.<+> prettyTerm lamPrec f
+prettyTerm p (InL e) =
+  parensIf (p > appPrec) $
+    "inl" PP.<+> prettyTerm atomPrec e
+prettyTerm p (InR e) =
+  parensIf (p > appPrec) $
+    "inr" PP.<+> prettyTerm atomPrec e
+prettyTerm p (Case scrut (ln, l) (rn, r)) =
+  parensIf (p > lamPrec) $
+    "case"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "of"
+      PP.<+> "inl"
+      PP.<+> PP.pretty (getName ln)
+      PP.<+> arrowSym
+      PP.<+> prettyTerm lamPrec l
+      <> ";"
+        PP.<+> "inr"
+        PP.<+> PP.pretty (getName rn)
+        PP.<+> arrowSym
+        PP.<+> prettyTerm lamPrec r
 
 instance PP.Pretty Term where
   pretty = prettyTerm lamPrec
@@ -96,6 +138,10 @@ data Type
     PairTy Type Type
   | -- | Unit type. @Unit@.
     UnitTy
+  | -- | Bool Type. @Bool@.
+    BoolTy
+  | -- | Binary sum: @A + B@.
+    SumTy Type Type
   deriving stock (Show, Eq, Ord)
 
 prettyType :: Prec -> Type -> PP.Doc ann
@@ -106,6 +152,10 @@ prettyType p (PairTy a b) =
   parensIf (p > arrowPrec) $
     prettyType (arrowPrec + 1) a PP.<+> "*" PP.<+> prettyType arrowPrec b
 prettyType _ UnitTy = "Unit"
+prettyType _ BoolTy = "Bool"
+prettyType p (SumTy a b) =
+  parensIf (p > sumPrec) $
+    prettyType (sumPrec + 1) a PP.<+> "+" PP.<+> prettyType sumPrec b
 
 instance PP.Pretty Type where
   pretty = prettyType lamPrec
@@ -124,8 +174,16 @@ data Value
     VLam Name Closure
   | -- | A fully evaluated pair of values.
     VPair Value Value
+  | -- | Left injection value.
+    VInL Value
+  | -- | Right injection value.
+    VInR Value
   | -- | The unit value.
     VUnit
+  | -- | Boolean true.
+    VTru
+  | -- | Boolean false.
+    VFls
   deriving stock (Show, Eq, Ord)
 
 -- | De Bruijn Indices.
@@ -213,6 +271,12 @@ synth = \case
 check :: Term -> Check
 check (Lam _ body) = lamIntro (check body)
 check (Pair tm1 tm2) = pairIntro (check tm1) (check tm2)
+check (InL tm1) = sumIntroL (check tm1)
+check (InR tm2) = sumIntroR (check tm2)
+check (Case scrut (bndr1, t1) (bndr2, t2)) = sumElim (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
+check Tru = boolIntroTrue
+check Fls = boolIntroFalse
+check (If tm1 tm2 tm3) = boolElim (check tm1) (check tm2) (check tm3)
 check Unit = unitIntro
 check tm = subTactic (synth tm)
 
@@ -240,8 +304,8 @@ varTactic ix = Synth $ do
 -- ──────────────── Sub⇐
 --    Γ ⊢ e ⇐ B
 subTactic :: Synth -> Check
-subTactic (Synth synth') = Check $ \ty1 -> do
-  ty2 <- synth'
+subTactic synth' = Check $ \ty1 -> do
+  ty2 <- runSynth synth'
   if ty2 == ty1
     then pure ()
     else throwError $ TypeError $ "Expected: " <> show ty1 <> ", but got: " <> show ty2
@@ -256,8 +320,8 @@ subTactic (Synth synth') = Check $ \ty1 -> do
 -- ─────────────── Anno⇒
 -- Γ ⊢ (e : A) ⇒ A
 annoTactic :: Type -> Check -> Synth
-annoTactic ty (Check checkAnno) = Synth $ do
-  checkAnno ty
+annoTactic ty check' = Synth $ do
+  runCheck check' ty
   pure ty
 
 -- | Lambda Introduction
@@ -271,9 +335,9 @@ annoTactic ty (Check checkAnno) = Synth $ do
 -- ──────────────────── LamIntro⇐
 -- Γ ⊢ (λx.e) ⇐ A₁ → A₂
 lamIntro :: Check -> Check
-lamIntro (Check bodyTac) = Check $ \case
+lamIntro bodyTac = Check $ \case
   a `FuncTy` b -> do
-    local (extendEnv a) $ bodyTac b
+    local (extendEnv a) $ runCheck bodyTac b
     pure ()
   _ -> throwError $ TypeError "Tried to introduce a lambda at a non-function type"
 
@@ -288,11 +352,11 @@ lamIntro (Check bodyTac) = Check $ \case
 -- ────────────────────────── LamElim⇒
 --       Γ ⊢ e₁ e₂ ⇒ B
 lamElim :: Synth -> Check -> Synth
-lamElim (Synth funcTac) (Check argTac) =
+lamElim funcTac argTac =
   Synth $
-    funcTac >>= \case
+    runSynth funcTac >>= \case
       (a `FuncTy` b) -> do
-        argTac a
+        runCheck argTac a
         pure b
       ty -> throwError $ TypeError $ "Expected a function type but got " <> show ty
 
@@ -305,10 +369,10 @@ lamElim (Synth funcTac) (Check argTac) =
 -- ───────────────────── Pair⇐
 --  Γ ⊢ (a , b) ⇐ A × B
 pairIntro :: Check -> Check -> Check
-pairIntro (Check checkFst) (Check checkSnd) = Check $ \case
+pairIntro checkFst checkSnd = Check $ \case
   PairTy a b -> do
-    checkFst a
-    checkSnd b
+    runCheck checkFst a
+    runCheck checkSnd b
     pure ()
   ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
@@ -321,9 +385,9 @@ pairIntro (Check checkFst) (Check checkSnd) = Check $ \case
 -- ───────────────────── Fst⇒
 --       Γ ⊢ t₁ ⇒ A
 pairElimFst :: Synth -> Synth
-pairElimFst (Synth synthPair) =
+pairElimFst synthPair =
   Synth $
-    synthPair >>= \case
+    runSynth synthPair >>= \case
       PairTy ty1 _ty2 -> pure ty1
       ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
@@ -335,11 +399,55 @@ pairElimFst (Synth synthPair) =
 -- ───────────────────── Snd⇒
 --       Γ ⊢ t₂ ⇒ B
 pairElimSnd :: Synth -> Synth
-pairElimSnd (Synth synthPair) =
+pairElimSnd synthPair =
   Synth $
-    synthPair >>= \case
+    runSynth synthPair >>= \case
       PairTy _ty1 ty2 -> pure ty2
       ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+
+-- | Sum Left Introduction
+--
+-- Checked against a sum type. The payload is checked against the left
+-- component.
+--
+--      Γ ⊢ e ⇐ A
+--  ───────────────── InL⇐
+--  Γ ⊢ InL e ⇐ A + B
+sumIntroL :: Check -> Check
+sumIntroL inlTac = Check $ \case
+  SumTy a _b -> runCheck inlTac a
+  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
+
+-- | Sum Right Introduction
+--
+-- Checked against a sum type. The payload is checked against the right
+-- component.
+--
+--  Γ ⊢ e ⇐ B
+--  ──────────────── InR⇐
+--  Γ ⊢ InR e ⇐ A + B
+sumIntroR :: Check -> Check
+sumIntroR inrTac = Check $ \case
+  SumTy _a b -> runCheck inrTac b
+  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
+
+-- | Sum Elimination
+--
+-- Synthesize the scrutinee's sum type, then check each branch as a
+-- function from the injection's payload type to the motive. The
+-- branches are elaborated as lambdas that bind the payload.
+--
+--  Γ ⊢ e ⇒ A + B    Γ ⊢ f ⇐ A → C    Γ ⊢ g ⇐ B → C
+--  ─────────────────────────────────────────────── Case⇐
+--                Γ ⊢ Case e f g ⇐ C
+sumElim :: Synth -> Check -> Check -> Check
+sumElim scrutTac checkT1 checkT2 = Check $ \ty -> do
+  scrutTy <- runSynth scrutTac
+  case scrutTy of
+    SumTy a b -> do
+      runCheck checkT1 (FuncTy a ty)
+      runCheck checkT2 (FuncTy b ty)
+    _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
 
 -- | Unit Introduction
 --
@@ -352,6 +460,43 @@ unitIntro :: Check
 unitIntro = Check $ \case
   UnitTy -> pure ()
   ty -> throwError $ TypeError $ "Expected Unit type but got: " <> show ty
+
+-- | Bool-True Introduction
+--
+-- Checked against 'BoolTy'. Elaborates to 'STru'.
+--
+-- ──────────────── True⇐
+-- Γ ⊢ True ⇐ Bool
+boolIntroTrue :: Check
+boolIntroTrue = Check $ \case
+  BoolTy -> pure ()
+  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+
+-- | Bool-False Introduction
+--
+-- Checked against 'BoolTy'. Elaborates to 'SFls'.
+--
+-- ──────────────── False⇐
+-- Γ ⊢ False ⇐ Bool
+boolIntroFalse :: Check
+boolIntroFalse = Check $ \case
+  BoolTy -> pure ()
+  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+
+-- | Bool Elimination
+--
+-- Check the condition against 'BoolTy', and both branches against the expected
+-- (motive) type. The motive is whatever type the @if@ expression is being
+-- checked at. Elaborates to @SIf scrut' t' f'@.
+--
+-- Γ ⊢ t₁ ⇐ Bool  Γ ⊢ t₂ ⇐ T  Γ ⊢ t₃ ⇐ T
+-- ───────────────────────────────────── If⇐
+--   Γ ⊢ If t₁ then t₂ else t₃ ⇐ T
+boolElim :: Check -> Check -> Check -> Check
+boolElim checkT1 checkT2 checkT3 = Check $ \ty -> do
+  runCheck checkT1 BoolTy
+  runCheck checkT2 ty
+  runCheck checkT3 ty
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -389,7 +534,21 @@ eval = \case
     pure $ VPair tm1' tm2'
   Fst tm -> eval tm >>= doFst
   Snd tm -> eval tm >>= doSnd
+  InL tm -> VInL <$> eval tm
+  InR tm -> VInR <$> eval tm
+  Case t1 (b2, t2) (b3, t3) -> do
+    t1' <- eval t1
+    t2' <- eval (Lam b2 t2)
+    t3' <- eval (Lam b3 t3)
+    doCase t1' t2' t3'
   Unit -> pure VUnit
+  Tru -> pure VTru
+  Fls -> pure VFls
+  If p t f -> do
+    p' <- eval p
+    t' <- eval t
+    f' <- eval f
+    doIf p' t' f'
 
 -- | Apply a function value to an argument. This is beta reduction: @(λx. body)
 -- arg@ becomes @body@ evaluated in the closure's captured environment extended
@@ -405,6 +564,16 @@ doFst _ = error "impossible case in doFst"
 doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
 doSnd _ = error "impossible case in doSnd"
+
+doCase :: Value -> Value -> Value -> EvalM Value
+doCase (VInL v) f _ = doApply f v
+doCase (VInR v) _ g = doApply g v
+doCase _ _ _ = error "impossible case in doCase"
+
+doIf :: Value -> Value -> Value -> EvalM Value
+doIf VTru t1 _ = pure t1
+doIf VFls _ t2 = pure t2
+doIf _ _ _ = error "impossible case in doIf"
 
 -- | Instantiate a closure by extending its captured environment with the
 -- argument value, then evaluating the body.
@@ -537,6 +706,42 @@ main = do
     ( Anno
         (UnitTy `FuncTy` UnitTy)
         (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+    )
+  putStrLn ""
+
+  section "Booleans"
+  test
+    "True : Bool"
+    (Anno BoolTy Tru)
+  test
+    "False : Bool"
+    (Anno BoolTy Fls)
+  test
+    "if True then False else True ==> False"
+    (Anno BoolTy (If Tru Fls Tru))
+  test
+    "if False then False else True ==> True"
+    (Anno BoolTy (If Fls Fls Tru))
+  putStrLn ""
+
+  section "Sums"
+  test
+    "inl () : Unit + Bool"
+    (Anno (SumTy UnitTy BoolTy) (InL Unit))
+  test
+    "inr True : Unit + Bool"
+    (Anno (SumTy UnitTy BoolTy) (InR Tru))
+  test
+    "case (inl () : U + Bool) of inl x -> True | inr y -> False ==> True"
+    ( Anno
+        BoolTy
+        (Case (Anno (SumTy UnitTy BoolTy) (InL Unit)) ("x", Tru) ("y", Fls))
+    )
+  test
+    "case (inr True : U + Bool) of inl x -> False | inr y -> y ==> True"
+    ( Anno
+        BoolTy
+        (Case (Anno (SumTy UnitTy BoolTy) (InR Tru)) ("x", Fls) ("y", Var (Ix 0)))
     )
   putStrLn ""
 

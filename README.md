@@ -29,8 +29,8 @@ want to include in your custom language in one place.
   - [X] First Order Unification
 2. Feature Museum
   - [X] Subtyping
-  - [X] System T
   - [X] Records
+  - [X] System T
   - [X] Nominal Inductive Types
   - [X] Iso-Inductive Types
   - [X] Recursion Principles

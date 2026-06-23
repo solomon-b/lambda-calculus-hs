@@ -24,7 +24,7 @@ import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Data.Foldable (find)
 import Data.Maybe (fromMaybe)
 import Data.String
-import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf)
+import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), runTest, runTestErr, section)
 import Utils (SnocList (..), nth)
@@ -61,8 +61,23 @@ data Term
     Fst Term
   | -- | Second projection of a pair. @snd p@
     Snd Term
+  | -- | Left injection into a sum type.
+    InL Term
+  | -- | Right injection into a sum type.
+    InR Term
+  | -- | Binary sum elimination. Binds a variable in each branch.
+    Case Term (Name, Term) (Name, Term)
+  | -- | Void elimination. Can produce any type from a value of type 'Void',
+    -- since no such value exists.
+    Absurd Term
   | -- | The unit value. @()@
     Unit
+  | -- | Boolean true. @true@
+    Tru
+  | -- | Boolean false. @false@
+    Fls
+  | -- | Conditional. @if scrut then t else f@
+    If Term Term Term
   deriving stock (Show, Eq, Ord)
 
 prettyTerm :: Prec -> Term -> PP.Doc ann
@@ -92,7 +107,40 @@ prettyTerm p (Fst e) =
 prettyTerm p (Snd e) =
   parensIf (p > appPrec) $
     "snd" PP.<+> prettyTerm atomPrec e
+prettyTerm p (Absurd e) =
+  parensIf (p > appPrec) $
+    "absurd" PP.<+> prettyTerm atomPrec e
 prettyTerm _ Unit = "()"
+prettyTerm _ Tru = "True"
+prettyTerm _ Fls = "False"
+prettyTerm p (If scrut t f) =
+  parensIf (p > lamPrec) $
+    "if"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "then"
+      PP.<+> prettyTerm lamPrec t
+      PP.<+> "else"
+      PP.<+> prettyTerm lamPrec f
+prettyTerm p (InL e) =
+  parensIf (p > appPrec) $
+    "inl" PP.<+> prettyTerm atomPrec e
+prettyTerm p (InR e) =
+  parensIf (p > appPrec) $
+    "inr" PP.<+> prettyTerm atomPrec e
+prettyTerm p (Case scrut (ln, l) (rn, r)) =
+  parensIf (p > lamPrec) $
+    "case"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "of"
+      PP.<+> "inl"
+      PP.<+> PP.pretty (getName ln)
+      PP.<+> arrowSym
+      PP.<+> prettyTerm lamPrec l
+      <> ";"
+        PP.<+> "inr"
+        PP.<+> PP.pretty (getName rn)
+        PP.<+> arrowSym
+        PP.<+> prettyTerm lamPrec r
 
 instance PP.Pretty Term where
   pretty = prettyTerm lamPrec
@@ -107,8 +155,14 @@ data Type
     FuncTy Type Type
   | -- | Pair type. @A * B@.
     PairTy Type Type
+  | -- | Binary sum: @A + B@.
+    SumTy Type Type
+  | -- | The empty type. No values inhabit it.
+    VoidTy
   | -- | Unit type. @Unit@.
     UnitTy
+  | -- | Bool Type. @Bool@.
+    BoolTy
   deriving stock (Show, Eq, Ord)
 
 prettyType :: Prec -> Type -> PP.Doc ann
@@ -118,7 +172,12 @@ prettyType p (FuncTy a b) =
 prettyType p (PairTy a b) =
   parensIf (p > arrowPrec) $
     prettyType (arrowPrec + 1) a PP.<+> "*" PP.<+> prettyType arrowPrec b
+prettyType _ VoidTy = "Void"
 prettyType _ UnitTy = "Unit"
+prettyType _ BoolTy = "Bool"
+prettyType p (SumTy a b) =
+  parensIf (p > sumPrec) $
+    prettyType (sumPrec + 1) a PP.<+> "+" PP.<+> prettyType sumPrec b
 
 instance PP.Pretty Type where
   pretty = prettyType lamPrec
@@ -141,8 +200,18 @@ data Syntax
     SFst Syntax
   | -- | Second projection of a pair.
     SSnd Syntax
+  | SInL Syntax
+  | SInR Syntax
+  | SCase Syntax Type Syntax Syntax
+  | SAbsurd Type Syntax
   | -- | The unit value.
     SUnit
+  | -- | Boolean true.
+    STru
+  | -- | Boolean false.
+    SFls
+  | -- | Conditional. @if scrut then t else f@.
+    SIf Syntax Type Syntax Syntax
   deriving stock (Show, Eq, Ord)
 
 -- | The result of evaluation.
@@ -164,8 +233,16 @@ data Value
     VLam Name Closure
   | -- | A fully evaluated pair of values.
     VPair Value Value
+  | -- | Left injection value.
+    VInL Value
+  | -- | Right injection value.
+    VInR Value
   | -- | The unit value.
     VUnit
+  | -- | Boolean true.
+    VTru
+  | -- | Boolean false.
+    VFls
   deriving stock (Show, Eq, Ord)
 
 -- | De Bruijn Indices.
@@ -222,6 +299,13 @@ data Frame
   = VApp Type Value
   | VFst
   | VSnd
+  | -- | A stuck case: the scrutinee is neutral.
+    VCase Type Type Type Value Value
+  | -- | A stuck if-then-else: the condition is neutral, so we can't choose a
+    -- branch. Carries the motive type and both branch values.
+    VIf Type Value Value
+  | -- | A stuck absurd: the scrutinee is neutral at 'VoidTy'.
+    VAbsurd Type
   deriving stock (Show, Eq, Ord)
 
 pushFrame :: Neutral -> Frame -> Neutral
@@ -333,7 +417,14 @@ check :: Term -> Check
 check (Lam bndr body) = lamIntro bndr (check body)
 check (Let bndr e body) = letTactic bndr (synth e) (check body)
 check (Pair tm1 tm2) = pairIntro (check tm1) (check tm2)
+check (InL tm1) = sumIntroL (check tm1)
+check (InR tm2) = sumIntroR (check tm2)
+check (Case scrut (bndr1, t1) (bndr2, t2)) = sumElim (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
+check (Absurd tm) = voidElim (synth tm)
 check Unit = unitIntro
+check Tru = boolIntroTrue
+check Fls = boolIntroFalse
+check (If tm1 tm2 tm3) = boolElim (check tm1) (check tm2) (check tm3)
 check tm = subTactic (synth tm)
 
 -- | Variable Resolution
@@ -371,8 +462,8 @@ varTactic bndr = Synth $ do
 -- ──────────────── Sub⇐
 --    Γ ⊢ e ⇐ B
 subTactic :: Synth -> Check
-subTactic (Synth synth) = Check $ \ty1 -> do
-  (ty2, tm) <- synth
+subTactic subTac = Check $ \ty1 -> do
+  (ty2, tm) <- runSynth subTac
   if ty2 == ty1
     then pure tm
     else throwError $ TypeError $ "Expected: " <> show ty1 <> ", but got: " <> show ty2
@@ -388,8 +479,8 @@ subTactic (Synth synth) = Check $ \ty1 -> do
 -- ─────────────── Anno⇒
 -- Γ ⊢ (e : A) ⇒ A
 annoTactic :: Type -> Check -> Synth
-annoTactic ty (Check check) = Synth $ do
-  tm <- check ty
+annoTactic ty annoTac = Synth $ do
+  tm <- runCheck annoTac ty
   pure (ty, tm)
 
 -- | Lambda Introduction
@@ -405,11 +496,11 @@ annoTactic ty (Check check) = Synth $ do
 -- ──────────────────── LamIntro⇐
 -- Γ ⊢ (λx.e) ⇐ A₁ → A₂
 lamIntro :: Name -> Check -> Check
-lamIntro bndr (Check bodyTac) = Check $ \case
+lamIntro bndr bodyTac = Check $ \case
   a `FuncTy` b -> do
     ctx <- ask
     let var = freshCell ctx bndr a
-    fiber <- local (bindCell var) $ bodyTac b
+    fiber <- local (bindCell var) $ runCheck bodyTac b
     pure $ SLam bndr fiber
   _ -> throwError $ TypeError "Tried to introduce a lambda at a non-function type"
 
@@ -426,11 +517,11 @@ lamIntro bndr (Check bodyTac) = Check $ \case
 -- ────────────────────────── LamElim⇒
 --       Γ ⊢ e₁ e₂ ⇒ B
 lamElim :: Synth -> Check -> Synth
-lamElim (Synth funcTac) (Check argTac) =
+lamElim funcTac argTac =
   Synth $
-    funcTac >>= \case
+    runSynth funcTac >>= \case
       (a `FuncTy` b, f) -> do
-        arg <- argTac a
+        arg <- runCheck argTac a
         pure (b, SAp f arg)
       (ty, _) -> throwError $ TypeError $ "Expected a function type but got " <> show ty
 
@@ -449,12 +540,12 @@ lamElim (Synth funcTac) (Check argTac) =
 --  ──────────────────────────────── Let⇐
 --        Γ ⊢ let x = e in body ⇐ B
 letTactic :: Name -> Synth -> Check -> Check
-letTactic bndr (Synth synth) (Check bodyTac) = Check $ \ty -> do
-  (ty1, tm1) <- synth
+letTactic bndr bndrTac bodyTac = Check $ \ty -> do
+  (ty1, tm1) <- runSynth bndrTac
   ctx <- ask
   let val = runEvalM (eval tm1) (locals ctx)
       var = Cell bndr ty1 val
-  fiber <- local (bindCell var) $ bodyTac ty
+  fiber <- local (bindCell var) $ runCheck bodyTac ty
   pure $ SAp (SLam bndr fiber) tm1
 
 -- | Pair Introduction
@@ -468,10 +559,10 @@ letTactic bndr (Synth synth) (Check bodyTac) = Check $ \ty -> do
 -- ───────────────────── Pair⇐
 --  Γ ⊢ (a , b) ⇐ A × B
 pairIntro :: Check -> Check -> Check
-pairIntro (Check checkFst) (Check checkSnd) = Check $ \case
+pairIntro checkFst checkSnd = Check $ \case
   PairTy a b -> do
-    tm1 <- checkFst a
-    tm2 <- checkSnd b
+    tm1 <- runCheck checkFst a
+    tm2 <- runCheck checkSnd b
     pure (SPair tm1 tm2)
   ty -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
@@ -484,9 +575,9 @@ pairIntro (Check checkFst) (Check checkSnd) = Check $ \case
 -- ───────────────────── Fst⇒
 --       Γ ⊢ t₁ ⇒ A
 pairElimFst :: Synth -> Synth
-pairElimFst (Synth synth) =
+pairElimFst fstTac =
   Synth $
-    synth >>= \case
+    runSynth fstTac >>= \case
       (PairTy ty1 _ty2, tm) -> pure (ty1, SFst tm)
       (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
 
@@ -498,11 +589,72 @@ pairElimFst (Synth synth) =
 -- ───────────────────── Snd⇒
 --       Γ ⊢ t₂ ⇒ B
 pairElimSnd :: Synth -> Synth
-pairElimSnd (Synth synth) =
+pairElimSnd sndTac =
   Synth $
-    synth >>= \case
+    runSynth sndTac >>= \case
       (PairTy _ty1 ty2, tm) -> pure (ty2, SSnd tm)
       (ty, _) -> throwError $ TypeError $ "Expected a Pair but got " <> show ty
+
+-- | Sum Left Introduction
+--
+-- Checked against a sum type. The payload is checked against the left
+-- component.
+--
+--      Γ ⊢ e ⇐ A
+--  ───────────────── InL⇐
+--  Γ ⊢ InL e ⇐ A + B
+sumIntroL :: Check -> Check
+sumIntroL inlCheck = Check $ \case
+  SumTy a _b -> SInL <$> runCheck inlCheck a
+  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
+
+-- | Sum Right Introduction
+--
+-- Checked against a sum type. The payload is checked against the right
+-- component.
+--
+--  Γ ⊢ e ⇐ B
+--  ──────────────── InR⇐
+--  Γ ⊢ InR e ⇐ A + B
+sumIntroR :: Check -> Check
+sumIntroR inrCheck = Check $ \case
+  SumTy _a b -> SInR <$> runCheck inrCheck b
+  ty -> throwError $ TypeError $ "Expected a Sum type but got: " <> show ty
+
+-- | Sum Elimination
+--
+-- Synthesize the scrutinee's sum type, then check each branch as a
+-- function from the injection's payload type to the motive. The
+-- branches are elaborated as lambdas that bind the payload.
+--
+--  Γ ⊢ e ⇒ A + B    Γ ⊢ f ⇐ A → C    Γ ⊢ g ⇐ B → C
+--  ─────────────────────────────────────────────── Case⇐
+--                Γ ⊢ Case e f g ⇐ C
+sumElim :: Synth -> Check -> Check -> Check
+sumElim scrutTac checkT1 checkT2 = Check $ \ty -> do
+  (scrutTy, scrut) <- runSynth scrutTac
+  case scrutTy of
+    SumTy a b -> do
+      f <- runCheck checkT1 (FuncTy a ty)
+      g <- runCheck checkT2 (FuncTy b ty)
+      pure $ SCase scrut ty f g
+    _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
+
+-- | Void Elimination
+--
+-- Synthesize the scrutinee and verify it has type 'VoidTy'. Since no value of
+-- type 'Void' exists, this branch is unreachable, but it can produce any type
+-- @C@.
+--
+--  Γ ⊢ e ⇒ Void
+--  ─────────────── Absurd⇐
+--  Γ ⊢ absurd e ⇐ C
+voidElim :: Synth -> Check
+voidElim (Synth synth) = Check $ \ty -> do
+  (scrutTy, scrut) <- synth
+  case scrutTy of
+    VoidTy -> pure $ SAbsurd ty scrut
+    _ -> throwError $ TypeError $ "Expected a Void but got: " <> show scrutTy
 
 -- | Unit Introduction
 --
@@ -517,6 +669,44 @@ unitIntro :: Check
 unitIntro = Check $ \case
   UnitTy -> pure SUnit
   ty -> throwError $ TypeError $ "Expected Unit type but got: " <> show ty
+
+-- | Bool-True Introduction
+--
+-- Checked against 'BoolTy'. Elaborates to 'STru'.
+--
+-- ──────────────── True⇐
+-- Γ ⊢ True ⇐ Bool
+boolIntroTrue :: Check
+boolIntroTrue = Check $ \case
+  BoolTy -> pure STru
+  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+
+-- | Bool-False Introduction
+--
+-- Checked against 'BoolTy'. Elaborates to 'SFls'.
+--
+-- ──────────────── False⇐
+-- Γ ⊢ False ⇐ Bool
+boolIntroFalse :: Check
+boolIntroFalse = Check $ \case
+  BoolTy -> pure SFls
+  ty -> throwError $ TypeError $ "Expected Bool type but got: " <> show ty
+
+-- | Bool Elimination
+--
+-- Check the condition against 'BoolTy', and both branches against the expected
+-- (motive) type. The motive is whatever type the @if@ expression is being
+-- checked at. Elaborates to @SIf scrut' t' f'@.
+--
+-- Γ ⊢ t₁ ⇐ Bool  Γ ⊢ t₂ ⇐ T  Γ ⊢ t₃ ⇐ T
+-- ───────────────────────────────────── If⇐
+--   Γ ⊢ If t₁ then t₂ else t₃ ⇐ T
+boolElim :: Check -> Check -> Check -> Check
+boolElim checkT1 checkT2 checkT3 = Check $ \ty -> do
+  tm1 <- runCheck checkT1 BoolTy
+  tm2 <- runCheck checkT2 ty
+  tm3 <- runCheck checkT3 ty
+  pure (SIf tm1 ty tm2 tm3)
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -558,7 +748,24 @@ eval = \case
     pure $ VPair tm1' tm2'
   SFst tm -> eval tm >>= doFst
   SSnd tm -> eval tm >>= doSnd
+  SInL tm -> VInL <$> eval tm
+  SInR tm -> VInR <$> eval tm
+  SCase t1 motive t2 t3 -> do
+    t1' <- eval t1
+    t2' <- eval t2
+    t3' <- eval t3
+    doCase t1' motive t2' t3'
+  SAbsurd ty tm -> do
+    tm' <- eval tm
+    doAbsurd tm' ty
   SUnit -> pure VUnit
+  STru -> pure VTru
+  SFls -> pure VFls
+  SIf p motive t1 t2 -> do
+    p' <- eval p
+    t1' <- eval t1
+    t2' <- eval t2
+    doIf p' motive t1' t2'
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appTermClosure clo arg
@@ -574,6 +781,23 @@ doSnd :: Value -> EvalM Value
 doSnd (VPair _a b) = pure b
 doSnd (VNeutral (PairTy _ b) neu) = pure $ VNeutral b (pushFrame neu VSnd)
 doSnd _ = error "impossible case in doSnd"
+
+doCase :: Value -> Type -> Value -> Value -> EvalM Value
+doCase (VInL v) _motive f _ = doApply f v
+doCase (VInR v) _motive _ g = doApply g v
+doCase (VNeutral (SumTy a b) neu) motive f g =
+  pure $ VNeutral motive (pushFrame neu (VCase (FuncTy a motive) (FuncTy b motive) motive f g))
+doCase _ _ _ _ = error "impossible case in doCase"
+
+doIf :: Value -> Type -> Value -> Value -> EvalM Value
+doIf VTru _ t1 _ = pure t1
+doIf VFls _ _ t2 = pure t2
+doIf (VNeutral _ neu) motive t1 t2 = pure $ VNeutral motive (pushFrame neu (VIf motive t1 t2))
+doIf _ _ _ _ = error "impossible case in doIf"
+
+doAbsurd :: Value -> Type -> EvalM Value
+doAbsurd (VNeutral _ neu) ty = pure $ VNeutral ty (pushFrame neu (VAbsurd ty))
+doAbsurd _ _ = error "impossible case in doAbsurd"
 
 appTermClosure :: Closure -> Value -> EvalM Value
 appTermClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
@@ -610,7 +834,11 @@ quote l (PairTy ty1 ty2) (VPair tm1 tm2) = do
   tm1' <- quote l ty1 tm1
   tm2' <- quote l ty2 tm2
   pure $ SPair tm1' tm2'
+quote l (SumTy a _b) (VInL tm) = SInL <$> quote l a tm
+quote l (SumTy _a b) (VInR tm) = SInR <$> quote l b tm
 quote _ _ VUnit = pure SUnit
+quote _ _ VTru = pure STru
+quote _ _ VFls = pure SFls
 quote l _ (VNeutral _ neu) = quoteNeutral l neu
 quote _ _ _ = error "impossible case in quote"
 
@@ -628,6 +856,12 @@ quoteFrame l tm = \case
   VApp ty arg -> SAp tm <$> quote l ty arg
   VFst -> pure $ SFst tm
   VSnd -> pure $ SSnd tm
+  VCase tyF tyG mot f g -> do
+    f' <- quote l tyF f
+    g' <- quote l tyG g
+    pure $ SCase tm mot f' g'
+  VAbsurd mot -> pure $ SAbsurd mot tm
+  VIf ty t1 t2 -> liftA2 (SIf tm ty) (quote l ty t1) (quote l ty t2)
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
@@ -808,8 +1042,50 @@ main = do
     )
   putStrLn ""
 
+  -- Booleans — if reduces on a known scrutinee, and now (with the motive in
+  -- the core SIf) stays stuck and reads back on a neutral one.
+  section "Booleans"
+  test
+    "if True then False else True ==> False"
+    (Anno BoolTy (If Tru Fls Tru))
+  test
+    "\\b. if b then False else True (if stuck on neutral b, reads back)"
+    (Anno (BoolTy `FuncTy` BoolTy) (Lam "b" (If (Var "b") Fls Tru)))
+  putStrLn ""
+
+  -- Sums — case reduces on a known injection, and stays stuck on a neutral
+  -- scrutinee, where read-back preserves the branch binders.
+  section "Sums"
+  test
+    "inl () : Unit + Bool"
+    (Anno (SumTy UnitTy BoolTy) (InL Unit))
+  test
+    "case (inl () : U + Bool) of inl x -> True | inr y -> False ==> True"
+    ( Anno
+        BoolTy
+        (Case (Anno (SumTy UnitTy BoolTy) (InL Unit)) ("x", Tru) ("y", Fls))
+    )
+  test
+    "\\s. case s of inl x -> x | inr y -> y (stuck on neutral s, binders preserved)"
+    ( Anno
+        (SumTy BoolTy BoolTy `FuncTy` BoolTy)
+        (Lam "s" (Case (Var "s") ("x", Var "x") ("y", Var "y")))
+    )
+  putStrLn ""
+
+  -- Void — absurd never reduces (Void is empty), so its only behaviour is the
+  -- stuck read-back of a neutral Void scrutinee under a binder.
+  section "Void"
+  test
+    "\\x. absurd x : Void -> Bool (stuck absurd reads back)"
+    (Anno (VoidTy `FuncTy` BoolTy) (Lam "x" (Absurd (Var "x"))))
+  putStrLn ""
+
   -- Error cases
   section "Error Cases (expected failures)"
+  testErr
+    "absurd on a non-Void scrutinee"
+    (Anno BoolTy (Absurd (Anno BoolTy Tru)))
   testErr
     "Cannot synthesize lambda"
     (Lam "x" (Var "x"))

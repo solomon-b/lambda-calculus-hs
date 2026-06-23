@@ -1,8 +1,9 @@
 -- | Simply Typed Lambda Calculus, evaluation only.
 --
 -- This is the baseline implementation that all subsequent modules build on. We
--- define a small language with functions, pairs, and unit, then build an
--- evaluator that reduces terms to values using closures and de Bruijn indices.
+-- define a small language with functions, pairs, sums, bools, and unit, then
+-- build an evaluator that reduces terms to values using closures and de Bruijn
+-- indices.
 --
 -- There is no typechecker here. Terms carry type annotations but we don't
 -- verify them. The focus is on the evaluation model: how closures capture their
@@ -50,6 +51,18 @@ data Term
     Snd Term
   | -- | The unit value. @()@
     Unit
+  | -- | Boolean true. @true@
+    Tru
+  | -- | Boolean false. @false@
+    Fls
+  | -- | Conditional. @if scrut then t else f@
+    If Term Term Term
+  | -- | Left injection into a sum type.
+    InL Term
+  | -- | Right injection into a sum type.
+    InR Term
+  | -- | Binary sum elimination. Binds a variable in each branch.
+    Case Term (Name, Term) (Name, Term)
   deriving stock (Show, Eq, Ord)
 
 -- | The type language.
@@ -64,6 +77,10 @@ data Type
     PairTy Type Type
   | -- | Unit type. @Unit@.
     UnitTy
+  | -- | Bool Type. @Bool@.
+    BoolTy
+  | -- | Binary sum: @A + B@.
+    SumTy Type Type
   deriving stock (Show, Eq, Ord)
 
 -- | The result of evaluation.
@@ -80,8 +97,16 @@ data Value
     VLam Name Closure
   | -- | A fully evaluated pair of values.
     VPair Value Value
+  | -- | Left injection value.
+    VInL Value
+  | -- | Right injection value.
+    VInR Value
   | -- | The unit value.
     VUnit
+  | -- | Boolean true.
+    VTru
+  | -- | Boolean false.
+    VFls
   deriving stock (Show, Eq, Ord)
 
 -- | De Bruijn Indices.
@@ -139,7 +164,21 @@ eval env = \case
      in VPair tm1' tm2'
   Fst tm -> doFst $ eval env tm
   Snd tm -> doSnd $ eval env tm
+  InL tm -> VInL $ eval env tm
+  InR tm -> VInR $ eval env tm
+  Case t1 (_, t2) (_, t3) -> do
+    case eval env t1 of
+      VInL a -> eval (Snoc env a) t2
+      VInR b -> eval (Snoc env b) t3
+      _ -> error "impossible: Case on a non Sum type."
   Unit -> VUnit
+  Tru -> VTru
+  Fls -> VFls
+  If p t f ->
+    let p' = eval env p
+        t' = eval env t
+        f' = eval env f
+     in doIf p' t' f'
 
 -- | Apply a function value to an argument. This is beta reduction: @(λx. body)
 -- arg@ becomes @body@ evaluated in the closure's captured environment extended
@@ -155,6 +194,11 @@ doFst _ = error "impossible case in doFst"
 doSnd :: Value -> Value
 doSnd (VPair _a b) = b
 doSnd _ = error "impossible case in doSnd"
+
+doIf :: Value -> Value -> Value -> Value
+doIf VTru t _ = t
+doIf VFls _ f = f
+doIf _ _ _ = error "impossible case in doIf"
 
 -- | Instantiate a closure by extending its captured environment with the
 -- argument value, then evaluating the body.

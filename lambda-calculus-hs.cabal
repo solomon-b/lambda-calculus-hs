@@ -116,7 +116,7 @@ executable MLTT
   build-depends:       base >= 2 && <5, mtl, transformers, containers
 
 -- ===========================================================================
--- Story 1: Foundation (total, simply typed)
+-- Part 1: Foundation (total, simply typed)
 -- ===========================================================================
 
 executable 01-00-SimplyTypedEvaluation
@@ -149,51 +149,49 @@ executable 01-04-TypedHoles
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness, utils
 
-executable 01-05-SystemT
+executable 01-05-FirstOrderUnification
   import:              common-settings
-  main-is:             01-Foundation/05-SystemT.hs
+  main-is:             01-Foundation/05-FirstOrderUnification.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
+
+-- ===========================================================================
+-- Part 2: Feature Museum
+-- ===========================================================================
+
+executable 02-00-Subtyping
+  import:              common-settings
+  main-is:             02-FeatureMuseum/00-Subtyping.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
+
+executable 02-01-Records
+  import:              common-settings
+  main-is:             02-FeatureMuseum/01-Records.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, test-harness, utils
+
+executable 02-02-SystemT
+  import:              common-settings
+  main-is:             02-FeatureMuseum/02-SystemT.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, test-harness, utils
 
-executable 01-06-Records
+executable 02-03-NominalInductiveTypes
   import:              common-settings
-  main-is:             01-Foundation/06-Records.hs
-  hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, test-harness, utils
-
-executable 01-07-SumTypes
-  import:              common-settings
-  main-is:             01-Foundation/07-SumTypes.hs
-  hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, test-harness, utils
-
-executable 01-08-Subtyping
-  import:              common-settings
-  main-is:             01-Foundation/08-Subtyping.hs
+  main-is:             02-FeatureMuseum/03-NominalInductiveTypes.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 01-09-NominalInductiveTypes
+executable 02-03b-IsoInductiveTypes
   import:              common-settings
-  main-is:             01-Foundation/09-NominalInductiveTypes.hs
+  main-is:             02-FeatureMuseum/03b-IsoInductiveTypes.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 01-09b-IsoInductiveTypes
+executable 02-04-RecursionPrinciples
   import:              common-settings
-  main-is:             01-Foundation/09b-IsoInductiveTypes.hs
-  hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
-
-executable 01-10-DirectRecursion
-  import:              common-settings
-  main-is:             01-Foundation/10-DirectRecursion.hs
-  hs-source-dirs:      main
-  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
-
-executable 01-11-FirstOrderUnification
-  import:              common-settings
-  main-is:             01-Foundation/11-FirstOrderUnification.hs
+  main-is:             02-FeatureMuseum/04-RecursionPrinciples.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
@@ -201,17 +199,17 @@ executable 01-11-FirstOrderUnification
 -- executable 01-capstone
 --   import:            common-settings
 --   main-is:           Main.hs
---   hs-source-dirs:    main/01-Foundation/capstone
+--   hs-source-dirs:    main/02-FeatureMuseum/capstone
 --   other-modules:     Syntax, Parser, Eval, Typecheck, Repl
 --   build-depends:     base, ...
 
 -- ===========================================================================
--- Story 2: Program (practical, partial)
+-- Part 3: Program (practical, partial)
 -- ===========================================================================
 
-executable 02-00-SystemF
+executable 03-00-SystemF
   import:              common-settings
-  main-is:             02-Program/00-SystemF.hs
+  main-is:             03-Program/00-SystemF.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
@@ -219,29 +217,29 @@ executable 02-00-SystemF
 -- executable 02-capstone
 --   import:            common-settings
 --   main-is:           Main.hs
---   hs-source-dirs:    main/02-Program/capstone
+--   hs-source-dirs:    main/03-Program/capstone
 --   other-modules:     Syntax, Parser, Eval, Typecheck, Repl
 --   build-depends:     base, ...
 
 -- ===========================================================================
--- Story 3: Proof (total, dependent)
+-- Part 4: Proof (total, dependent)
 -- ===========================================================================
 
-executable 03-00-MLTT
+executable 04-00-MLTT
   import:              common-settings
-  main-is:             03-Proof/00-MLTT.hs
+  main-is:             04-Proof/00-MLTT.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 03-01-TypeUniverses
+executable 04-01-TypeUniverses
   import:              common-settings
-  main-is:             03-Proof/01-TypeUniverses.hs
+  main-is:             04-Proof/01-TypeUniverses.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
-executable 03-02-UniversePolymorphism
+executable 04-02-UniversePolymorphism
   import:              common-settings
-  main-is:             03-Proof/02-UniversePolymorphism.hs
+  main-is:             04-Proof/02-UniversePolymorphism.hs
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
