@@ -67,6 +67,8 @@ data Term
     Lam Name Term
   | -- | Function application. @f x@
     Ap Term Term
+  | -- | Let binding. @let x = t1 in t2@
+    Let Name Term Term
   | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
     Anno Type Term
   | -- | A missing subterm. Can only appear in check position (where the
@@ -105,6 +107,14 @@ prettyTerm p (Lam n body) =
 prettyTerm p (Ap f x) =
   parensIf (p > appPrec) $
     prettyTerm appPrec f PP.<+> prettyTerm atomPrec x
+prettyTerm p (Let n rhs body) =
+  parensIf (p > lamPrec) $
+    "let"
+      PP.<+> PP.pretty (getName n)
+      PP.<+> "="
+      PP.<+> prettyTerm lamPrec rhs
+      PP.<+> "in"
+      PP.<+> prettyTerm lamPrec body
 prettyTerm p (Anno ty e) =
   parensIf (p > lamPrec) $
     prettyTerm (lamPrec + 1) e PP.<+> ":" PP.<+> prettyType lamPrec ty
@@ -600,6 +610,7 @@ synth = \case
 
 check :: Term -> Check
 check (Lam bndr body) = lamIntro bndr (check body)
+check (Let bndr e body) = letTactic bndr (check e) (check body)
 check Hole = holeTactic
 check (Pair tm1 tm2) = pairIntro (check tm1) (check tm2)
 check Tru = boolIntroTrue
@@ -734,17 +745,24 @@ lamElim funcTac argTac = Synth $ do
 -- @SLet@ in the core syntax. The let is fully dissolved by NbE: the beta redex
 -- reduces and the bound value is inlined into the normal form.
 --
+-- The right hand side is checked against a fresh metavariable rather than
+-- synthesized, so check only intro forms like @True@ or @(a, b)@ can be let
+-- bound with no annotation. Unification solves the metavariable from how @e@
+-- elaborates, recovering the bound type. A synthesizing @e@ still works: it
+-- routes through the switch rule and unifies with the metavariable.
+--
 -- Unlike 'lamIntro', which binds a fresh neutral variable (since the argument
 -- is unknown), the let tactic evaluates @e@ and stores the resulting value in
 -- the context cell. This means references to @x@ in the body see the actual
 -- value during elaboration, not a stuck variable.
 --
---  Γ ⊢ e ⇒ A    Γ, x : A ⊢ body ⇐ B
---  ──────────────────────────────────── Let⇐
---        Γ ⊢ let x = e in body ⇐ B
-letTactic :: Name -> Synth -> Check -> Check
+--  Γ ⊢ e ⇐ ?α    Γ, x : ?α ⊢ body ⇐ B
+--  ──────────────────────────────────────── Let⇐
+--         Γ ⊢ let x = e in body ⇐ B
+letTactic :: Name -> Check -> Check -> Check
 letTactic bndr bndrTac bodyTac = Check $ \ty -> do
-  (ty1, tm1) <- runSynth bndrTac
+  ty1 <- freshMeta
+  tm1 <- runCheck bndrTac ty1
   ctx <- ask
   let val = runEvalM (eval tm1) (toEvalEnv ctx)
       var = Cell bndr ty1 val
@@ -1178,6 +1196,16 @@ main = do
     )
   putStrLn ""
 
+  -- Let bindings
+  section "Let Bindings"
+  test
+    "let x = True in (x, x) ==> (True, True)"
+    (Anno (PairTy BoolTy BoolTy) (Let "x" Tru (Pair (Var "x") (Var "x"))))
+  test
+    "let f = \\y. y in f () ==> () : the use pins f's metavariable to Unit"
+    (Anno UnitTy (Let "f" (Lam "y" (Var "y")) (Ap (Var "f") Unit)))
+  putStrLn ""
+
   -- Pairs
   section "Pairs"
   test
@@ -1275,6 +1303,9 @@ main = do
   test
     "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
     (Ap Hole (InL Tru))
+  test
+    "let x = _ in (x, True) : Bool * Bool : a use solves the hole to Bool"
+    (Anno (PairTy BoolTy BoolTy) (Let "x" Hole (Pair (Var "x") Tru)))
   putStrLn ""
 
   -- Unification: rigid mismatches and the occurs check.
@@ -1282,6 +1313,12 @@ main = do
   testErr
     "(_, ()) : Bool : a pair cannot unify with Bool"
     (Anno BoolTy (Pair Hole Unit))
+  testErr
+    "let x = _ in (x, x) : Bool * Unit : conflicting uses of the same hole"
+    (Anno (PairTy BoolTy UnitTy) (Let "x" Hole (Pair (Var "x") (Var "x"))))
+  testErr
+    "let x = _ in x x : self-application triggers the occurs check"
+    (Anno BoolTy (Let "x" Hole (Ap (Var "x") (Var "x"))))
   putStrLn ""
 
   -- Error cases

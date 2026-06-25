@@ -66,6 +66,8 @@ data Term
     Lam Name Term
   | -- | Function application. @f x@
     Ap Term Term
+  | -- | Let binding. @let x = t1 in t2@
+    Let Name Term Term
   | -- | A term with a type annotation that we ignore during evaluation. @(t : A)@
     Anno Type Term
   | -- | A missing subterm. Can only appear in check position (where the
@@ -108,6 +110,14 @@ prettyTerm p (Lam n body) =
 prettyTerm p (Ap f x) =
   parensIf (p > appPrec) $
     prettyTerm appPrec f PP.<+> prettyTerm atomPrec x
+prettyTerm p (Let n rhs body) =
+  parensIf (p > lamPrec) $
+    "let"
+      PP.<+> PP.pretty (getName n)
+      PP.<+> "="
+      PP.<+> prettyTerm lamPrec rhs
+      PP.<+> "in"
+      PP.<+> prettyTerm lamPrec body
 prettyTerm p (Anno ty e) =
   parensIf (p > lamPrec) $
     prettyTerm (lamPrec + 1) e PP.<+> ":" PP.<+> prettyType lamPrec ty
@@ -727,6 +737,7 @@ synth = \case
 
 check :: Term -> Check
 check (Lam bndr body) = lamIntro bndr (check body)
+check (Let bndr e body) = letTactic bndr (check e) (check body)
 check Hole = holeTactic
 check (Pair tm1 tm2) = pairIntro (check tm1) (check tm2)
 check Tru = boolIntroTrue
@@ -890,6 +901,36 @@ lamElim funcTac argTac = Synth $ do
 
   arg <- runCheck argTac a
   pure (b, SAp f arg)
+
+-- | Let Binding
+--
+-- @let x = e in body@ elaborates to @(λx. body') e'@. There is no dedicated
+-- @SLet@ in the core syntax. The let is fully dissolved by NbE: the beta redex
+-- reduces and the bound value is inlined into the normal form.
+--
+-- The right hand side is checked against a fresh metavariable rather than
+-- synthesized, so check only intro forms like @True@ or @(a, b)@ can be let
+-- bound with no annotation. Unification solves the metavariable from how @e@
+-- elaborates, recovering the bound type. A synthesizing @e@ still works: it
+-- routes through the switch rule and unifies with the metavariable.
+--
+-- Unlike 'lamIntro', which binds a fresh neutral variable (since the argument
+-- is unknown), the let tactic evaluates @e@ and stores the resulting value in
+-- the context cell. This means references to @x@ in the body see the actual
+-- value during elaboration, not a stuck variable.
+--
+--  Γ ⊢ e ⇐ ?α    Γ, x : ?α ⊢ body ⇐ B
+--  ──────────────────────────────────────── Let⇐
+--         Γ ⊢ let x = e in body ⇐ B
+letTactic :: Name -> Check -> Check -> Check
+letTactic bndr bndrTac bodyTac = Check $ \ty -> do
+  ty1 <- freshMeta
+  tm1 <- runCheck bndrTac ty1
+  ctx <- ask
+  let val = runEvalM (eval tm1) (toEvalEnv ctx)
+      var = Cell bndr ty1 val
+  fiber <- local (bindCell var) $ runCheck bodyTac ty
+  pure $ SAp (SLam bndr fiber) tm1
 
 -- | Type Hole
 --
