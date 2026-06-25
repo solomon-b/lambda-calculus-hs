@@ -26,7 +26,7 @@ import Data.Maybe (fromMaybe)
 import Data.String
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), runTest, runTestErr, section)
+import TestHarness (RunResult (..), runTests, section, testErr, testOk)
 import Utils (SnocList (..), nth)
 
 --------------------------------------------------------------------------------
@@ -914,154 +914,147 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax Value, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
     (Right (type', syntax), holes) -> do
-      let result = flip runEvalM Nil $ do
-            value <- eval syntax
-            quote initLevel type' value
-      pure (RunResult syntax type' result, holes)
+      let evalEnv = Nil
+          val = runEvalM (eval syntax) evalEnv
+          result = runEvalM (quote initLevel type' val) evalEnv
+      pure (RunResult syntax type' result val, holes)
 
 main :: IO ()
 main = do
-  let test = runTest run
-      testErr = runTestErr run
-
   putStrLn "=== Typed Holes ==="
-  putStrLn ""
+  runTests $ do
+    let smoke = testOk run
+        err = testErr run
 
-  -- Hole in checked position — takes on the expected type
-  section "Hole in Checked Position"
-  test
-    "? checked at Unit — hole takes type Unit"
-    (Anno UnitTy Hole)
-  test
-    "? checked at Unit -> Unit — hole takes function type"
-    (Anno (UnitTy `FuncTy` UnitTy) Hole)
-  test
-    "? checked at (Unit * Unit) — hole takes pair type"
-    (Anno (PairTy UnitTy UnitTy) Hole)
-  putStrLn ""
+    -- Hole in checked position — takes on the expected type
+    section "Hole in Checked Position"
+    smoke
+      "? checked at Unit — hole takes type Unit"
+      (Anno UnitTy Hole)
+    smoke
+      "? checked at Unit -> Unit — hole takes function type"
+      (Anno (UnitTy `FuncTy` UnitTy) Hole)
+    smoke
+      "? checked at (Unit * Unit) — hole takes pair type"
+      (Anno (PairTy UnitTy UnitTy) Hole)
 
-  -- Hole in lambda body — infers type from context
-  section "Hole in Lambda Body"
-  test
-    "\\x. ? : Unit -> Unit — hole gets type Unit"
-    ( Anno
-        (UnitTy `FuncTy` UnitTy)
-        (Lam "x" Hole)
-    )
-  test
-    "\\x. ? : Unit -> (Unit * Unit) — hole gets pair type"
-    ( Anno
-        (UnitTy `FuncTy` PairTy UnitTy UnitTy)
-        (Lam "x" Hole)
-    )
-  test
-    "\\f. \\x. ? : (Unit -> Unit) -> Unit -> Unit — hole gets Unit"
-    ( Anno
-        ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-        (Lam "f" (Lam "x" Hole))
-    )
-  putStrLn ""
+    -- Hole in lambda body — infers type from context
+    section "Hole in Lambda Body"
+    smoke
+      "\\x. ? : Unit -> Unit — hole gets type Unit"
+      ( Anno
+          (UnitTy `FuncTy` UnitTy)
+          (Lam "x" Hole)
+      )
+    smoke
+      "\\x. ? : Unit -> (Unit * Unit) — hole gets pair type"
+      ( Anno
+          (UnitTy `FuncTy` PairTy UnitTy UnitTy)
+          (Lam "x" Hole)
+      )
+    smoke
+      "\\f. \\x. ? : (Unit -> Unit) -> Unit -> Unit — hole gets Unit"
+      ( Anno
+          ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+          (Lam "f" (Lam "x" Hole))
+      )
 
-  -- Hole in pair components
-  section "Hole in Pair"
-  test
-    "(?, ()) : Unit * Unit — hole in fst"
-    ( Anno
-        (PairTy UnitTy UnitTy)
-        (Pair Hole Unit)
-    )
-  test
-    "((), ?) : Unit * Unit — hole in snd"
-    ( Anno
-        (PairTy UnitTy UnitTy)
-        (Pair Unit Hole)
-    )
-  test
-    "(?, ?) : Unit * Unit — holes in both"
-    ( Anno
-        (PairTy UnitTy UnitTy)
-        (Pair Hole Hole)
-    )
-  putStrLn ""
+    -- Hole in pair components
+    section "Hole in Pair"
+    smoke
+      "(?, ()) : Unit * Unit — hole in fst"
+      ( Anno
+          (PairTy UnitTy UnitTy)
+          (Pair Hole Unit)
+      )
+    smoke
+      "((), ?) : Unit * Unit — hole in snd"
+      ( Anno
+          (PairTy UnitTy UnitTy)
+          (Pair Unit Hole)
+      )
+    smoke
+      "(?, ?) : Unit * Unit — holes in both"
+      ( Anno
+          (PairTy UnitTy UnitTy)
+          (Pair Hole Hole)
+      )
 
-  -- Holes at complex types
-  section "Holes at Complex Types"
-  test
-    "\\f. ? : (Unit -> Unit) -> Unit — hole at Unit in higher-order context"
-    ( Anno
-        ((UnitTy `FuncTy` UnitTy) `FuncTy` UnitTy)
-        (Lam "f" Hole)
-    )
-  test
-    "\\f. (f ?, ?) : (Unit -> Unit) -> Unit * Unit — holes at different positions"
-    ( Anno
-        ((UnitTy `FuncTy` UnitTy) `FuncTy` PairTy UnitTy UnitTy)
-        (Lam "f" (Pair (Ap (Var "f") Hole) Hole))
-    )
-  test
-    "(?, ((), ?)) : Unit * (Unit * Unit) — holes in nested pair"
-    ( Anno
-        (PairTy UnitTy (PairTy UnitTy UnitTy))
-        (Pair Hole (Pair Unit Hole))
-    )
-  test
-    "\\x. \\y. ? : Unit -> (Unit -> Unit) -> Unit * Unit — hole gets pair type under two binders"
-    ( Anno
-        (UnitTy `FuncTy` ((UnitTy `FuncTy` UnitTy) `FuncTy` PairTy UnitTy UnitTy))
-        (Lam "x" (Lam "y" Hole))
-    )
-  putStrLn ""
+    -- Holes at complex types
+    section "Holes at Complex Types"
+    smoke
+      "\\f. ? : (Unit -> Unit) -> Unit — hole at Unit in higher-order context"
+      ( Anno
+          ((UnitTy `FuncTy` UnitTy) `FuncTy` UnitTy)
+          (Lam "f" Hole)
+      )
+    smoke
+      "\\f. (f ?, ?) : (Unit -> Unit) -> Unit * Unit — holes at different positions"
+      ( Anno
+          ((UnitTy `FuncTy` UnitTy) `FuncTy` PairTy UnitTy UnitTy)
+          (Lam "f" (Pair (Ap (Var "f") Hole) Hole))
+      )
+    smoke
+      "(?, ((), ?)) : Unit * (Unit * Unit) — holes in nested pair"
+      ( Anno
+          (PairTy UnitTy (PairTy UnitTy UnitTy))
+          (Pair Hole (Pair Unit Hole))
+      )
+    smoke
+      "\\x. \\y. ? : Unit -> (Unit -> Unit) -> Unit * Unit — hole gets pair type under two binders"
+      ( Anno
+          (UnitTy `FuncTy` ((UnitTy `FuncTy` UnitTy) `FuncTy` PairTy UnitTy UnitTy))
+          (Lam "x" (Lam "y" Hole))
+      )
 
-  -- Hole as function argument — goes through sub tactic
-  section "Hole as Function Argument"
-  test
-    "(\\x. x : Unit -> Unit) ? — hole elaborated as argument"
-    ( Ap
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-        (Anno UnitTy Hole)
-    )
-  test
-    "(\\f. f : (Unit -> Unit) -> (Unit -> Unit)) ? — hole at function type as argument"
-    ( Ap
-        ( Anno
-            ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-            (Lam "f" (Var "f"))
-        )
-        (Anno (UnitTy `FuncTy` UnitTy) Hole)
-    )
-  putStrLn ""
+    -- Hole as function argument — goes through sub tactic
+    section "Hole as Function Argument"
+    smoke
+      "(\\x. x : Unit -> Unit) ? — hole elaborated as argument"
+      ( Ap
+          (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+          (Anno UnitTy Hole)
+      )
+    smoke
+      "(\\f. f : (Unit -> Unit) -> (Unit -> Unit)) ? — hole at function type as argument"
+      ( Ap
+          ( Anno
+              ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+              (Lam "f" (Var "f"))
+          )
+          (Anno (UnitTy `FuncTy` UnitTy) Hole)
+      )
 
-  -- Holes flow through the bool/sum check positions: an if branch, a sum
-  -- payload, and a case branch body each push their expected type into the
-  -- hole.
-  section "Holes in Bool / Sum Positions"
-  test
-    "if True then ? else False : the then-branch hole records Bool"
-    (Anno BoolTy (If Tru Hole Fls))
-  test
-    "inl ? : Bool + Unit : the payload hole records Bool"
-    (Anno (SumTy BoolTy UnitTy) (InL Hole))
-  test
-    "case (inl True) of inl x -> ? | inr y -> False : the branch hole records Bool"
-    ( Anno
-        BoolTy
-        (Case (Anno (SumTy BoolTy UnitTy) (InL Tru)) ("x", Hole) ("y", Fls))
-    )
-  putStrLn ""
+    -- Holes flow through the bool/sum check positions: an if branch, a sum
+    -- payload, and a case branch body each push their expected type into the
+    -- hole.
+    section "Holes in Bool / Sum Positions"
+    smoke
+      "if True then ? else False : the then-branch hole records Bool"
+      (Anno BoolTy (If Tru Hole Fls))
+    smoke
+      "inl ? : Bool + Unit : the payload hole records Bool"
+      (Anno (SumTy BoolTy UnitTy) (InL Hole))
+    smoke
+      "case (inl True) of inl x -> ? | inr y -> False : the branch hole records Bool"
+      ( Anno
+          BoolTy
+          (Case (Anno (SumTy BoolTy UnitTy) (InL Tru)) ("x", Hole) ("y", Fls))
+      )
 
-  -- Hole in synthesized position — cannot synthesize
-  section "Hole in Synth Position (expected failure)"
-  testErr
-    "bare ? — cannot synthesize hole"
-    Hole
-  testErr
-    "? applied to () — cannot synthesize function hole"
-    (Ap Hole Unit)
-  testErr
-    "absurd ? — the scrutinee is synthesized, so the hole cannot appear there"
-    (Anno BoolTy (Absurd Hole))
+    -- Hole in synthesized position — cannot synthesize
+    section "Hole in Synth Position (expected failure)"
+    err
+      "bare ? — cannot synthesize hole"
+      Hole
+    err
+      "? applied to () — cannot synthesize function hole"
+      (Ap Hole Unit)
+    err
+      "absurd ? — the scrutinee is synthesized, so the hole cannot appear there"
+      (Anno BoolTy (Absurd Hole))

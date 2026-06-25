@@ -18,7 +18,7 @@ import Control.Monad (foldM, forM, unless, when, zipWithM, (>=>))
 import Control.Monad.Except (MonadError (..))
 import Control.Monad.Identity
 import Control.Monad.Reader (MonadReader (..), asks)
-import Control.Monad.State.Strict (MonadState (..), gets, modify)
+import Control.Monad.State.Strict (MonadState (..), gets, liftIO, modify)
 import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Control.Monad.Trans.State.Strict (StateT (..))
@@ -34,7 +34,7 @@ import Data.String
 import Data.These
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), runTest, runTestErr, section)
+import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
 import Utils (SnocList (..), alignWithM, nth)
 
 --------------------------------------------------------------------------------
@@ -1616,7 +1616,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax Value, Holes)
 run term =
   let action = do
         ((ty, syn), hs) <- listen (runSynth (synth term))
@@ -1628,340 +1628,346 @@ run term =
         ((Left err, holes), _metas) -> Left (err, holes)
         ((Right (type', syntax, holes), _unZonkedHoles), _metas) -> do
           let evalEnv = EvalEnv Nil stockADTs
-              result = flip runEvalM evalEnv $ do
-                value <- eval syntax
-                quote initLevel type' value
-          pure (RunResult syntax type' result, holes)
+              val = runEvalM (eval syntax) evalEnv
+              result = runEvalM (quote initLevel type' val) evalEnv
+          pure (RunResult syntax type' result val, holes)
 
 main :: IO ()
 main = do
-  let test = runTest run
-      testErr = runTestErr run
+  putStrLn "=== Nominal Inductive Types ==="
+  runTests $ do
+    let test = assertEval run
+        smoke = testOk run
+        err = testErr run
 
-  putStrLn "=== First Order Unification ==="
-  putStrLn ""
+    -- Lambda / application
+    section "Lambda & Application"
+    test
+      "identity: (\\x. x) () ==> ()"
+      ( Ap
+          (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+          Unit
+      )
+      (Anno UnitTy Unit)
+    test
+      "const: (\\x. \\y. x) () () ==> ()"
+      ( Ap
+          ( Ap
+              (Anno (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy)) (Lam "x" (Lam "_" (Var "x"))))
+              Unit
+          )
+          Unit
+      )
+      (Anno UnitTy Unit)
+    test
+      "not True ==> False"
+      ( Ap
+          (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
+          (Anno BoolTy Tru)
+      )
+      (Anno BoolTy Fls)
 
-  -- Lambda / application
-  section "Lambda & Application"
-  test
-    "identity: (\\x. x) () ==> ()"
-    ( Ap
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-        Unit
-    )
-  test
-    "const: (\\x. \\y. x) () () ==> ()"
-    ( Ap
-        ( Ap
-            (Anno (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy)) (Lam "x" (Lam "_" (Var "x"))))
-            Unit
-        )
-        Unit
-    )
-  test
-    "not True ==> False"
-    ( Ap
-        (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
-        (Anno BoolTy Tru)
-    )
-  putStrLn ""
+    -- Pairs
+    section "Pairs"
+    test
+      "fst (True, False) ==> True"
+      (Fst (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
+      (Anno BoolTy Tru)
+    test
+      "snd (True, False) ==> False"
+      (Snd (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
+      (Anno BoolTy Fls)
 
-  -- Pairs
-  section "Pairs"
-  test
-    "fst (True, False) ==> True"
-    (Fst (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-  test
-    "snd (True, False) ==> False"
-    (Snd (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-  putStrLn ""
+    -- Sums
+    section "Sums"
+    test
+      "case InL True of InL x -> x | InR y -> y ==> True"
+      ( Anno
+          BoolTy
+          ( SumCase
+              (Anno (SumTy BoolTy BoolTy) (InL Tru))
+              ("x", Var "x")
+              ("y", Var "y")
+          )
+      )
+      (Anno BoolTy Tru)
+    test
+      "case InR False of InL x -> x | InR y -> y ==> False"
+      ( Anno
+          BoolTy
+          ( SumCase
+              (Anno (SumTy BoolTy BoolTy) (InR Fls))
+              ("x", Var "x")
+              ("y", Var "y")
+          )
+      )
+      (Anno BoolTy Fls)
 
-  -- Sums
-  section "Sums"
-  test
-    "case InL True of InL x -> x | InR y -> y ==> True"
-    ( Anno
-        BoolTy
-        ( SumCase
-            (Anno (SumTy BoolTy BoolTy) (InL Tru))
-            ("x", Var "x")
-            ("y", Var "y")
-        )
-    )
-  test
-    "case InR False of InL x -> x | InR y -> y ==> False"
-    ( Anno
-        BoolTy
-        ( SumCase
-            (Anno (SumTy BoolTy BoolTy) (InR Fls))
-            ("x", Var "x")
-            ("y", Var "y")
-        )
-    )
-  putStrLn ""
+    -- Booleans / If
+    section "Booleans"
+    test
+      "if True then False else True ==> False"
+      (Anno BoolTy (If Tru Fls Tru))
+      (Anno BoolTy Fls)
+    test
+      "if False then False else True ==> True"
+      (Anno BoolTy (If Fls Fls Tru))
+      (Anno BoolTy Tru)
 
-  -- Booleans / If
-  section "Booleans"
-  test
-    "if True then False else True ==> False"
-    (Anno BoolTy (If Tru Fls Tru))
-  test
-    "if False then False else True ==> True"
-    (Anno BoolTy (If Fls Fls Tru))
-  putStrLn ""
+    -- Constructor tests
+    section "Construction"
+    test
+      "Nil"
+      (Anno (AdtTy "ListBool") (Cnstr "Nil" []))
+      (Anno (AdtTy "ListBool") (Cnstr "Nil" []))
+    test
+      "Cons True Nil"
+      (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
+      (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
+    test
+      "Cons True (Cons False Nil)"
+      (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]]))
+      (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]]))
+    test
+      "Nothing"
+      (Anno (AdtTy "MaybeBool") (Cnstr "Nothing" []))
+      (Anno (AdtTy "MaybeBool") (Cnstr "Nothing" []))
+    test
+      "Just True"
+      (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Tru]))
+      (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Tru]))
+    smoke
+      "MkFn (\\x. x) at Fn"
+      (Anno (AdtTy "Fn") (Cnstr "MkFn" [Lam "x" (Var "x")]))
 
-  -- Constructor tests
-  section "Construction"
-  test
-    "Nil"
-    (Anno (AdtTy "ListBool") (Cnstr "Nil" []))
-  test
-    "Cons True Nil"
-    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
-  test
-    "Cons True (Cons False Nil)"
-    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]]))
-  test
-    "Nothing"
-    (Anno (AdtTy "MaybeBool") (Cnstr "Nothing" []))
-  test
-    "Just True"
-    (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Tru]))
-  test
-    "MkFn (\\x. x) at Fn"
-    (Anno (AdtTy "Fn") (Cnstr "MkFn" [Lam "x" (Var "x")]))
-  putStrLn ""
+    -- Partial application of constructors
+    section "Partial Application"
+    smoke
+      "fully unapplied Cons"
+      (Anno (FuncTy BoolTy (FuncTy (AdtTy "ListBool") (AdtTy "ListBool"))) (Cnstr "Cons" []))
+    smoke
+      "partially applied Cons"
+      (Anno (FuncTy (AdtTy "ListBool") (AdtTy "ListBool")) (Cnstr "Cons" [Tru]))
+    smoke
+      "partially applied Just"
+      (Anno (FuncTy BoolTy (AdtTy "MaybeBool")) (Cnstr "Just" []))
 
-  -- Partial application of constructors
-  section "Partial Application"
-  test
-    "fully unapplied Cons"
-    (Anno (FuncTy BoolTy (FuncTy (AdtTy "ListBool") (AdtTy "ListBool"))) (Cnstr "Cons" []))
-  test
-    "partially applied Cons"
-    (Anno (FuncTy (AdtTy "ListBool") (AdtTy "ListBool")) (Cnstr "Cons" [Tru]))
-  test
-    "partially applied Just"
-    (Anno (FuncTy BoolTy (AdtTy "MaybeBool")) (Cnstr "Just" []))
-  putStrLn ""
+    -- Case elimination
+    section "Case Elimination"
+    test
+      "case Nil of Nil -> True | Cons x xs -> False ==> True"
+      ( Anno
+          BoolTy
+          ( Case
+              (Anno (AdtTy "ListBool") (Cnstr "Nil" []))
+              [("Nil", [], Tru), ("Cons", ["x", "xs"], Fls)]
+          )
+      )
+      (Anno BoolTy Tru)
+    test
+      "case (Cons True Nil) of Nil -> False | Cons x xs -> x ==> True"
+      ( Anno
+          BoolTy
+          ( Case
+              (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
+              [("Nil", [], Fls), ("Cons", ["x", "xs"], Var "x")]
+          )
+      )
+      (Anno BoolTy Tru)
+    test
+      "case (Cons False Nil) of Nil -> True | Cons x xs -> x ==> False"
+      ( Anno
+          BoolTy
+          ( Case
+              (Anno (AdtTy "ListBool") (Cnstr "Cons" [Fls, Cnstr "Nil" []]))
+              [("Nil", [], Tru), ("Cons", ["x", "xs"], Var "x")]
+          )
+      )
+      (Anno BoolTy Fls)
+    test
+      "case Nothing of Nothing -> True | Just x -> x ==> True"
+      ( Anno
+          BoolTy
+          ( Case
+              (Anno (AdtTy "MaybeBool") (Cnstr "Nothing" []))
+              [("Nothing", [], Tru), ("Just", ["x"], Var "x")]
+          )
+      )
+      (Anno BoolTy Tru)
+    test
+      "case (Just False) of Nothing -> True | Just x -> x ==> False"
+      ( Anno
+          BoolTy
+          ( Case
+              (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Fls]))
+              [("Nothing", [], Tru), ("Just", ["x"], Var "x")]
+          )
+      )
+      (Anno BoolTy Fls)
 
-  -- Case elimination
-  section "Case Elimination"
-  test
-    "case Nil of Nil -> True | Cons x xs -> False ==> True"
-    ( Anno
-        BoolTy
-        ( Case
-            (Anno (AdtTy "ListBool") (Cnstr "Nil" []))
-            [("Nil", [], Tru), ("Cons", ["x", "xs"], Fls)]
-        )
-    )
-  test
-    "case (Cons True Nil) of Nil -> False | Cons x xs -> x ==> True"
-    ( Anno
-        BoolTy
-        ( Case
-            (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
-            [("Nil", [], Fls), ("Cons", ["x", "xs"], Var "x")]
-        )
-    )
-  test
-    "case (Cons False Nil) of Nil -> True | Cons x xs -> x ==> False"
-    ( Anno
-        BoolTy
-        ( Case
-            (Anno (AdtTy "ListBool") (Cnstr "Cons" [Fls, Cnstr "Nil" []]))
-            [("Nil", [], Tru), ("Cons", ["x", "xs"], Var "x")]
-        )
-    )
-  test
-    "case Nothing of Nothing -> True | Just x -> x ==> True"
-    ( Anno
-        BoolTy
-        ( Case
-            (Anno (AdtTy "MaybeBool") (Cnstr "Nothing" []))
-            [("Nothing", [], Tru), ("Just", ["x"], Var "x")]
-        )
-    )
-  test
-    "case (Just False) of Nothing -> True | Just x -> x ==> False"
-    ( Anno
-        BoolTy
-        ( Case
-            (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Fls]))
-            [("Nothing", [], Tru), ("Just", ["x"], Var "x")]
-        )
-    )
-  putStrLn ""
+    -- Nested case
+    section "Nested / Recursive"
+    test
+      "case (Cons True (Cons False Nil)) of Nil -> Nil | Cons x xs -> xs ==> Cons False Nil"
+      ( Anno
+          (AdtTy "ListBool")
+          ( Case
+              (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]]))
+              [("Nil", [], Cnstr "Nil" []), ("Cons", ["x", "xs"], Var "xs")]
+          )
+      )
+      (Anno (AdtTy "ListBool") (Cnstr "Cons" [Fls, Cnstr "Nil" []]))
+    test
+      "case (case (Cons True (Cons False Nil)) of ... -> xs) of ... -> x ==> False"
+      ( Anno
+          BoolTy
+          ( Case
+              ( Anno
+                  (AdtTy "ListBool")
+                  ( Case
+                      (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]]))
+                      [("Nil", [], Cnstr "Nil" []), ("Cons", ["x", "xs"], Var "xs")]
+                  )
+              )
+              [("Nil", [], Tru), ("Cons", ["x", "xs"], Var "x")]
+          )
+      )
+      (Anno BoolTy Fls)
 
-  -- Nested case
-  section "Nested / Recursive"
-  test
-    "case (Cons True (Cons False Nil)) of Nil -> Nil | Cons x xs -> xs ==> Cons False Nil"
-    ( Anno
-        (AdtTy "ListBool")
-        ( Case
-            (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]]))
-            [("Nil", [], Cnstr "Nil" []), ("Cons", ["x", "xs"], Var "xs")]
-        )
-    )
-  test
-    "case (case (Cons True (Cons False Nil)) of ... -> xs) of ... -> x ==> False"
-    ( Anno
-        BoolTy
-        ( Case
-            ( Anno
-                (AdtTy "ListBool")
-                ( Case
-                    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Cons" [Fls, Cnstr "Nil" []]]))
-                    [("Nil", [], Cnstr "Nil" []), ("Cons", ["x", "xs"], Var "xs")]
-                )
-            )
-            [("Nil", [], Tru), ("Cons", ["x", "xs"], Var "x")]
-        )
-    )
-  putStrLn ""
+    -- Case on a neutral scrutinee. These force doCase's VNeutral branch and
+    -- the VCase quote arm, which the concrete-scrutinee tests above never
+    -- reach. The case is kept in the normal form, so they are smoke tested.
+    section "Case: stuck on neutral scrutinee"
+    smoke
+      "\\xs. case xs of Nil -> True | Cons h t -> h"
+      -- (λxs. case xs of Nil → True; Cons h t → h) : ListBool → Bool
+      ( Anno
+          (FuncTy (AdtTy "ListBool") BoolTy)
+          (Lam "xs" (Case (Var "xs") [("Nil", [], Tru), ("Cons", ["h", "t"], Var "h")]))
+      )
+    smoke
+      "\\m. case m of Nothing -> False | Just b -> b"
+      -- (λm. case m of Nothing → False; Just b → b) : MaybeBool → Bool
+      ( Anno
+          (FuncTy (AdtTy "MaybeBool") BoolTy)
+          (Lam "m" (Case (Var "m") [("Nothing", [], Fls), ("Just", ["b"], Var "b")]))
+      )
+    smoke
+      "\\xs. case xs of Nil -> Nil | Cons h t -> t (motive is an ADT)"
+      -- (λxs. case xs of Nil → Nil; Cons h t → t) : ListBool → ListBool
+      ( Anno
+          (FuncTy (AdtTy "ListBool") (AdtTy "ListBool"))
+          (Lam "xs" (Case (Var "xs") [("Nil", [], Cnstr "Nil" []), ("Cons", ["h", "t"], Var "t")]))
+      )
 
-  -- Case on a neutral scrutinee. These force doCase's VNeutral branch and
-  -- the VCase quote arm, which the concrete-scrutinee tests above never
-  -- reach. The case is kept in the normal form.
-  section "Case: stuck on neutral scrutinee"
-  test
-    "\\xs. case xs of Nil -> True | Cons h t -> h"
-    -- (λxs. case xs of Nil → True; Cons h t → h) : ListBool → Bool
-    ( Anno
-        (FuncTy (AdtTy "ListBool") BoolTy)
-        (Lam "xs" (Case (Var "xs") [("Nil", [], Tru), ("Cons", ["h", "t"], Var "h")]))
-    )
-  test
-    "\\m. case m of Nothing -> False | Just b -> b"
-    -- (λm. case m of Nothing → False; Just b → b) : MaybeBool → Bool
-    ( Anno
-        (FuncTy (AdtTy "MaybeBool") BoolTy)
-        (Lam "m" (Case (Var "m") [("Nothing", [], Fls), ("Just", ["b"], Var "b")]))
-    )
-  test
-    "\\xs. case xs of Nil -> Nil | Cons h t -> t (motive is an ADT)"
-    -- (λxs. case xs of Nil → Nil; Cons h t → t) : ListBool → ListBool
-    ( Anno
-        (FuncTy (AdtTy "ListBool") (AdtTy "ListBool"))
-        (Lam "xs" (Case (Var "xs") [("Nil", [], Cnstr "Nil" []), ("Cons", ["h", "t"], Var "t")]))
-    )
-  putStrLn ""
+    -- Holes
+    section "Holes"
+    smoke
+      "identity with hole body"
+      ( Anno
+          (UnitTy `FuncTy` UnitTy)
+          (Lam "x" Hole)
+      )
+    smoke
+      "Cons ? Nil (hole in constructor arg)"
+      (Anno (AdtTy "ListBool") (Cnstr "Cons" [Hole, Cnstr "Nil" []]))
 
-  -- Holes
-  section "Holes"
-  test
-    "identity with hole body"
-    ( Anno
-        (UnitTy `FuncTy` UnitTy)
-        (Lam "x" Hole)
-    )
-  test
-    "Cons ? Nil (hole in constructor arg)"
-    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Hole, Cnstr "Nil" []]))
-  putStrLn ""
+    -- Unification: a hole in synthesizing position no longer fails. It mints a
+    -- fresh metavariable, survives elaboration, and reports whatever skeleton the
+    -- surrounding eliminators carve out for it. These normal forms are still
+    -- partly metavariables, so they are smoke tested rather than asserted.
+    section "Unification (solvable holes)"
+    smoke
+      "bare _ synthesizes an unsolved metavariable"
+      Hole
+    smoke
+      "fst _ : the hole is forced to a pair skeleton"
+      (Fst Hole)
+    smoke
+      "fst (snd _) : nested skeleton, ?a * (?b * ?c)"
+      (Fst (Snd Hole))
+    smoke
+      "_ () : the hole is forced to a function, domain solved by the arg"
+      (Ap Hole Unit)
+    smoke
+      "(_ () : Unit) : argument and result pin the hole to Unit -> Unit"
+      (Anno UnitTy (Ap Hole Unit))
+    smoke
+      "let x = _ in (x, True) : Bool * Bool : a use solves the hole to Bool"
+      (Anno (PairTy BoolTy BoolTy) (Let "x" Hole (Pair (Var "x") Tru)))
+    smoke
+      "case _ of Nil/Cons : the scrutinee hole is imitated to ListBool"
+      ( Anno
+          BoolTy
+          (Case Hole [("Nil", [], Fls), ("Cons", ["h", "t"], Var "h")])
+      )
+    smoke
+      "_ (Cons True Nil) : the hole's domain is imitated to ListBool"
+      (Ap Hole (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
+    smoke
+      "case _ of InL/InR : the scrutinee hole is imitated to a sum"
+      (Anno BoolTy (SumCase Hole ("x", Var "x") ("y", Var "y")))
+    smoke
+      "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
+      (Ap Hole (InL Tru))
 
-  -- Unification: a hole in synthesizing position no longer fails. It mints a
-  -- fresh metavariable, survives elaboration, and reports whatever skeleton the
-  -- surrounding eliminators carve out for it. A hole pinned by the types that
-  -- flow in around it gets fully solved.
-  section "Unification (solvable holes)"
-  test
-    "bare _ synthesizes an unsolved metavariable"
-    Hole
-  test
-    "fst _ : the hole is forced to a pair skeleton"
-    (Fst Hole)
-  test
-    "fst (snd _) : nested skeleton, ?a * (?b * ?c)"
-    (Fst (Snd Hole))
-  test
-    "_ () : the hole is forced to a function, domain solved by the arg"
-    (Ap Hole Unit)
-  test
-    "(_ () : Unit) : argument and result pin the hole to Unit -> Unit"
-    (Anno UnitTy (Ap Hole Unit))
-  test
-    "let x = _ in (x, True) : Bool * Bool : a use solves the hole to Bool"
-    (Anno (PairTy BoolTy BoolTy) (Let "x" Hole (Pair (Var "x") Tru)))
-  test
-    "case _ of Nil/Cons : the scrutinee hole is imitated to ListBool"
-    ( Anno
-        BoolTy
-        (Case Hole [("Nil", [], Fls), ("Cons", ["h", "t"], Var "h")])
-    )
-  test
-    "_ (Cons True Nil) : the hole's domain is imitated to ListBool"
-    (Ap Hole (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
-  test
-    "case _ of InL/InR : the scrutinee hole is imitated to a sum"
-    (Anno BoolTy (SumCase Hole ("x", Var "x") ("y", Var "y")))
-  test
-    "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
-    (Ap Hole (InL Tru))
-  putStrLn ""
+    -- Unification: rigid mismatches and the occurs check.
+    section "Unification (expected failures)"
+    err
+      "(_, ()) : Bool : a pair cannot unify with Bool"
+      (Anno BoolTy (Pair Hole Unit))
+    err
+      "let x = _ in (x, x) : Bool * Unit : conflicting uses of the same hole"
+      (Anno (PairTy BoolTy UnitTy) (Let "x" Hole (Pair (Var "x") (Var "x"))))
+    err
+      "let x = _ in x x : self-application triggers the occurs check"
+      (Anno BoolTy (Let "x" Hole (Ap (Var "x") (Var "x"))))
+    err
+      "case _ of {} : an empty case on a hole cannot infer the ADT"
+      (Anno BoolTy (Case Hole []))
 
-  -- Unification: rigid mismatches and the occurs check.
-  section "Unification (expected failures)"
-  testErr
-    "(_, ()) : Bool : a pair cannot unify with Bool"
-    (Anno BoolTy (Pair Hole Unit))
-  testErr
-    "let x = _ in (x, x) : Bool * Unit : conflicting uses of the same hole"
-    (Anno (PairTy BoolTy UnitTy) (Let "x" Hole (Pair (Var "x") (Var "x"))))
-  testErr
-    "let x = _ in x x : self-application triggers the occurs check"
-    (Anno BoolTy (Let "x" Hole (Ap (Var "x") (Var "x"))))
-  testErr
-    "case _ of {} : an empty case on a hole cannot infer the ADT"
-    (Anno BoolTy (Case Hole []))
-  putStrLn ""
+    -- Error cases
+    section "Error Cases (expected failures)"
+    err
+      "Too many args: Cons True False Nil"
+      (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Fls, Cnstr "Nil" []]))
+    err
+      "Unknown constructor"
+      (Anno (AdtTy "ListBool") (Cnstr "Bogus" []))
+    err
+      "Constructor belongs to wrong ADT: Cons checked at MaybeBool (issue #23)"
+      (Anno (AdtTy "MaybeBool") (Cnstr "Cons" [Tru]))
+    err
+      "Wrong ADT in recursive position: Nothing inside Cons (issue #23)"
+      (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nothing" []]))
+    err
+      "Type mismatch in constructor arg"
+      (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Unit]))
+    err
+      "Case on non-ADT type"
+      ( Anno
+          BoolTy
+          (Case (Anno BoolTy Tru) [("Nil", [], Fls)])
+      )
+    err
+      "Cannot synthesize lambda"
+      (Lam "x" (Var "x"))
+    err
+      "Absurd on non-Void"
+      ( Anno
+          BoolTy
+          (Absurd (Anno BoolTy Tru))
+      )
 
-  -- Error cases
-  section "Error Cases (expected failures)"
-  testErr
-    "Too many args: Cons True False Nil"
-    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Fls, Cnstr "Nil" []]))
-  testErr
-    "Unknown constructor"
-    (Anno (AdtTy "ListBool") (Cnstr "Bogus" []))
-  testErr
-    "Constructor belongs to wrong ADT: Cons checked at MaybeBool (issue #23)"
-    (Anno (AdtTy "MaybeBool") (Cnstr "Cons" [Tru]))
-  testErr
-    "Wrong ADT in recursive position: Nothing inside Cons (issue #23)"
-    (Anno (AdtTy "ListBool") (Cnstr "Cons" [Tru, Cnstr "Nothing" []]))
-  testErr
-    "Type mismatch in constructor arg"
-    (Anno (AdtTy "MaybeBool") (Cnstr "Just" [Unit]))
-  testErr
-    "Case on non-ADT type"
-    ( Anno
-        BoolTy
-        (Case (Anno BoolTy Tru) [("Nil", [], Fls)])
-    )
-  testErr
-    "Cannot synthesize lambda"
-    (Lam "x" (Var "x"))
-  testErr
-    "Absurd on non-Void"
-    ( Anno
-        BoolTy
-        (Absurd (Anno BoolTy Tru))
-    )
-  putStrLn ""
-
-  -- 7. Strict positivity. A recursive occurrence to the left of an arrow is
-  -- rejected at declaration time; a strictly positive recursive type is
-  -- accepted. This is a check on elaborateDefinitions, so it does not go
-  -- through the Term-based test harness.
-  section "Strict Positivity (declaration checks)"
-  case elaborateDefinitions [DataDecl "Bad" [CnstrDecl "MkBad" [TyRefFunc (TyRef "Bad") (TyRef "Bad")]]] of
-    Left (NonStrictlyPositive _ _) -> putStrLn "  OK:   data Bad = MkBad (Bad -> Bad) rejected (not strictly positive)"
-    Left err -> putStrLn ("  FAIL: Bad rejected for the wrong reason: " <> show err)
-    Right _ -> putStrLn "  FAIL: data Bad = MkBad (Bad -> Bad) accepted (should be rejected)"
-  case elaborateDefinitions [DataDecl "ListBool" [CnstrDecl "Nil" [], CnstrDecl "Cons" [TyRefBool, TyRef "ListBool"]]] of
-    Right _ -> putStrLn "  OK:   data ListBool = Nil | Cons Bool ListBool accepted (strictly positive)"
-    Left err -> putStrLn ("  FAIL: ListBool rejected: " <> show err)
-  putStrLn ""
+    -- Strict positivity. A recursive occurrence to the left of an arrow is
+    -- rejected at declaration time; a strictly positive recursive type is
+    -- accepted. This is a check on elaborateDefinitions, so it does not go
+    -- through the Term-based test harness.
+    section "Strict Positivity (declaration checks)"
+    liftIO $ case elaborateDefinitions [DataDecl "Bad" [CnstrDecl "MkBad" [TyRefFunc (TyRef "Bad") (TyRef "Bad")]]] of
+      Left (NonStrictlyPositive _ _) -> putStrLn "  OK:   data Bad = MkBad (Bad -> Bad) rejected (not strictly positive)"
+      Left err -> putStrLn ("  FAIL: Bad rejected for the wrong reason: " <> show err)
+      Right _ -> putStrLn "  FAIL: data Bad = MkBad (Bad -> Bad) accepted (should be rejected)"
+    liftIO $ case elaborateDefinitions [DataDecl "ListBool" [CnstrDecl "Nil" [], CnstrDecl "Cons" [TyRefBool, TyRef "ListBool"]]] of
+      Right _ -> putStrLn "  OK:   data ListBool = Nil | Cons Bool ListBool accepted (strictly positive)"
+      Left err -> putStrLn ("  FAIL: ListBool rejected: " <> show err)

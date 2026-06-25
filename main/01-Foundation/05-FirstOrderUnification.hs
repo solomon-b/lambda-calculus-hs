@@ -42,7 +42,7 @@ import Data.Maybe (fromMaybe)
 import Data.String
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), runTest, runTestErr, section)
+import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
 import Utils (SnocList (..), nth)
 
 --------------------------------------------------------------------------------
@@ -1137,7 +1137,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax Value, Holes)
 run term =
   let action = do
         ((ty, syn), hs) <- listen (runSynth (synth term))
@@ -1149,187 +1149,172 @@ run term =
         ((Left err, holes), _metas) -> Left (err, holes)
         ((Right (type', syntax, holes), _unZonkedHoles), _metas) -> do
           let evalEnv = EvalEnv Nil
-              result = flip runEvalM evalEnv $ do
-                value <- eval syntax
-                quote initLevel type' value
-          pure (RunResult syntax type' result, holes)
+              val = runEvalM (eval syntax) evalEnv
+              result = runEvalM (quote initLevel type' val) evalEnv
+          pure (RunResult syntax type' result val, holes)
 
 main :: IO ()
 main = do
-  let test = runTest run
-      testErr = runTestErr run
-
   putStrLn "=== First Order Unification ==="
-  putStrLn ""
+  runTests $ do
+    let test = assertEval run
+        smoke = testOk run
+        err = testErr run
 
-  -- Lambda / application
-  section "Lambda & Application"
-  test
-    "identity: (\\x. x) () ==> ()"
-    ( Ap
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-        Unit
-    )
-  test
-    "const: (\\x. \\y. x) () () ==> ()"
-    ( Ap
-        ( Ap
-            (Anno (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy)) (Lam "x" (Lam "_" (Var "x"))))
-            Unit
-        )
-        Unit
-    )
-  test
-    "not True ==> False"
-    ( Ap
-        (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
-        (Anno BoolTy Tru)
-    )
-  -- Resolving a function typed bound variable eta expands it during
-  -- quoting, which applies the variable. The binder must carry a function
-  -- type, not the fresh metavariable it was created with.
-  test
-    "id on functions: (\\f. f) : (Bool -> Bool) -> Bool -> Bool"
-    ( Anno
-        ((BoolTy `FuncTy` BoolTy) `FuncTy` (BoolTy `FuncTy` BoolTy))
-        (Lam "f" (Var "f"))
-    )
-  putStrLn ""
+    -- Lambda / application
+    section "Lambda & Application"
+    test
+      "identity: (\\x. x) () ==> ()"
+      (Ap (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x"))) Unit)
+      (Anno UnitTy Unit)
+    test
+      "const: (\\x. \\y. x) () () ==> ()"
+      ( Ap
+          ( Ap
+              (Anno (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy)) (Lam "x" (Lam "_" (Var "x"))))
+              Unit
+          )
+          Unit
+      )
+      (Anno UnitTy Unit)
+    test
+      "not True ==> False"
+      ( Ap
+          (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
+          (Anno BoolTy Tru)
+      )
+      (Anno BoolTy Fls)
+    -- Resolving a function typed bound variable eta expands it during quoting,
+    -- which applies the variable. The binder must carry a function type, not
+    -- the fresh metavariable it was created with. The normal form has a binder,
+    -- so we only smoke test it (binder names in the quoted form are not stable
+    -- enough to assert against).
+    smoke
+      "id on functions: (\\f. f) : (Bool -> Bool) -> Bool -> Bool"
+      ( Anno
+          ((BoolTy `FuncTy` BoolTy) `FuncTy` (BoolTy `FuncTy` BoolTy))
+          (Lam "f" (Var "f"))
+      )
 
-  -- Let bindings
-  section "Let Bindings"
-  test
-    "let x = True in (x, x) ==> (True, True)"
-    (Anno (PairTy BoolTy BoolTy) (Let "x" Tru (Pair (Var "x") (Var "x"))))
-  test
-    "let f = \\y. y in f () ==> () : the use pins f's metavariable to Unit"
-    (Anno UnitTy (Let "f" (Lam "y" (Var "y")) (Ap (Var "f") Unit)))
-  putStrLn ""
+    -- Let bindings
+    section "Let Bindings"
+    test
+      "let x = True in (x, x) ==> (True, True)"
+      (Anno (PairTy BoolTy BoolTy) (Let "x" Tru (Pair (Var "x") (Var "x"))))
+      (Anno (PairTy BoolTy BoolTy) (Pair Tru Tru))
+    test
+      "let f = \\y. y in f () ==> () : the use pins f's metavariable to Unit"
+      (Anno UnitTy (Let "f" (Lam "y" (Var "y")) (Ap (Var "f") Unit)))
+      (Anno UnitTy Unit)
 
-  -- Pairs
-  section "Pairs"
-  test
-    "fst (True, False) ==> True"
-    (Fst (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-  test
-    "snd (True, False) ==> False"
-    (Snd (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-  putStrLn ""
+    -- Pairs
+    section "Pairs"
+    test
+      "fst (True, False) ==> True"
+      (Fst (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
+      (Anno BoolTy Tru)
+    test
+      "snd (True, False) ==> False"
+      (Snd (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
+      (Anno BoolTy Fls)
 
-  -- Sums
-  section "Sums"
-  test
-    "case InL True of InL x -> x | InR y -> y ==> True"
-    ( Anno
-        BoolTy
-        ( SumCase
-            (Anno (SumTy BoolTy BoolTy) (InL Tru))
-            ("x", Var "x")
-            ("y", Var "y")
-        )
-    )
-  test
-    "case InR False of InL x -> x | InR y -> y ==> False"
-    ( Anno
-        BoolTy
-        ( SumCase
-            (Anno (SumTy BoolTy BoolTy) (InR Fls))
-            ("x", Var "x")
-            ("y", Var "y")
-        )
-    )
-  test
-    "\\s. case s of inl x -> x | inr y -> y (stuck on neutral s, builds VSumCase)"
-    ( Anno
-        (SumTy BoolTy BoolTy `FuncTy` BoolTy)
-        (Lam "s" (SumCase (Var "s") ("x", Var "x") ("y", Var "y")))
-    )
-  putStrLn ""
+    -- Sums
+    section "Sums"
+    test
+      "case InL True of InL x -> x | InR y -> y ==> True"
+      ( Anno
+          BoolTy
+          (SumCase (Anno (SumTy BoolTy BoolTy) (InL Tru)) ("x", Var "x") ("y", Var "y"))
+      )
+      (Anno BoolTy Tru)
+    test
+      "case InR False of InL x -> x | InR y -> y ==> False"
+      ( Anno
+          BoolTy
+          (SumCase (Anno (SumTy BoolTy BoolTy) (InR Fls)) ("x", Var "x") ("y", Var "y"))
+      )
+      (Anno BoolTy Fls)
+    smoke
+      "\\s. case s of inl x -> x | inr y -> y (stuck on neutral s, builds VSumCase)"
+      ( Anno
+          (SumTy BoolTy BoolTy `FuncTy` BoolTy)
+          (Lam "s" (SumCase (Var "s") ("x", Var "x") ("y", Var "y")))
+      )
 
-  -- Booleans / If
-  section "Booleans"
-  test
-    "if True then False else True ==> False"
-    (Anno BoolTy (If Tru Fls Tru))
-  test
-    "if False then False else True ==> True"
-    (Anno BoolTy (If Fls Fls Tru))
-  test
-    "\\b. if b then False else True (if stuck on neutral b, builds VIf)"
-    (Anno (BoolTy `FuncTy` BoolTy) (Lam "b" (If (Var "b") Fls Tru)))
-  putStrLn ""
+    -- Booleans / If
+    section "Booleans"
+    test
+      "if True then False else True ==> False"
+      (Anno BoolTy (If Tru Fls Tru))
+      (Anno BoolTy Fls)
+    test
+      "if False then False else True ==> True"
+      (Anno BoolTy (If Fls Fls Tru))
+      (Anno BoolTy Tru)
+    smoke
+      "\\b. if b then False else True (if stuck on neutral b, builds VIf)"
+      (Anno (BoolTy `FuncTy` BoolTy) (Lam "b" (If (Var "b") Fls Tru)))
 
-  -- Void — absurd has no values to reduce; its only behaviour is the stuck
-  -- read-back of a neutral Void scrutinee under a binder.
-  section "Void"
-  test
-    "\\x. absurd x : Void -> Bool (stuck absurd builds VAbsurd)"
-    (Anno (VoidTy `FuncTy` BoolTy) (Lam "x" (Absurd (Var "x"))))
-  putStrLn ""
+    -- Void — absurd has no values to reduce; its only behaviour is the stuck
+    -- read-back of a neutral Void scrutinee under a binder.
+    section "Void"
+    smoke
+      "\\x. absurd x : Void -> Bool (stuck absurd builds VAbsurd)"
+      (Anno (VoidTy `FuncTy` BoolTy) (Lam "x" (Absurd (Var "x"))))
 
-  -- Holes
-  section "Holes"
-  test
-    "identity with hole body"
-    ( Anno
-        (UnitTy `FuncTy` UnitTy)
-        (Lam "x" Hole)
-    )
-  putStrLn ""
+    -- Holes
+    section "Holes"
+    smoke
+      "identity with hole body"
+      (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" Hole))
 
-  -- Unification: a hole in synthesizing position no longer fails. It mints a
-  -- fresh metavariable, survives elaboration, and reports whatever skeleton the
-  -- surrounding eliminators carve out for it. A hole pinned by the types that
-  -- flow in around it gets fully solved.
-  section "Unification (solvable holes)"
-  test
-    "bare _ synthesizes an unsolved metavariable"
-    Hole
-  test
-    "fst _ : the hole is forced to a pair skeleton"
-    (Fst Hole)
-  test
-    "fst (snd _) : nested skeleton, ?a * (?b * ?c)"
-    (Fst (Snd Hole))
-  test
-    "_ () : the hole is forced to a function, domain solved by the arg"
-    (Ap Hole Unit)
-  test
-    "(_ () : Unit) : argument and result pin the hole to Unit -> Unit"
-    (Anno UnitTy (Ap Hole Unit))
-  test
-    "case _ of InL/InR : the scrutinee hole is imitated to a sum"
-    (Anno BoolTy (SumCase Hole ("x", Var "x") ("y", Var "y")))
-  test
-    "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
-    (Ap Hole (InL Tru))
-  test
-    "let x = _ in (x, True) : Bool * Bool : a use solves the hole to Bool"
-    (Anno (PairTy BoolTy BoolTy) (Let "x" Hole (Pair (Var "x") Tru)))
-  putStrLn ""
+    -- Unification: a hole in synthesizing position no longer fails. It mints a
+    -- fresh metavariable, survives elaboration, and reports whatever skeleton
+    -- the surrounding eliminators carve out for it. These normal forms are
+    -- still partly metavariables, so they are smoke tested rather than asserted.
+    section "Unification (solvable holes)"
+    smoke
+      "bare _ synthesizes an unsolved metavariable"
+      Hole
+    smoke
+      "fst _ : the hole is forced to a pair skeleton"
+      (Fst Hole)
+    smoke
+      "fst (snd _) : nested skeleton, ?a * (?b * ?c)"
+      (Fst (Snd Hole))
+    smoke
+      "_ () : the hole is forced to a function, domain solved by the arg"
+      (Ap Hole Unit)
+    smoke
+      "(_ () : Unit) : argument and result pin the hole to Unit -> Unit"
+      (Anno UnitTy (Ap Hole Unit))
+    smoke
+      "case _ of InL/InR : the scrutinee hole is imitated to a sum"
+      (Anno BoolTy (SumCase Hole ("x", Var "x") ("y", Var "y")))
+    smoke
+      "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
+      (Ap Hole (InL Tru))
+    smoke
+      "let x = _ in (x, True) : Bool * Bool : a use solves the hole to Bool"
+      (Anno (PairTy BoolTy BoolTy) (Let "x" Hole (Pair (Var "x") Tru)))
 
-  -- Unification: rigid mismatches and the occurs check.
-  section "Unification (expected failures)"
-  testErr
-    "(_, ()) : Bool : a pair cannot unify with Bool"
-    (Anno BoolTy (Pair Hole Unit))
-  testErr
-    "let x = _ in (x, x) : Bool * Unit : conflicting uses of the same hole"
-    (Anno (PairTy BoolTy UnitTy) (Let "x" Hole (Pair (Var "x") (Var "x"))))
-  testErr
-    "let x = _ in x x : self-application triggers the occurs check"
-    (Anno BoolTy (Let "x" Hole (Ap (Var "x") (Var "x"))))
-  putStrLn ""
+    -- Unification: rigid mismatches and the occurs check.
+    section "Unification (expected failures)"
+    err
+      "(_, ()) : Bool : a pair cannot unify with Bool"
+      (Anno BoolTy (Pair Hole Unit))
+    err
+      "let x = _ in (x, x) : Bool * Unit : conflicting uses of the same hole"
+      (Anno (PairTy BoolTy UnitTy) (Let "x" Hole (Pair (Var "x") (Var "x"))))
+    err
+      "let x = _ in x x : self-application triggers the occurs check"
+      (Anno BoolTy (Let "x" Hole (Ap (Var "x") (Var "x"))))
 
-  -- Error cases
-  section "Error Cases (expected failures)"
-  testErr
-    "Cannot synthesize lambda"
-    (Lam "x" (Var "x"))
-  testErr
-    "Absurd on non-Void"
-    ( Anno
-        BoolTy
-        (Absurd (Anno BoolTy Tru))
-    )
-  putStrLn ""
+    -- Error cases
+    section "Error Cases (expected failures)"
+    err
+      "Cannot synthesize lambda"
+      (Lam "x" (Var "x"))
+    err
+      "Absurd on non-Void"
+      (Anno BoolTy (Absurd (Anno BoolTy Tru)))

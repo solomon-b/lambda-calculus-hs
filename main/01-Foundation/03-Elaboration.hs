@@ -26,7 +26,7 @@ import Data.Maybe (fromMaybe)
 import Data.String
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), runTest, runTestErr, section)
+import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
 import Utils (SnocList (..), nth)
 
 --------------------------------------------------------------------------------
@@ -871,239 +871,247 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, ()) (RunResult Syntax Type Syntax, ())
+run :: Term -> Either (Error, ()) (RunResult Syntax Type Syntax Value, ())
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     Left err -> Left (err, ())
     Right (type', syntax) -> do
-      let result = flip runEvalM Nil $ do
-            value <- eval syntax
-            quote initLevel type' value
-      pure (RunResult syntax type' result, ())
+      let val = runEvalM (eval syntax) Nil
+          result = runEvalM (quote initLevel type' val) Nil
+      pure (RunResult syntax type' result val, ())
 
 main :: IO ()
 main = do
-  let test = runTest run
-      testErr = runTestErr run
-
   putStrLn "=== Elaboration ==="
-  putStrLn ""
+  runTests $ do
+    let test = assertEval run
+        smoke = testOk run
+        err = testErr run
 
-  -- Elaboration of variables — names become de Bruijn indices
-  section "Variable Elaboration"
-  test
-    "\\x. x : Unit -> Unit — Var \"x\" elaborates to SVar 0"
-    ( Anno
-        (UnitTy `FuncTy` UnitTy)
-        (Lam "x" (Var "x"))
-    )
-  test
-    "\\x. \\y. x : Unit -> Unit -> Unit — Var \"x\" elaborates to SVar 1"
-    ( Anno
-        (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-        (Lam "x" (Lam "y" (Var "x")))
-    )
-  test
-    "\\x. \\y. y : Unit -> Unit -> Unit — Var \"y\" elaborates to SVar 0"
-    ( Anno
-        (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-        (Lam "x" (Lam "y" (Var "y")))
-    )
-  putStrLn ""
+    -- Elaboration of variables — names become de Bruijn indices
+    section "Variable Elaboration"
+    smoke
+      "\\x. x : Unit -> Unit — Var \"x\" elaborates to SVar 0"
+      ( Anno
+          (UnitTy `FuncTy` UnitTy)
+          (Lam "x" (Var "x"))
+      )
+    smoke
+      "\\x. \\y. x : Unit -> Unit -> Unit — Var \"x\" elaborates to SVar 1"
+      ( Anno
+          (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
+          (Lam "x" (Lam "y" (Var "x")))
+      )
+    smoke
+      "\\x. \\y. y : Unit -> Unit -> Unit — Var \"y\" elaborates to SVar 0"
+      ( Anno
+          (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
+          (Lam "x" (Lam "y" (Var "y")))
+      )
 
-  -- Elaboration of application
-  section "Application Elaboration"
-  test
-    "(\\x. x : Unit -> Unit) () ==> ()"
-    ( Ap
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-        Unit
-    )
-  test
-    "(\\f. f : (U->U) -> U->U) (\\x. x : U->U) — higher-order"
-    ( Ap
-        ( Anno
-            ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-            (Lam "f" (Var "f"))
-        )
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-    )
-  test
-    "(\\f. \\x. f x) (\\x. x) () ==> ()"
-    ( Ap
-        ( Ap
-            ( Anno
-                ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-                (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))
-            )
-            (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-        )
-        Unit
-    )
-  putStrLn ""
+    -- Elaboration of application
+    section "Application Elaboration"
+    test
+      "(\\x. x : Unit -> Unit) () ==> ()"
+      ( Ap
+          (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+          Unit
+      )
+      (Anno UnitTy Unit)
+    smoke
+      "(\\f. f : (U->U) -> U->U) (\\x. x : U->U) — higher-order"
+      ( Ap
+          ( Anno
+              ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+              (Lam "f" (Var "f"))
+          )
+          (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+      )
+    test
+      "(\\f. \\x. f x) (\\x. x) () ==> ()"
+      ( Ap
+          ( Ap
+              ( Anno
+                  ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+                  (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))
+              )
+              (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+          )
+          Unit
+      )
+      (Anno UnitTy Unit)
 
-  -- Elaboration of pairs — checked, not synthesized
-  section "Pair Elaboration"
-  test
-    "((), ()) : Unit * Unit"
-    ( Anno
-        (PairTy UnitTy UnitTy)
-        (Pair Unit Unit)
-    )
-  test
-    "fst ((), ()) ==> ()"
-    (Fst (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
-  test
-    "snd ((), ()) ==> ()"
-    (Snd (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
-  test
-    "nested pair (((), ()), ()) : (Unit * Unit) * Unit"
-    ( Anno
-        (PairTy (PairTy UnitTy UnitTy) UnitTy)
-        (Pair (Pair Unit Unit) Unit)
-    )
-  putStrLn ""
+    -- Elaboration of pairs — checked, not synthesized
+    section "Pair Elaboration"
+    test
+      "((), ()) : Unit * Unit"
+      ( Anno
+          (PairTy UnitTy UnitTy)
+          (Pair Unit Unit)
+      )
+      (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit))
+    test
+      "fst ((), ()) ==> ()"
+      (Fst (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
+      (Anno UnitTy Unit)
+    test
+      "snd ((), ()) ==> ()"
+      (Snd (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
+      (Anno UnitTy Unit)
+    test
+      "nested pair (((), ()), ()) : (Unit * Unit) * Unit"
+      ( Anno
+          (PairTy (PairTy UnitTy UnitTy) UnitTy)
+          (Pair (Pair Unit Unit) Unit)
+      )
+      ( Anno
+          (PairTy (PairTy UnitTy UnitTy) UnitTy)
+          (Pair (Pair Unit Unit) Unit)
+      )
 
-  -- NbE through elaboration — shows Term -> Syntax -> Value -> Syntax pipeline
-  section "NbE Through Elaboration"
-  test
-    "eta-expansion: \\f. f elaborates and normalizes to \\f. \\x. f x"
-    ( Anno
-        ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-        (Lam "f" (Var "f"))
-    )
-  test
-    "beta reduction through elaboration: (\\x. x) () ==> ()"
-    ( Ap
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-        Unit
-    )
-  test
-    "pair in function: \\x. (x, x) : Unit -> Unit * Unit"
-    ( Anno
-        (UnitTy `FuncTy` PairTy UnitTy UnitTy)
-        (Lam "x" (Pair (Var "x") (Var "x")))
-    )
-  putStrLn ""
+    -- NbE through elaboration — shows Term -> Syntax -> Value -> Syntax pipeline
+    section "NbE Through Elaboration"
+    smoke
+      "eta-expansion: \\f. f elaborates and normalizes to \\f. \\x. f x"
+      ( Anno
+          ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+          (Lam "f" (Var "f"))
+      )
+    test
+      "beta reduction through elaboration: (\\x. x) () ==> ()"
+      ( Ap
+          (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+          Unit
+      )
+      (Anno UnitTy Unit)
+    smoke
+      "pair in function: \\x. (x, x) : Unit -> Unit * Unit"
+      ( Anno
+          (UnitTy `FuncTy` PairTy UnitTy UnitTy)
+          (Lam "x" (Pair (Var "x") (Var "x")))
+      )
 
-  -- Let bindings
-  section "Let Bindings"
-  test
-    "let x = () in x : Unit — basic let"
-    ( Anno
-        UnitTy
-        (Let "x" (Anno UnitTy Unit) (Var "x"))
-    )
-  test
-    "let f = (\\x. x : U -> U) in f () — let-bound function applied"
-    ( Anno
-        UnitTy
-        (Let "f" (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x"))) (Ap (Var "f") Unit))
-    )
-  test
-    "let x = () in let y = () in (x, y) — nested lets"
-    ( Anno
-        (PairTy UnitTy UnitTy)
-        (Let "x" (Anno UnitTy Unit) (Let "y" (Anno UnitTy Unit) (Pair (Var "x") (Var "y"))))
-    )
-  test
-    "let x = () in (x, x) — bound var used multiple times"
-    ( Anno
-        (PairTy UnitTy UnitTy)
-        (Let "x" (Anno UnitTy Unit) (Pair (Var "x") (Var "x")))
-    )
-  test
-    "let x = ((), ()) in fst x — let-bound pair projected"
-    ( Anno
-        UnitTy
-        (Let "x" (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)) (Fst (Var "x")))
-    )
-  test
-    "let x = () in \\y. x — let in lambda body, x is free in the lambda"
-    ( Anno
-        (UnitTy `FuncTy` UnitTy)
-        (Let "x" (Anno UnitTy Unit) (Lam "y" (Var "x")))
-    )
-  test
-    "\\y. let x = y in x — let inside lambda, binding the lambda arg"
-    ( Anno
-        (UnitTy `FuncTy` UnitTy)
-        (Lam "y" (Let "x" (Var "y") (Var "x")))
-    )
-  putStrLn ""
+    -- Let bindings
+    section "Let Bindings"
+    test
+      "let x = () in x : Unit — basic let"
+      ( Anno
+          UnitTy
+          (Let "x" (Anno UnitTy Unit) (Var "x"))
+      )
+      (Anno UnitTy Unit)
+    test
+      "let f = (\\x. x : U -> U) in f () — let-bound function applied"
+      ( Anno
+          UnitTy
+          (Let "f" (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x"))) (Ap (Var "f") Unit))
+      )
+      (Anno UnitTy Unit)
+    test
+      "let x = () in let y = () in (x, y) — nested lets"
+      ( Anno
+          (PairTy UnitTy UnitTy)
+          (Let "x" (Anno UnitTy Unit) (Let "y" (Anno UnitTy Unit) (Pair (Var "x") (Var "y"))))
+      )
+      (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit))
+    test
+      "let x = () in (x, x) — bound var used multiple times"
+      ( Anno
+          (PairTy UnitTy UnitTy)
+          (Let "x" (Anno UnitTy Unit) (Pair (Var "x") (Var "x")))
+      )
+      (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit))
+    test
+      "let x = ((), ()) in fst x — let-bound pair projected"
+      ( Anno
+          UnitTy
+          (Let "x" (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)) (Fst (Var "x")))
+      )
+      (Anno UnitTy Unit)
+    smoke
+      "let x = () in \\y. x — let in lambda body, x is free in the lambda"
+      ( Anno
+          (UnitTy `FuncTy` UnitTy)
+          (Let "x" (Anno UnitTy Unit) (Lam "y" (Var "x")))
+      )
+    smoke
+      "\\y. let x = y in x — let inside lambda, binding the lambda arg"
+      ( Anno
+          (UnitTy `FuncTy` UnitTy)
+          (Lam "y" (Let "x" (Var "y") (Var "x")))
+      )
 
-  -- Sub tactic — synthesized terms used in checked positions
-  section "Sub Tactic (Synth in Check Position)"
-  test
-    "Anno used in checked position: (\\x. x : U -> U) checked at U -> U"
-    ( Anno
-        (UnitTy `FuncTy` UnitTy)
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-    )
-  putStrLn ""
+    -- Sub tactic — synthesized terms used in checked positions
+    section "Sub Tactic (Synth in Check Position)"
+    smoke
+      "Anno used in checked position: (\\x. x : U -> U) checked at U -> U"
+      ( Anno
+          (UnitTy `FuncTy` UnitTy)
+          (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+      )
 
-  -- Booleans — if reduces on a known scrutinee, and now (with the motive in
-  -- the core SIf) stays stuck and reads back on a neutral one.
-  section "Booleans"
-  test
-    "if True then False else True ==> False"
-    (Anno BoolTy (If Tru Fls Tru))
-  test
-    "\\b. if b then False else True (if stuck on neutral b, reads back)"
-    (Anno (BoolTy `FuncTy` BoolTy) (Lam "b" (If (Var "b") Fls Tru)))
-  putStrLn ""
+    -- Booleans — if reduces on a known scrutinee, and now (with the motive in
+    -- the core SIf) stays stuck and reads back on a neutral one.
+    section "Booleans"
+    test
+      "if True then False else True ==> False"
+      (Anno BoolTy (If Tru Fls Tru))
+      (Anno BoolTy Fls)
+    smoke
+      "\\b. if b then False else True (if stuck on neutral b, reads back)"
+      (Anno (BoolTy `FuncTy` BoolTy) (Lam "b" (If (Var "b") Fls Tru)))
 
-  -- Sums — case reduces on a known injection, and stays stuck on a neutral
-  -- scrutinee, where read-back preserves the branch binders.
-  section "Sums"
-  test
-    "inl () : Unit + Bool"
-    (Anno (SumTy UnitTy BoolTy) (InL Unit))
-  test
-    "case (inl () : U + Bool) of inl x -> True | inr y -> False ==> True"
-    ( Anno
-        BoolTy
-        (Case (Anno (SumTy UnitTy BoolTy) (InL Unit)) ("x", Tru) ("y", Fls))
-    )
-  test
-    "\\s. case s of inl x -> x | inr y -> y (stuck on neutral s, binders preserved)"
-    ( Anno
-        (SumTy BoolTy BoolTy `FuncTy` BoolTy)
-        (Lam "s" (Case (Var "s") ("x", Var "x") ("y", Var "y")))
-    )
-  putStrLn ""
+    -- Sums — case reduces on a known injection, and stays stuck on a neutral
+    -- scrutinee, where read-back preserves the branch binders.
+    section "Sums"
+    test
+      "inl () : Unit + Bool"
+      (Anno (SumTy UnitTy BoolTy) (InL Unit))
+      (Anno (SumTy UnitTy BoolTy) (InL Unit))
+    test
+      "case (inl () : U + Bool) of inl x -> True | inr y -> False ==> True"
+      ( Anno
+          BoolTy
+          (Case (Anno (SumTy UnitTy BoolTy) (InL Unit)) ("x", Tru) ("y", Fls))
+      )
+      (Anno BoolTy Tru)
+    smoke
+      "\\s. case s of inl x -> x | inr y -> y (stuck on neutral s, binders preserved)"
+      ( Anno
+          (SumTy BoolTy BoolTy `FuncTy` BoolTy)
+          (Lam "s" (Case (Var "s") ("x", Var "x") ("y", Var "y")))
+      )
 
-  -- Void — absurd never reduces (Void is empty), so its only behaviour is the
-  -- stuck read-back of a neutral Void scrutinee under a binder.
-  section "Void"
-  test
-    "\\x. absurd x : Void -> Bool (stuck absurd reads back)"
-    (Anno (VoidTy `FuncTy` BoolTy) (Lam "x" (Absurd (Var "x"))))
-  putStrLn ""
+    -- Void — absurd never reduces (Void is empty), so its only behaviour is the
+    -- stuck read-back of a neutral Void scrutinee under a binder.
+    section "Void"
+    smoke
+      "\\x. absurd x : Void -> Bool (stuck absurd reads back)"
+      (Anno (VoidTy `FuncTy` BoolTy) (Lam "x" (Absurd (Var "x"))))
 
-  -- Error cases
-  section "Error Cases (expected failures)"
-  testErr
-    "absurd on a non-Void scrutinee"
-    (Anno BoolTy (Absurd (Anno BoolTy Tru)))
-  testErr
-    "Cannot synthesize lambda"
-    (Lam "x" (Var "x"))
-  testErr
-    "Cannot synthesize pair"
-    (Pair Unit Unit)
-  testErr
-    "Cannot synthesize unit"
-    Unit
-  testErr
-    "Out of scope variable"
-    (Anno UnitTy (Var "x"))
-  testErr
-    "Type mismatch: Unit checked at function type"
-    (Anno (UnitTy `FuncTy` UnitTy) Unit)
-  testErr
-    "Apply non-function"
-    ( Ap
-        (Anno UnitTy Unit)
-        Unit
-    )
+    -- Error cases
+    section "Error Cases (expected failures)"
+    err
+      "absurd on a non-Void scrutinee"
+      (Anno BoolTy (Absurd (Anno BoolTy Tru)))
+    err
+      "Cannot synthesize lambda"
+      (Lam "x" (Var "x"))
+    err
+      "Cannot synthesize pair"
+      (Pair Unit Unit)
+    err
+      "Cannot synthesize unit"
+      Unit
+    err
+      "Out of scope variable"
+      (Anno UnitTy (Var "x"))
+    err
+      "Type mismatch: Unit checked at function type"
+      (Anno (UnitTy `FuncTy` UnitTy) Unit)
+    err
+      "Apply non-function"
+      ( Ap
+          (Anno UnitTy Unit)
+          Unit
+      )

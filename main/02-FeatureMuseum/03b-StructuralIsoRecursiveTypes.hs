@@ -41,7 +41,7 @@ import Data.Maybe (fromMaybe)
 import Data.String
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), runTest, runTestErr, section)
+import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
 import Utils (SnocList (..), nth)
 
 --------------------------------------------------------------------------------
@@ -1323,7 +1323,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (RunResult Syntax SType Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax SType Syntax Value, Holes)
 run term =
   let action = do
         ((ty, syn), hs) <- listen (runSynth (synth term))
@@ -1335,82 +1335,93 @@ run term =
         ((Left err, holes), _metas) -> Left (err, holes)
         ((Right (type', syntax, holes), _unZonkedHoles), _metas) -> do
           let evalEnv = EvalEnv Nil
-              result = flip runEvalM evalEnv $ do
-                value <- eval syntax
-                quote initLevel type' value
-          pure (RunResult syntax type' result, holes)
+              val = runEvalM (eval syntax) evalEnv
+              result = runEvalM (quote initLevel type' val) evalEnv
+          pure (RunResult syntax type' result val, holes)
 
 main :: IO ()
 main = do
-  let test = runTest run
-      testErr = runTestErr run
-
   putStrLn "=== Structural Iso-Recursive Types ==="
-  putStrLn ""
+  runTests $ do
+    let test = assertEval run
+        smoke = testOk run
+        err = testErr run
 
-  -- Nat   = mu N. Unit + N            (Zero = inl (), Succ n = inr n)
-  -- ListBool = mu L. Unit + Bool * L  (Nil  = inl (), Cons b xs = inr (b, xs))
-  let natTy = MuTy "N" (SumTy UnitTy (TVar "N"))
-      zero = Anno natTy (Fold (InL Unit))
-      suc n = Anno natTy (Fold (InR n))
-      one = suc zero
-      two = suc one
-      listTy = MuTy "L" (SumTy UnitTy (PairTy BoolTy (TVar "L")))
-      nil = Anno listTy (Fold (InL Unit))
-      cons b xs = Anno listTy (Fold (InR (Pair b xs)))
+    -- Nat   = mu N. Unit + N            (Zero = inl (), Succ n = inr n)
+    -- ListBool = mu L. Unit + Bool * L  (Nil  = inl (), Cons b xs = inr (b, xs))
+    let natTy = MuTy "N" (SumTy UnitTy (TVar "N"))
+        zero = Anno natTy (Fold (InL Unit))
+        suc n = Anno natTy (Fold (InR n))
+        one = suc zero
+        two = suc one
+        listTy = MuTy "L" (SumTy UnitTy (PairTy BoolTy (TVar "L")))
+        nil = Anno listTy (Fold (InL Unit))
+        cons b xs = Anno listTy (Fold (InR (Pair b xs)))
 
-  section "Fold (construction)"
-  test "0 : Nat" zero
-  test "2 : Nat" two
-  test "nil : ListBool" nil
-  test "[True, False] : ListBool" (cons Tru (cons Fls nil))
-  putStrLn ""
+    section "Fold (construction)"
+    test "0 : Nat" zero zero
+    test "2 : Nat" two two
+    test "nil : ListBool" nil nil
+    test "[True, False] : ListBool" (cons Tru (cons Fls nil)) (cons Tru (cons Fls nil))
 
-  section "Unfold cancels Fold"
-  test "unfold 0  ==>  inl ()" (Unfold zero)
-  test "unfold 2  ==>  inr 1" (Unfold two)
-  test "unfold [True, False]  ==>  inr (True, [False])" (Unfold (cons Tru (cons Fls nil)))
-  putStrLn ""
+    section "Unfold cancels Fold"
+    test
+      "unfold 0  ==>  inl ()"
+      (Unfold zero)
+      (Anno (SumTy UnitTy natTy) (InL Unit))
+    test
+      "unfold 2  ==>  inr 1"
+      (Unfold two)
+      (Anno (SumTy UnitTy natTy) (InR one))
+    test
+      "unfold [True, False]  ==>  inr (True, [False])"
+      (Unfold (cons Tru (cons Fls nil)))
+      (Anno (SumTy UnitTy (PairTy BoolTy listTy)) (InR (Pair Tru (cons Fls nil))))
 
-  section "Elimination (unfold + case)"
-  test
-    "pred 2  ==>  1"
-    (Anno natTy (SumCase (Unfold two) ("_", zero) ("p", Var "p")))
-  test
-    "isZero 0  ==>  True"
-    (Anno BoolTy (SumCase (Unfold zero) ("_", Tru) ("_", Fls)))
-  test
-    "isZero 2  ==>  False"
-    (Anno BoolTy (SumCase (Unfold two) ("_", Tru) ("_", Fls)))
-  test
-    "head [True, False]  ==>  True"
-    (Anno BoolTy (SumCase (Unfold (cons Tru (cons Fls nil))) ("_", Fls) ("p", Fst (Var "p"))))
-  putStrLn ""
+    section "Elimination (unfold + case)"
+    test
+      "pred 2  ==>  1"
+      (Anno natTy (SumCase (Unfold two) ("_", zero) ("p", Var "p")))
+      one
+    test
+      "isZero 0  ==>  True"
+      (Anno BoolTy (SumCase (Unfold zero) ("_", Tru) ("_", Fls)))
+      (Anno BoolTy Tru)
+    test
+      "isZero 2  ==>  False"
+      (Anno BoolTy (SumCase (Unfold two) ("_", Tru) ("_", Fls)))
+      (Anno BoolTy Fls)
+    test
+      "head [True, False]  ==>  True"
+      (Anno BoolTy (SumCase (Unfold (cons Tru (cons Fls nil))) ("_", Fls) ("p", Fst (Var "p"))))
+      (Anno BoolTy Tru)
 
-  section "Stuck unfold (neutral scrutinee)"
-  test
-    "\\n. unfold n  :  Nat -> Unit + Nat"
-    (Anno (FuncTy natTy (SumTy UnitTy natTy)) (Lam "n" (Unfold (Var "n"))))
-  putStrLn ""
+    section "Stuck unfold (neutral scrutinee)"
+    smoke
+      "\\n. unfold n  :  Nat -> Unit + Nat"
+      (Anno (FuncTy natTy (SumTy UnitTy natTy)) (Lam "n" (Unfold (Var "n"))))
 
-  section "Error Cases (expected failures)"
-  testErr "fold against a non-mu type" (Anno BoolTy (Fold Tru))
-  testErr "unfold of a non-mu type" (Unfold (Anno BoolTy Tru))
-  testErr
-    "mu X. X -> X is not strictly positive"
-    (Anno (MuTy "X" (FuncTy (TVar "X") (TVar "X"))) Unit)
-  putStrLn ""
+    section "Error Cases (expected failures)"
+    err "fold against a non-mu type" (Anno BoolTy (Fold Tru))
+    err "unfold of a non-mu type" (Unfold (Anno BoolTy Tru))
+    err
+      "mu X. X -> X is not strictly positive"
+      (Anno (MuTy "X" (FuncTy (TVar "X") (TVar "X"))) Unit)
 
-  section "Nested mu (positivity)"
-  test
-    "mu X. Bool * (mu Y. Unit + Y)  (nested mu, X positive)"
-    ( Anno
-        (MuTy "X" (PairTy BoolTy (MuTy "Y" (SumTy UnitTy (TVar "Y")))))
-        (Fold (Pair Tru (Fold (InL Unit))))
-    )
-  testErr
-    "mu X. mu Y. (X -> Y)  (negative X under a nested mu)"
-    (Anno (MuTy "X" (MuTy "Y" (FuncTy (TVar "X") (TVar "Y")))) Unit)
-  testErr
-    "mu X. (mu Y. Bool * X) -> Bool  (negative X inside a nested mu)"
-    (Anno (MuTy "X" (FuncTy (MuTy "Y" (PairTy BoolTy (TVar "X"))) BoolTy)) Unit)
+    section "Nested mu (positivity)"
+    test
+      "mu X. Bool * (mu Y. Unit + Y)  (nested mu, X positive)"
+      ( Anno
+          (MuTy "X" (PairTy BoolTy (MuTy "Y" (SumTy UnitTy (TVar "Y")))))
+          (Fold (Pair Tru (Fold (InL Unit))))
+      )
+      ( Anno
+          (MuTy "X" (PairTy BoolTy (MuTy "Y" (SumTy UnitTy (TVar "Y")))))
+          (Fold (Pair Tru (Fold (InL Unit))))
+      )
+    err
+      "mu X. mu Y. (X -> Y)  (negative X under a nested mu)"
+      (Anno (MuTy "X" (MuTy "Y" (FuncTy (TVar "X") (TVar "Y")))) Unit)
+    err
+      "mu X. (mu Y. Bool * X) -> Bool  (negative X inside a nested mu)"
+      (Anno (MuTy "X" (FuncTy (MuTy "Y" (PairTy BoolTy (TVar "X"))) BoolTy)) Unit)

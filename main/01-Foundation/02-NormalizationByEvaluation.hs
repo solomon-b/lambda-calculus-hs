@@ -16,7 +16,7 @@ module Main where
 
 --------------------------------------------------------------------------------
 
-import Control.Monad (foldM, (>=>))
+import Control.Monad (foldM)
 import Control.Monad.Except (MonadError (..))
 import Control.Monad.Identity
 import Control.Monad.Reader (MonadReader (..))
@@ -25,7 +25,7 @@ import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Data.String
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), runTest, runTestErr, section)
+import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
 import Utils (SnocList (..), nth)
 
 --------------------------------------------------------------------------------
@@ -728,146 +728,152 @@ quoteFrame l tm = \case
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, ()) (RunResult () Type Term, ())
+run :: Term -> Either (Error, ()) (RunResult () Type Term Value, ())
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     Left err -> Left (err, ())
     Right type' -> do
-      let result = flip runEvalM Nil $ (eval >=> quote initLevel type') term
-      pure (RunResult () type' result, ())
+      let val = runEvalM (eval term) Nil
+          result = runEvalM (quote initLevel type' val) Nil
+      pure (RunResult () type' result val, ())
 
 main :: IO ()
 main = do
-  let test = runTest run
-      testErr = runTestErr run
-
   putStrLn "=== Normalization by Evaluation ==="
-  putStrLn ""
+  runTests $ do
+    let test = assertEval run
+        smoke = testOk run
+        err = testErr run
 
-  -- Beta reduction — (λx. body) arg normalizes by substitution
-  section "Beta Reduction"
-  test
-    "(\\x. x) () ==> ()"
-    ( Ap
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
-        Unit
-    )
-  test
-    "(\\x. \\y. x) () () ==> ()"
-    ( Ap
-        ( Ap
-            ( Anno
-                (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
-                (Lam "x" (Lam "_" (Var (Ix 1))))
-            )
-            Unit
-        )
-        Unit
-    )
-  test
-    "(\\f. \\x. f x) (\\x. x) () ==> ()"
-    ( Ap
-        ( Ap
-            ( Anno
-                ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-                (Lam "f" (Lam "x" (Ap (Var (Ix 1)) (Var (Ix 0)))))
-            )
-            (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
-        )
-        Unit
-    )
-  putStrLn ""
+    -- Beta reduction — (λx. body) arg normalizes by substitution
+    section "Beta Reduction"
+    test
+      "(\\x. x) () ==> ()"
+      ( Ap
+          (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+          Unit
+      )
+      (Anno UnitTy Unit)
+    test
+      "(\\x. \\y. x) () () ==> ()"
+      ( Ap
+          ( Ap
+              ( Anno
+                  (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy))
+                  (Lam "x" (Lam "_" (Var (Ix 1))))
+              )
+              Unit
+          )
+          Unit
+      )
+      (Anno UnitTy Unit)
+    test
+      "(\\f. \\x. f x) (\\x. x) () ==> ()"
+      ( Ap
+          ( Ap
+              ( Anno
+                  ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+                  (Lam "f" (Lam "x" (Ap (Var (Ix 1)) (Var (Ix 0)))))
+              )
+              (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+          )
+          Unit
+      )
+      (Anno UnitTy Unit)
 
-  -- Eta expansion — λf. f at (A -> B) -> (A -> B) normalizes to λf. λx. f x
-  section "Eta Expansion"
-  test
-    "\\f. f : (U->U) -> (U->U) normalizes to \\f. \\x. f x"
-    ( Anno
-        ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-        (Lam "f" (Var (Ix 0)))
-    )
-  test
-    "\\x. x : U -> U stays as \\x. x (no expansion at base return type)"
-    ( Anno
-        (UnitTy `FuncTy` UnitTy)
-        (Lam "x" (Var (Ix 0)))
-    )
-  test
-    "\\f. f : ((U->U)->U) -> ((U->U)->U) eta-expands inner arg"
-    ( Anno
-        (((UnitTy `FuncTy` UnitTy) `FuncTy` UnitTy) `FuncTy` ((UnitTy `FuncTy` UnitTy) `FuncTy` UnitTy))
-        (Lam "f" (Var (Ix 0)))
-    )
-  putStrLn ""
+    -- Eta expansion — λf. f at (A -> B) -> (A -> B) normalizes to λf. λx. f x.
+    -- The normal forms have binders, so they are smoke tested (binder names in
+    -- the quoted form are not stable enough to assert against).
+    section "Eta Expansion"
+    smoke
+      "\\f. f : (U->U) -> (U->U) normalizes to \\f. \\x. f x"
+      ( Anno
+          ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+          (Lam "f" (Var (Ix 0)))
+      )
+    smoke
+      "\\x. x : U -> U stays as \\x. x (no expansion at base return type)"
+      ( Anno
+          (UnitTy `FuncTy` UnitTy)
+          (Lam "x" (Var (Ix 0)))
+      )
+    smoke
+      "\\f. f : ((U->U)->U) -> ((U->U)->U) eta-expands inner arg"
+      ( Anno
+          (((UnitTy `FuncTy` UnitTy) `FuncTy` UnitTy) `FuncTy` ((UnitTy `FuncTy` UnitTy) `FuncTy` UnitTy))
+          (Lam "f" (Var (Ix 0)))
+      )
 
-  -- Pair normalization
-  section "Pair Normalization"
-  test
-    "((), ()) : U * U"
-    (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit))
-  test
-    "fst ((), ()) ==> ()"
-    (Fst (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
-  test
-    "snd ((), ()) ==> ()"
-    (Snd (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
-  test
-    "\\x. (x, x) : U -> U * U"
-    ( Anno
-        (UnitTy `FuncTy` PairTy UnitTy UnitTy)
-        (Lam "x" (Pair (Var (Ix 0)) (Var (Ix 0))))
-    )
-  putStrLn ""
+    -- Pair normalization
+    section "Pair Normalization"
+    test
+      "((), ()) : U * U"
+      (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit))
+      (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit))
+    test
+      "fst ((), ()) ==> ()"
+      (Fst (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
+      (Anno UnitTy Unit)
+    test
+      "snd ((), ()) ==> ()"
+      (Snd (Anno (PairTy UnitTy UnitTy) (Pair Unit Unit)))
+      (Anno UnitTy Unit)
+    smoke
+      "\\x. (x, x) : U -> U * U"
+      ( Anno
+          (UnitTy `FuncTy` PairTy UnitTy UnitTy)
+          (Lam "x" (Pair (Var (Ix 0)) (Var (Ix 0))))
+      )
 
-  -- Beta + eta combined
-  section "Beta and Eta Combined"
-  test
-    "(\\f. f) (\\x. x) : (U->U) -> (U->U) normalizes to \\x. x"
-    ( Ap
-        ( Anno
-            ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
-            (Lam "f" (Var (Ix 0)))
-        )
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
-    )
-  putStrLn ""
+    -- Beta + eta combined
+    section "Beta and Eta Combined"
+    smoke
+      "(\\f. f) (\\x. x) : (U->U) -> (U->U) normalizes to \\x. x"
+      ( Ap
+          ( Anno
+              ((UnitTy `FuncTy` UnitTy) `FuncTy` (UnitTy `FuncTy` UnitTy))
+              (Lam "f" (Var (Ix 0)))
+          )
+          (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var (Ix 0))))
+      )
 
-  -- Booleans — if reduces on a known scrutinee. A neutral scrutinee gets
-  -- stuck, which needs a motive and so waits for elaboration.
-  section "Booleans"
-  test
-    "if True then False else True ==> False"
-    (Anno BoolTy (If Tru Fls Tru))
-  putStrLn ""
+    -- Booleans — if reduces on a known scrutinee. A neutral scrutinee gets
+    -- stuck, which needs a motive and so waits for elaboration.
+    section "Booleans"
+    test
+      "if True then False else True ==> False"
+      (Anno BoolTy (If Tru Fls Tru))
+      (Anno BoolTy Fls)
 
-  -- Sums — case reduces on a known injection. A neutral scrutinee gets stuck,
-  -- which needs a motive and so waits for elaboration.
-  section "Sums"
-  test
-    "inl () : Unit + Bool"
-    (Anno (SumTy UnitTy BoolTy) (InL Unit))
-  test
-    "case (inl () : U + Bool) of inl x -> True | inr y -> False ==> True"
-    ( Anno
-        BoolTy
-        (Case (Anno (SumTy UnitTy BoolTy) (InL Unit)) ("x", Tru) ("y", Fls))
-    )
-  putStrLn ""
+    -- Sums — case reduces on a known injection. A neutral scrutinee gets stuck,
+    -- which needs a motive and so waits for elaboration.
+    section "Sums"
+    test
+      "inl () : Unit + Bool"
+      (Anno (SumTy UnitTy BoolTy) (InL Unit))
+      (Anno (SumTy UnitTy BoolTy) (InL Unit))
+    test
+      "case (inl () : U + Bool) of inl x -> True | inr y -> False ==> True"
+      ( Anno
+          BoolTy
+          (Case (Anno (SumTy UnitTy BoolTy) (InL Unit)) ("x", Tru) ("y", Fls))
+      )
+      (Anno BoolTy Tru)
 
-  -- Error cases
-  section "Error Cases (expected failures)"
-  testErr
-    "Cannot synthesize lambda"
-    (Lam "x" (Var (Ix 0)))
-  testErr
-    "Cannot synthesize pair"
-    (Pair Unit Unit)
-  testErr
-    "Cannot synthesize unit"
-    Unit
-  testErr
-    "Apply non-function"
-    (Ap (Anno UnitTy Unit) Unit)
-  testErr
-    "Type mismatch: pair checked at function type"
-    (Anno (UnitTy `FuncTy` UnitTy) (Pair Unit Unit))
+    -- Error cases
+    section "Error Cases (expected failures)"
+    err
+      "Cannot synthesize lambda"
+      (Lam "x" (Var (Ix 0)))
+    err
+      "Cannot synthesize pair"
+      (Pair Unit Unit)
+    err
+      "Cannot synthesize unit"
+      Unit
+    err
+      "Apply non-function"
+      (Ap (Anno UnitTy Unit) Unit)
+    err
+      "Type mismatch: pair checked at function type"
+      (Anno (UnitTy `FuncTy` UnitTy) (Pair Unit Unit))

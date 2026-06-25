@@ -30,7 +30,7 @@ import Data.String
 import Data.These (These (..))
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), runTest, runTestErr, section)
+import TestHarness (RunResult (..), assertEval, runTests, section, testErr)
 import Utils (SnocList (..), alignWithM, nth)
 
 --------------------------------------------------------------------------------
@@ -1171,142 +1171,145 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax Value, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
     (Right (type', syntax), holes) -> do
-      let result = flip runEvalM Nil $ do
-            value <- eval syntax
-            quote initLevel type' value
-      pure (RunResult syntax type' result, holes)
+      let val = runEvalM (eval syntax) Nil
+          result = runEvalM (quote initLevel type' val) Nil
+      pure (RunResult syntax type' result val, holes)
 
 main :: IO ()
 main = do
-  let test = runTest run
-      testErr = runTestErr run
-
   putStrLn "=== Subtyping ==="
-  putStrLn ""
+  runTests $ do
+    let test = assertEval run
+        err = testErr run
 
-  -- Numeric subtyping: Nat <: Int <: Real
-  section "Numeric Subtyping"
-  test
-    "Natural 42 checked at IntegerTy"
-    (Anno IntegerTy (Natural 42))
-  test
-    "Natural 42 checked at RealTy"
-    (Anno RealTy (Natural 42))
-  test
-    "Integer -3 checked at RealTy"
-    (Anno RealTy (Integer (-3)))
-  test
-    "Natural 1 passed to (Real -> Real)"
-    ( Ap
-        (Anno (RealTy `FuncTy` RealTy) (Lam "x" (Var "x")))
-        (Anno NaturalTy (Natural 1))
-    )
-  test
-    "Integer 5 passed to (Real -> Real)"
-    ( Ap
-        (Anno (RealTy `FuncTy` RealTy) (Lam "x" (Var "x")))
-        (Anno IntegerTy (Integer 5))
-    )
-  putStrLn ""
+    -- Numeric subtyping: Nat <: Int <: Real
+    section "Numeric Subtyping"
+    test
+      "Natural 42 checked at IntegerTy"
+      (Anno IntegerTy (Natural 42))
+      (Anno IntegerTy (Natural 42))
+    test
+      "Natural 42 checked at RealTy"
+      (Anno RealTy (Natural 42))
+      (Anno RealTy (Natural 42))
+    test
+      "Integer -3 checked at RealTy"
+      (Anno RealTy (Integer (-3)))
+      (Anno RealTy (Integer (-3)))
+    test
+      "Natural 1 passed to (Real -> Real)"
+      ( Ap
+          (Anno (RealTy `FuncTy` RealTy) (Lam "x" (Var "x")))
+          (Anno NaturalTy (Natural 1))
+      )
+      (Anno RealTy (Natural 1))
+    test
+      "Integer 5 passed to (Real -> Real)"
+      ( Ap
+          (Anno (RealTy `FuncTy` RealTy) (Lam "x" (Var "x")))
+          (Anno IntegerTy (Integer 5))
+      )
+      (Anno RealTy (Integer 5))
 
-  -- Numeric subtyping through the sub tactic (synth then check)
-  section "Numeric Subtyping via Sub Tactic"
-  test
-    "Nat synth'd, checked at Int via sub tactic"
-    ( Anno
-        IntegerTy
-        (Ap (Anno (NaturalTy `FuncTy` NaturalTy) (Lam "x" (Var "x"))) (Anno NaturalTy (Natural 10)))
-    )
-  test
-    "if True then (Nat 1) else (Nat 2) checked at Real"
-    (Anno RealTy (If Tru (Natural 1) (Natural 2)))
-  putStrLn ""
+    -- Numeric subtyping through the sub tactic (synth then check)
+    section "Numeric Subtyping via Sub Tactic"
+    test
+      "Nat synth'd, checked at Int via sub tactic"
+      ( Anno
+          IntegerTy
+          (Ap (Anno (NaturalTy `FuncTy` NaturalTy) (Lam "x" (Var "x"))) (Anno NaturalTy (Natural 10)))
+      )
+      (Anno IntegerTy (Natural 10))
+    test
+      "if True then (Nat 1) else (Nat 2) checked at Real"
+      (Anno RealTy (If Tru (Natural 1) (Natural 2)))
+      (Anno RealTy (Natural 1))
 
-  -- Function subtyping: contravariant args, covariant return
-  section "Function Subtyping"
-  test
-    "(Int -> Nat) passed where (Nat -> Int) expected — contravariant arg, covariant return"
-    ( Ap
-        ( Anno
-            ((NaturalTy `FuncTy` IntegerTy) `FuncTy` IntegerTy)
-            (Lam "f" (Ap (Var "f") (Anno NaturalTy (Natural 0))))
-        )
-        (Anno (IntegerTy `FuncTy` NaturalTy) (Lam "x" (Natural 42)))
-    )
-  test
-    "(Real -> Nat) passed where (Nat -> Real) expected"
-    ( Ap
-        ( Anno
-            ((NaturalTy `FuncTy` RealTy) `FuncTy` RealTy)
-            (Lam "f" (Ap (Var "f") (Anno NaturalTy (Natural 0))))
-        )
-        (Anno (RealTy `FuncTy` NaturalTy) (Lam "x" (Natural 99)))
-    )
-  putStrLn ""
+    -- Function subtyping: contravariant args, covariant return
+    section "Function Subtyping"
+    test
+      "(Int -> Nat) passed where (Nat -> Int) expected — contravariant arg, covariant return"
+      ( Ap
+          ( Anno
+              ((NaturalTy `FuncTy` IntegerTy) `FuncTy` IntegerTy)
+              (Lam "f" (Ap (Var "f") (Anno NaturalTy (Natural 0))))
+          )
+          (Anno (IntegerTy `FuncTy` NaturalTy) (Lam "x" (Natural 42)))
+      )
+      (Anno IntegerTy (Natural 42))
+    test
+      "(Real -> Nat) passed where (Nat -> Real) expected"
+      ( Ap
+          ( Anno
+              ((NaturalTy `FuncTy` RealTy) `FuncTy` RealTy)
+              (Lam "f" (Ap (Var "f") (Anno NaturalTy (Natural 0))))
+          )
+          (Anno (RealTy `FuncTy` NaturalTy) (Lam "x" (Natural 99)))
+      )
+      (Anno RealTy (Natural 99))
 
-  section "Function Subtyping Failures (expected)"
-  testErr
-    "(Nat -> Int) cannot be subtype of (Int -> Nat) — variance reversed"
-    ( Ap
-        ( Anno
-            ((IntegerTy `FuncTy` NaturalTy) `FuncTy` NaturalTy)
-            (Lam "f" (Ap (Var "f") (Anno IntegerTy (Integer 0))))
-        )
-        (Anno (NaturalTy `FuncTy` IntegerTy) (Lam "x" (Integer 42)))
-    )
-  putStrLn ""
+    section "Function Subtyping Failures (expected)"
+    err
+      "(Nat -> Int) cannot be subtype of (Int -> Nat) — variance reversed"
+      ( Ap
+          ( Anno
+              ((IntegerTy `FuncTy` NaturalTy) `FuncTy` NaturalTy)
+              (Lam "f" (Ap (Var "f") (Anno IntegerTy (Integer 0))))
+          )
+          (Anno (NaturalTy `FuncTy` IntegerTy) (Lam "x" (Integer 42)))
+      )
 
-  -- Record subtyping
-  -- NOTE: module header says "Record subtyping isn't currently working"
-  section "Record Width Subtyping"
-  test
-    "wider record {foo, bar, baz} passed where {foo} expected"
-    ( Ap
-        ( Anno
-            (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
-            (Lam "x" (Get "foo" (Var "x")))
-        )
-        ( Anno
-            (RecordTy [("foo", BoolTy), ("bar", UnitTy), ("baz", UnitTy)])
-            (Record [("foo", Tru), ("bar", Unit), ("baz", Unit)])
-        )
-    )
-  putStrLn ""
+    -- Record subtyping
+    -- NOTE: module header says "Record subtyping isn't currently working"
+    section "Record Width Subtyping"
+    test
+      "wider record {foo, bar, baz} passed where {foo} expected"
+      ( Ap
+          ( Anno
+              (RecordTy [("foo", BoolTy)] `FuncTy` BoolTy)
+              (Lam "x" (Get "foo" (Var "x")))
+          )
+          ( Anno
+              (RecordTy [("foo", BoolTy), ("bar", UnitTy), ("baz", UnitTy)])
+              (Record [("foo", Tru), ("bar", Unit), ("baz", Unit)])
+          )
+      )
+      (Anno BoolTy Tru)
 
-  section "Record Depth Subtyping"
-  test
-    "{foo : Nat} passed where {foo : Int} expected"
-    ( Ap
-        ( Anno
-            (RecordTy [("foo", IntegerTy)] `FuncTy` IntegerTy)
-            (Lam "x" (Get "foo" (Var "x")))
-        )
-        (Anno (RecordTy [("foo", NaturalTy)]) (Record [("foo", Natural 7)]))
-    )
-  putStrLn ""
+    section "Record Depth Subtyping"
+    test
+      "{foo : Nat} passed where {foo : Int} expected"
+      ( Ap
+          ( Anno
+              (RecordTy [("foo", IntegerTy)] `FuncTy` IntegerTy)
+              (Lam "x" (Get "foo" (Var "x")))
+          )
+          (Anno (RecordTy [("foo", NaturalTy)]) (Record [("foo", Natural 7)]))
+      )
+      (Anno IntegerTy (Natural 7))
 
-  -- Subtyping failures
-  section "Subtyping Failures (expected)"
-  testErr
-    "Real cannot be subtype of NaturalTy"
-    (Anno NaturalTy (Real 3.14))
-  testErr
-    "Integer cannot be subtype of NaturalTy"
-    (Anno NaturalTy (Integer (-1)))
-  testErr
-    "Real cannot be subtype of IntegerTy"
-    (Anno IntegerTy (Real 1.5))
-  testErr
-    "Bool is not a subtype of UnitTy"
-    (Anno UnitTy Tru)
-  testErr
-    "Unit is not a subtype of BoolTy"
-    (Anno BoolTy Unit)
-  testErr
-    "Nat is not a subtype of BoolTy (cross-tower)"
-    (Anno BoolTy (Natural 1))
+    -- Subtyping failures
+    section "Subtyping Failures (expected)"
+    err
+      "Real cannot be subtype of NaturalTy"
+      (Anno NaturalTy (Real 3.14))
+    err
+      "Integer cannot be subtype of NaturalTy"
+      (Anno NaturalTy (Integer (-1)))
+    err
+      "Real cannot be subtype of IntegerTy"
+      (Anno IntegerTy (Real 1.5))
+    err
+      "Bool is not a subtype of UnitTy"
+      (Anno UnitTy Tru)
+    err
+      "Unit is not a subtype of BoolTy"
+      (Anno BoolTy Unit)
+    err
+      "Nat is not a subtype of BoolTy (cross-tower)"
+      (Anno BoolTy (Natural 1))

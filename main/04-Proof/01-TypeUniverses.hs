@@ -59,7 +59,7 @@ import Data.These
 import Numeric.Natural (Natural)
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), runTest, runTestErr, section)
+import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
 import Utils (SnocList (..), alignWithM, allM, nth)
 
 --------------------------------------------------------------------------------
@@ -2517,398 +2517,434 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (RunResult Syntax Syntax Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Syntax Syntax Value, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
     (Right (type', syntax), holes) -> do
       let evalEnv = toEvalEnv initEnv
-          result = flip runEvalM evalEnv $ do
-            value <- eval syntax
-            quote initLevel type' value
+          value = runEvalM (eval syntax) evalEnv
+          result = runEvalM (quote initLevel type' value) evalEnv
           quotedType = runEvalM (quote initLevel (VUniv 0) type') evalEnv
-      pure (RunResult syntax quotedType result, holes)
+      pure (RunResult syntax quotedType result value, holes)
 
 main :: IO ()
 main = do
-  let test = runTest run
-      testErr = runTestErr run
-
   putStrLn "=== Type Universes ==="
-  putStrLn ""
+  runTests $ do
+    let test = assertEval run
+        smoke = testOk run
+        err = testErr run
 
-  -- Dependent identity
-  section "Dependent Functions"
-  test
-    "dependent id applied to Bool"
-    ( Ap
-        ( Ap
-            ( Anno
-                (Pi "a" (Univ 0) (FuncTy (Var "a") (Var "a")))
-                (Lam "a" (Lam "x" (Var "x")))
-            )
-            BoolTy
-        )
-        (Anno BoolTy Tru)
-    )
-  test
-    "dependent id applied to Unit"
-    ( Ap
-        ( Ap
-            ( Anno
-                (Pi "a" (Univ 0) (FuncTy (Var "a") (Var "a")))
-                (Lam "a" (Lam "x" (Var "x")))
-            )
-            UnitTy
-        )
-        Unit
-    )
-  test
-    "dependent id unapplied"
-    ( Anno
-        (Pi "a" (Univ 0) (FuncTy (Var "a") (Var "a")))
-        (Lam "a" (Lam "x" (Var "x")))
-    )
-  putStrLn ""
+    -- Dependent identity
+    section "Dependent Functions"
+    test
+      "dependent id applied to Bool"
+      ( Ap
+          ( Ap
+              ( Anno
+                  (Pi "a" (Univ 0) (FuncTy (Var "a") (Var "a")))
+                  (Lam "a" (Lam "x" (Var "x")))
+              )
+              BoolTy
+          )
+          (Anno BoolTy Tru)
+      )
+      (Anno BoolTy Tru)
+    test
+      "dependent id applied to Unit"
+      ( Ap
+          ( Ap
+              ( Anno
+                  (Pi "a" (Univ 0) (FuncTy (Var "a") (Var "a")))
+                  (Lam "a" (Lam "x" (Var "x")))
+              )
+              UnitTy
+          )
+          Unit
+      )
+      (Anno UnitTy Unit)
+    smoke
+      "dependent id unapplied"
+      ( Anno
+          (Pi "a" (Univ 0) (FuncTy (Var "a") (Var "a")))
+          (Lam "a" (Lam "x" (Var "x")))
+      )
 
-  -- Dependent const
-  section "Dependent Const"
-  test
-    "dependent const applied to Bool and Unit"
-    ( Ap
-        ( Ap
-            ( Ap
-                ( Ap
-                    ( Anno
-                        (Pi "a" (Univ 0) (Pi "b" (Univ 0) (FuncTy (Var "a") (FuncTy (Var "b") (Var "a")))))
-                        (Lam "a" (Lam "b" (Lam "x" (Lam "y" (Var "x")))))
-                    )
-                    BoolTy
-                )
-                UnitTy
-            )
-            (Anno BoolTy Tru)
-        )
-        Unit
-    )
-  putStrLn ""
+    -- Dependent const
+    section "Dependent Const"
+    test
+      "dependent const applied to Bool and Unit"
+      ( Ap
+          ( Ap
+              ( Ap
+                  ( Ap
+                      ( Anno
+                          (Pi "a" (Univ 0) (Pi "b" (Univ 0) (FuncTy (Var "a") (FuncTy (Var "b") (Var "a")))))
+                          (Lam "a" (Lam "b" (Lam "x" (Lam "y" (Var "x")))))
+                      )
+                      BoolTy
+                  )
+                  UnitTy
+              )
+              (Anno BoolTy Tru)
+          )
+          Unit
+      )
+      (Anno BoolTy Tru)
 
-  -- Dependent apply
-  section "Dependent Apply"
-  test
-    "dependent apply with not"
-    ( Ap
-        ( Ap
-            ( Ap
-                ( Ap
-                    ( Anno
-                        (Pi "a" (Univ 0) (Pi "b" (Univ 0) (FuncTy (FuncTy (Var "a") (Var "b")) (FuncTy (Var "a") (Var "b")))))
-                        (Lam "a" (Lam "b" (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))))
-                    )
-                    BoolTy
-                )
-                BoolTy
-            )
-            (Anno (FuncTy BoolTy BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
-        )
-        (Anno BoolTy Tru)
-    )
-  putStrLn ""
+    -- Dependent apply
+    section "Dependent Apply"
+    test
+      "dependent apply with not"
+      ( Ap
+          ( Ap
+              ( Ap
+                  ( Ap
+                      ( Anno
+                          (Pi "a" (Univ 0) (Pi "b" (Univ 0) (FuncTy (FuncTy (Var "a") (Var "b")) (FuncTy (Var "a") (Var "b")))))
+                          (Lam "a" (Lam "b" (Lam "f" (Lam "x" (Ap (Var "f") (Var "x"))))))
+                      )
+                      BoolTy
+                  )
+                  BoolTy
+              )
+              (Anno (FuncTy BoolTy BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
+          )
+          (Anno BoolTy Tru)
+      )
+      (Anno BoolTy Fls)
 
-  -- Basic types
-  section "Basic Types"
-  test
-    "Bool is a type"
-    (Anno (Univ 0) BoolTy)
-  test
-    "Unit is a type"
-    (Anno (Univ 0) UnitTy)
-  test
-    "function type is a type"
-    (Anno (Univ 0) (FuncTy BoolTy BoolTy))
-  test
-    "Pi type is a type"
-    (Anno (Univ 1) (Pi "a" (Univ 0) (FuncTy (Var "a") (Var "a"))))
-  putStrLn ""
+    -- Basic types
+    section "Basic Types"
+    smoke
+      "Bool is a type"
+      (Anno (Univ 0) BoolTy)
+    smoke
+      "Unit is a type"
+      (Anno (Univ 0) UnitTy)
+    smoke
+      "function type is a type"
+      (Anno (Univ 0) (FuncTy BoolTy BoolTy))
+    smoke
+      "Pi type is a type"
+      (Anno (Univ 1) (Pi "a" (Univ 0) (FuncTy (Var "a") (Var "a"))))
 
-  -- ADTs
-  section "ADTs - Maybe"
-  test
-    "Nothing at Maybe Bool"
-    (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Nothing" []))
-  test
-    "Just True at Maybe Bool"
-    (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
-  test
-    "Just unit at Maybe Unit"
-    (Anno (AdtTy "Maybe" [UnitTy]) (Cnstr "Just" [Unit]))
-  putStrLn ""
+    -- ADTs
+    section "ADTs - Maybe"
+    test
+      "Nothing at Maybe Bool"
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Nothing" []))
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Nothing" []))
+    test
+      "Just True at Maybe Bool"
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
+    test
+      "Just unit at Maybe Unit"
+      (Anno (AdtTy "Maybe" [UnitTy]) (Cnstr "Just" [Unit]))
+      (Anno (AdtTy "Maybe" [UnitTy]) (Cnstr "Just" [Unit]))
 
-  section "ADTs - List"
-  test
-    "Nil at List Bool"
-    (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
-  test
-    "singleton list"
-    ( Anno
-        (AdtTy "List" [BoolTy])
-        (Cnstr "Cons" [Tru, Cnstr "Nil" []])
-    )
-  test
-    "two-element list"
-    ( Anno
-        (AdtTy "List" [BoolTy])
-        (Cnstr "Cons" [Fls, Cnstr "Cons" [Tru, Cnstr "Nil" []]])
-    )
-  putStrLn ""
+    section "ADTs - List"
+    test
+      "Nil at List Bool"
+      (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
+      (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
+    test
+      "singleton list"
+      ( Anno
+          (AdtTy "List" [BoolTy])
+          (Cnstr "Cons" [Tru, Cnstr "Nil" []])
+      )
+      ( Anno
+          (AdtTy "List" [BoolTy])
+          (Cnstr "Cons" [Tru, Cnstr "Nil" []])
+      )
+    test
+      "two-element list"
+      ( Anno
+          (AdtTy "List" [BoolTy])
+          (Cnstr "Cons" [Fls, Cnstr "Cons" [Tru, Cnstr "Nil" []]])
+      )
+      ( Anno
+          (AdtTy "List" [BoolTy])
+          (Cnstr "Cons" [Fls, Cnstr "Cons" [Tru, Cnstr "Nil" []]])
+      )
 
-  section "ADTs - Case"
-  test
-    "case on Just"
-    ( Anno
-        BoolTy
-        ( Case
-            (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
-            [ ("Nothing", [], Fls),
-              ("Just", ["x"], Var "x")
-            ]
-        )
-    )
-  test
-    "case on Nil"
-    ( Anno
-        BoolTy
-        ( Case
-            (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
-            [ ("Nil", [], Tru),
-              ("Cons", ["x", "xs"], Var "x")
-            ]
-        )
-    )
-  putStrLn ""
+    section "ADTs - Case"
+    test
+      "case on Just"
+      ( Anno
+          BoolTy
+          ( Case
+              (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
+              [ ("Nothing", [], Fls),
+                ("Just", ["x"], Var "x")
+              ]
+          )
+      )
+      (Anno BoolTy Tru)
+    test
+      "case on Nil"
+      ( Anno
+          BoolTy
+          ( Case
+              (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
+              [ ("Nil", [], Tru),
+                ("Cons", ["x", "xs"], Var "x")
+              ]
+          )
+      )
+      (Anno BoolTy Tru)
 
-  section "ADTs - Partial Application"
-  test
-    "partially applied Just"
-    (Anno (FuncTy BoolTy (AdtTy "Maybe" [BoolTy])) (Cnstr "Just" []))
-  test
-    "fully unapplied Cons"
-    ( Anno
-        (FuncTy BoolTy (FuncTy (AdtTy "List" [BoolTy]) (AdtTy "List" [BoolTy])))
-        (Cnstr "Cons" [])
-    )
-  putStrLn ""
+    section "ADTs - Partial Application"
+    smoke
+      "partially applied Just"
+      (Anno (FuncTy BoolTy (AdtTy "Maybe" [BoolTy])) (Cnstr "Just" []))
+    smoke
+      "fully unapplied Cons"
+      ( Anno
+          (FuncTy BoolTy (FuncTy (AdtTy "List" [BoolTy]) (AdtTy "List" [BoolTy])))
+          (Cnstr "Cons" [])
+      )
 
-  section "ADTs - Nat"
-  test
-    "zero"
-    (Anno (AdtTy "Nat" []) (Cnstr "Z" []))
-  test
-    "two"
-    (Anno (AdtTy "Nat" []) (Cnstr "S" [Cnstr "S" [Cnstr "Z" []]]))
-  test
-    "predecessor of two via case"
-    ( Anno
-        (AdtTy "Nat" [])
-        ( Case
-            (Anno (AdtTy "Nat" []) (Cnstr "S" [Cnstr "S" [Cnstr "Z" []]]))
-            [ ("Z", [], Cnstr "Z" []),
-              ("S", ["n"], Var "n")
-            ]
-        )
-    )
-  putStrLn ""
+    section "ADTs - Nat"
+    test
+      "zero"
+      (Anno (AdtTy "Nat" []) (Cnstr "Z" []))
+      (Anno (AdtTy "Nat" []) (Cnstr "Z" []))
+    test
+      "two"
+      (Anno (AdtTy "Nat" []) (Cnstr "S" [Cnstr "S" [Cnstr "Z" []]]))
+      (Anno (AdtTy "Nat" []) (Cnstr "S" [Cnstr "S" [Cnstr "Z" []]]))
+    test
+      "predecessor of two via case"
+      ( Anno
+          (AdtTy "Nat" [])
+          ( Case
+              (Anno (AdtTy "Nat" []) (Cnstr "S" [Cnstr "S" [Cnstr "Z" []]]))
+              [ ("Z", [], Cnstr "Z" []),
+                ("S", ["n"], Var "n")
+              ]
+          )
+      )
+      (Anno (AdtTy "Nat" []) (Cnstr "S" [Cnstr "Z" []]))
 
-  section "ADTs - Errors"
-  testErr
-    "wrong number of type args"
-    (Anno (AdtTy "Maybe" []) (Cnstr "Just" [Tru]))
-  testErr
-    "constructor arg type mismatch"
-    (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Unit]))
-  testErr
-    "Constructor belongs to wrong ADT: Cons checked at Maybe (issue #23)"
-    (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Cons" [Tru]))
-  testErr
-    "Wrong ADT in recursive position: Nothing inside Cons (issue #23)"
-    (Anno (AdtTy "List" [BoolTy]) (Cnstr "Cons" [Tru, Cnstr "Nothing" []]))
-  putStrLn ""
+    section "ADTs - Errors"
+    err
+      "wrong number of type args"
+      (Anno (AdtTy "Maybe" []) (Cnstr "Just" [Tru]))
+    err
+      "constructor arg type mismatch"
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Unit]))
+    err
+      "Constructor belongs to wrong ADT: Cons checked at Maybe (issue #23)"
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Cons" [Tru]))
+    err
+      "Wrong ADT in recursive position: Nothing inside Cons (issue #23)"
+      (Anno (AdtTy "List" [BoolTy]) (Cnstr "Cons" [Tru, Cnstr "Nothing" []]))
 
-  -- Universes
-  section "Universes"
-  test
-    "Type 0 is a type"
-    (Anno (Univ 1) (Univ 0))
-  test
-    "Sigma type is a type"
-    (Anno (Univ 1) (Sigma "a" (Univ 0) (FuncTy (Var "a") (Var "a"))))
-  test
-    "nested universes: Type 0 : Type 1 : Type 2"
-    (Anno (Univ 2) (Univ 1))
-  test
-    "cumulativity: Bool checked against Type 1"
-    (Anno (Univ 1) BoolTy)
-  test
-    "cumulativity: Bool checked against Type 2"
-    (Anno (Univ 2) BoolTy)
-  test
-    "maxLevel: Pi with domain at Type 1"
-    (Anno (Univ 2) (Pi "a" (Univ 1) (FuncTy (Var "a") (Var "a"))))
-  testErr
-    "universe level error: Type 1 at Type 0"
-    (Anno (Univ 0) (Univ 1))
-  putStrLn ""
+    -- Universes
+    section "Universes"
+    smoke
+      "Type 0 is a type"
+      (Anno (Univ 1) (Univ 0))
+    smoke
+      "Sigma type is a type"
+      (Anno (Univ 1) (Sigma "a" (Univ 0) (FuncTy (Var "a") (Var "a"))))
+    smoke
+      "nested universes: Type 0 : Type 1 : Type 2"
+      (Anno (Univ 2) (Univ 1))
+    smoke
+      "cumulativity: Bool checked against Type 1"
+      (Anno (Univ 1) BoolTy)
+    smoke
+      "cumulativity: Bool checked against Type 2"
+      (Anno (Univ 2) BoolTy)
+    smoke
+      "maxLevel: Pi with domain at Type 1"
+      (Anno (Univ 2) (Pi "a" (Univ 1) (FuncTy (Var "a") (Var "a"))))
+    err
+      "universe level error: Type 1 at Type 0"
+      (Anno (Univ 0) (Univ 1))
 
-  -- Dependent pairs
-  section "Dependent Pairs"
-  test
-    "non-dependent pair"
-    ( Anno
-        (PairTy BoolTy UnitTy)
-        (Pair Tru Unit)
-    )
-  test
-    "dependent pair: (Bool, if fst then Nat else Unit)"
-    ( Anno
-        (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
-        (Pair Tru (Natural 42))
-    )
-  test
-    "dependent pair: false branch"
-    ( Anno
-        (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
-        (Pair Fls Unit)
-    )
-  test
-    "fst of non-dependent pair"
-    ( Fst
-        ( Anno
-            (PairTy BoolTy UnitTy)
-            (Pair Tru Unit)
-        )
-    )
-  test
-    "snd of non-dependent pair"
-    ( Snd
-        ( Anno
-            (PairTy BoolTy UnitTy)
-            (Pair Tru Unit)
-        )
-    )
-  putStrLn ""
+    -- Dependent pairs
+    section "Dependent Pairs"
+    test
+      "non-dependent pair"
+      ( Anno
+          (PairTy BoolTy UnitTy)
+          (Pair Tru Unit)
+      )
+      ( Anno
+          (PairTy BoolTy UnitTy)
+          (Pair Tru Unit)
+      )
+    test
+      "dependent pair: (Bool, if fst then Nat else Unit)"
+      ( Anno
+          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
+          (Pair Tru (Natural 42))
+      )
+      ( Anno
+          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
+          (Pair Tru (Natural 42))
+      )
+    test
+      "dependent pair: false branch"
+      ( Anno
+          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
+          (Pair Fls Unit)
+      )
+      ( Anno
+          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
+          (Pair Fls Unit)
+      )
+    test
+      "fst of non-dependent pair"
+      ( Fst
+          ( Anno
+              (PairTy BoolTy UnitTy)
+              (Pair Tru Unit)
+          )
+      )
+      (Anno BoolTy Tru)
+    test
+      "snd of non-dependent pair"
+      ( Snd
+          ( Anno
+              (PairTy BoolTy UnitTy)
+              (Pair Tru Unit)
+          )
+      )
+      (Anno UnitTy Unit)
 
-  -- Type-level computation
-  section "Type-Level Computation"
-  test
-    "type-level if: true branch"
-    ( Ap
-        ( Ap
-            ( Anno
-                (Pi "b" BoolTy (FuncTy (If (Var "b") NaturalTy UnitTy) (If (Var "b") NaturalTy UnitTy)))
-                (Lam "b" (Lam "x" (Var "x")))
-            )
-            Tru
-        )
-        (Anno NaturalTy (Natural 7))
-    )
-  test
-    "type-level if: false branch"
-    ( Ap
-        ( Ap
-            ( Anno
-                (Pi "b" BoolTy (FuncTy (If (Var "b") NaturalTy UnitTy) (If (Var "b") NaturalTy UnitTy)))
-                (Lam "b" (Lam "x" (Var "x")))
-            )
-            Fls
-        )
-        Unit
-    )
-  putStrLn ""
+    -- Type-level computation
+    section "Type-Level Computation"
+    test
+      "type-level if: true branch"
+      ( Ap
+          ( Ap
+              ( Anno
+                  (Pi "b" BoolTy (FuncTy (If (Var "b") NaturalTy UnitTy) (If (Var "b") NaturalTy UnitTy)))
+                  (Lam "b" (Lam "x" (Var "x")))
+              )
+              Tru
+          )
+          (Anno NaturalTy (Natural 7))
+      )
+      (Anno NaturalTy (Natural 7))
+    test
+      "type-level if: false branch"
+      ( Ap
+          ( Ap
+              ( Anno
+                  (Pi "b" BoolTy (FuncTy (If (Var "b") NaturalTy UnitTy) (If (Var "b") NaturalTy UnitTy)))
+                  (Lam "b" (Lam "x" (Var "x")))
+              )
+              Fls
+          )
+          Unit
+      )
+      (Anno UnitTy Unit)
 
-  -- Let bindings
-  section "Let Bindings"
-  test
-    "let x = True in x"
-    (Anno BoolTy (Let "x" (Anno BoolTy Tru) (Var "x")))
-  test
-    "let id = (\\x. x) in id True"
-    ( Anno
-        BoolTy
-        ( Let
-            "id"
-            (Anno (FuncTy BoolTy BoolTy) (Lam "x" (Var "x")))
-            (Ap (Var "id") Tru)
-        )
-    )
-  putStrLn ""
+    -- Let bindings
+    section "Let Bindings"
+    test
+      "let x = True in x"
+      (Anno BoolTy (Let "x" (Anno BoolTy Tru) (Var "x")))
+      (Anno BoolTy Tru)
+    test
+      "let id = (\\x. x) in id True"
+      ( Anno
+          BoolTy
+          ( Let
+              "id"
+              (Anno (FuncTy BoolTy BoolTy) (Lam "x" (Var "x")))
+              (Ap (Var "id") Tru)
+          )
+      )
+      (Anno BoolTy Tru)
 
-  -- Pairs (non-dependent)
-  section "Pairs"
-  test
-    "pair of booleans"
-    (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls))
-  test
-    "nested pair"
-    ( Anno
-        (PairTy BoolTy (PairTy UnitTy BoolTy))
-        (Pair Tru (Pair Unit Fls))
-    )
-  putStrLn ""
+    -- Pairs (non-dependent)
+    section "Pairs"
+    test
+      "pair of booleans"
+      (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls))
+      (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls))
+    test
+      "nested pair"
+      ( Anno
+          (PairTy BoolTy (PairTy UnitTy BoolTy))
+          (Pair Tru (Pair Unit Fls))
+      )
+      ( Anno
+          (PairTy BoolTy (PairTy UnitTy BoolTy))
+          (Pair Tru (Pair Unit Fls))
+      )
 
-  -- Sums
-  section "Sum Types"
-  test
-    "inl into Bool + Unit"
-    (Anno (SumTy BoolTy UnitTy) (InL Tru))
-  test
-    "inr into Bool + Unit"
-    (Anno (SumTy BoolTy UnitTy) (InR Unit))
-  test
-    "case on sum"
-    ( Anno
-        BoolTy
-        ( SumCase
-            (Anno (SumTy BoolTy UnitTy) (InL Tru))
-            ("x", Var "x")
-            ("y", Fls)
-        )
-    )
-  putStrLn ""
+    -- Sums
+    section "Sum Types"
+    test
+      "inl into Bool + Unit"
+      (Anno (SumTy BoolTy UnitTy) (InL Tru))
+      (Anno (SumTy BoolTy UnitTy) (InL Tru))
+    test
+      "inr into Bool + Unit"
+      (Anno (SumTy BoolTy UnitTy) (InR Unit))
+      (Anno (SumTy BoolTy UnitTy) (InR Unit))
+    test
+      "case on sum"
+      ( Anno
+          BoolTy
+          ( SumCase
+              (Anno (SumTy BoolTy UnitTy) (InL Tru))
+              ("x", Var "x")
+              ("y", Fls)
+          )
+      )
+      (Anno BoolTy Tru)
 
-  -- Records
-  section "Records"
-  test
-    "record literal"
-    ( Anno
-        (RecordTy [("x", BoolTy), ("y", UnitTy)])
-        (Record [("x", Tru), ("y", Unit)])
-    )
-  test
-    "record projection"
-    ( Get
-        "x"
-        ( Anno
-            (RecordTy [("x", BoolTy), ("y", UnitTy)])
-            (Record [("x", Tru), ("y", Unit)])
-        )
-    )
-  putStrLn ""
+    -- Records
+    section "Records"
+    test
+      "record literal"
+      ( Anno
+          (RecordTy [("x", BoolTy), ("y", UnitTy)])
+          (Record [("x", Tru), ("y", Unit)])
+      )
+      ( Anno
+          (RecordTy [("x", BoolTy), ("y", UnitTy)])
+          (Record [("x", Tru), ("y", Unit)])
+      )
+    test
+      "record projection"
+      ( Get
+          "x"
+          ( Anno
+              (RecordTy [("x", BoolTy), ("y", UnitTy)])
+              (Record [("x", Tru), ("y", Unit)])
+          )
+      )
+      (Anno BoolTy Tru)
 
-  -- Subtyping
-  section "Subtyping"
-  test
-    "Nat as Int"
-    (Anno IntegerTy (Natural 5))
-  test
-    "Nat as Real"
-    (Anno RealTy (Natural 5))
-  test
-    "Int as Real"
-    (Anno RealTy (Integer 42))
-  putStrLn ""
+    -- Subtyping
+    section "Subtyping"
+    test
+      "Nat as Int"
+      (Anno IntegerTy (Natural 5))
+      (Anno IntegerTy (Natural 5))
+    test
+      "Nat as Real"
+      (Anno RealTy (Natural 5))
+      (Anno RealTy (Natural 5))
+    test
+      "Int as Real"
+      (Anno RealTy (Integer 42))
+      (Anno RealTy (Integer 42))
 
-  -- Holes
-  section "Holes"
-  test
-    "hole in check position"
-    (Anno BoolTy Hole)
+    -- Holes
+    section "Holes"
+    smoke
+      "hole in check position"
+      (Anno BoolTy Hole)

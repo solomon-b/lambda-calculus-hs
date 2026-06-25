@@ -55,7 +55,7 @@ library test-harness
   visibility:          private
   exposed-modules:     TestHarness, PrettyTerm
   hs-source-dirs:      lib
-  build-depends:       base >= 2 && <5, prettyprinter
+  build-depends:       base >= 2 && <5, prettyprinter, mtl
 
 -- ---------------------------------------------------------------------------
 -- Legacy standalone implementations (predate the numbered series)

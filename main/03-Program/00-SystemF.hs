@@ -44,7 +44,7 @@ import Data.String
 import Data.These
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, bigLambdaSym, forallSym, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), runTest, runTestErr, section)
+import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
 import Utils (SnocList (..), alignWithM, nth)
 
 --------------------------------------------------------------------------------
@@ -2161,234 +2161,243 @@ bindTVar lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (RunResult Syntax SType Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax SType Syntax Value, Holes)
 run term =
   case runTypecheckM (runSynth $ synth term) initEnv of
     (Left err, holes) -> Left (err, holes)
     (Right (type', syntax), holes) -> do
       let evalEnv = EvalEnv Nil 0 Nil 0 stockADTs
+          val = runEvalM (eval syntax) evalEnv
           result = flip runEvalM evalEnv $ do
-            value <- eval syntax
             type' <- evalType type'
-            quote (initLevel, initLevel) type' value
-      pure (RunResult syntax type' result, holes)
+            quote (initLevel, initLevel) type' val
+      pure (RunResult syntax type' result val, holes)
 
 main :: IO ()
 main = do
-  let test = runTest run
-      testErr = runTestErr run
-
   putStrLn "=== System F ==="
-  putStrLn ""
+  runTests $ do
+    let test = assertEval run
+        smoke = testOk run
+        err = testErr run
 
-  -- Polymorphic identity
-  section "Type Abstraction & Application"
-  test
-    "poly id applied to Bool"
-    ( Ap
-        ( TyAp
-            (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
-            BoolTy
-        )
-        (TmArg (Anno BoolTy Tru))
-    )
-  test
-    "poly id applied to Unit"
-    ( Ap
-        ( TyAp
-            (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
-            UnitTy
-        )
-        (TmArg Unit)
-    )
-  test
-    "poly id unapplied"
-    ( Anno
-        (Forall "a" (TVar "a" `FuncTy` TVar "a"))
-        (TyLam "a" (Lam "x" (Var "x")))
-    )
-  test
-    "poly id instantiated at Bool"
-    ( TyAp
-        (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
-        BoolTy
-    )
-  putStrLn ""
+    -- Polymorphic identity
+    section "Type Abstraction & Application"
+    test
+      "poly id applied to Bool"
+      ( Ap
+          ( TyAp
+              (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
+              BoolTy
+          )
+          (TmArg (Anno BoolTy Tru))
+      )
+      (Anno BoolTy Tru)
+    test
+      "poly id applied to Unit"
+      ( Ap
+          ( TyAp
+              (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
+              UnitTy
+          )
+          (TmArg Unit)
+      )
+      (Anno UnitTy Unit)
+    smoke
+      "poly id unapplied"
+      ( Anno
+          (Forall "a" (TVar "a" `FuncTy` TVar "a"))
+          (TyLam "a" (Lam "x" (Var "x")))
+      )
+    smoke
+      "poly id instantiated at Bool"
+      ( TyAp
+          (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
+          BoolTy
+      )
 
-  -- Polymorphic const
-  section "Polymorphic Const"
-  test
-    "poly const applied to Bool and Unit"
-    ( Ap
-        ( Ap
-            ( TyAp
-                ( TyAp
-                    ( Anno
-                        (Forall "a" (Forall "b" (TVar "a" `FuncTy` (TVar "b" `FuncTy` TVar "a"))))
-                        (TyLam "a" (TyLam "b" (Lam "x" (Lam "y" (Var "x")))))
-                    )
-                    BoolTy
-                )
-                UnitTy
-            )
-            (TmArg (Anno BoolTy Tru))
-        )
-        (TmArg Unit)
-    )
-  putStrLn ""
+    -- Polymorphic const
+    section "Polymorphic Const"
+    test
+      "poly const applied to Bool and Unit"
+      ( Ap
+          ( Ap
+              ( TyAp
+                  ( TyAp
+                      ( Anno
+                          (Forall "a" (Forall "b" (TVar "a" `FuncTy` (TVar "b" `FuncTy` TVar "a"))))
+                          (TyLam "a" (TyLam "b" (Lam "x" (Lam "y" (Var "x")))))
+                      )
+                      BoolTy
+                  )
+                  UnitTy
+              )
+              (TmArg (Anno BoolTy Tru))
+          )
+          (TmArg Unit)
+      )
+      (Anno BoolTy Tru)
 
-  -- Nested forall
-  section "Nested Forall"
-  test
-    "poly apply with not"
-    ( Ap
-        ( Ap
-            ( TyAp
-                ( TyAp
-                    ( Anno
-                        (Forall "a" (Forall "b" ((TVar "a" `FuncTy` TVar "b") `FuncTy` (TVar "a" `FuncTy` TVar "b"))))
-                        (TyLam "a" (TyLam "b" (Lam "f" (Lam "x" (Ap (Var "f") (TmArg (Var "x")))))))
-                    )
-                    BoolTy
-                )
-                BoolTy
-            )
-            (TmArg (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru))))
-        )
-        (TmArg (Anno BoolTy Tru))
-    )
-  putStrLn ""
+    -- Nested forall
+    section "Nested Forall"
+    test
+      "poly apply with not"
+      ( Ap
+          ( Ap
+              ( TyAp
+                  ( TyAp
+                      ( Anno
+                          (Forall "a" (Forall "b" ((TVar "a" `FuncTy` TVar "b") `FuncTy` (TVar "a" `FuncTy` TVar "b"))))
+                          (TyLam "a" (TyLam "b" (Lam "f" (Lam "x" (Ap (Var "f") (TmArg (Var "x")))))))
+                      )
+                      BoolTy
+                  )
+                  BoolTy
+              )
+              (TmArg (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru))))
+          )
+          (TmArg (Anno BoolTy Tru))
+      )
+      (Anno BoolTy Fls)
 
-  -- Impredicative polymorphism
-  section "Impredicative Polymorphism"
-  test
-    "impredicative: id applied to id"
-    ( Ap
-        ( TyAp
-            (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
-            (Forall "b" (TVar "b" `FuncTy` TVar "b"))
-        )
-        (TmArg (Anno (Forall "b" (TVar "b" `FuncTy` TVar "b")) (TyLam "b" (Lam "x" (Var "x")))))
-    )
-  putStrLn ""
+    -- Impredicative polymorphism
+    section "Impredicative Polymorphism"
+    smoke
+      "impredicative: id applied to id"
+      ( Ap
+          ( TyAp
+              (Anno (Forall "a" (TVar "a" `FuncTy` TVar "a")) (TyLam "a" (Lam "x" (Var "x"))))
+              (Forall "b" (TVar "b" `FuncTy` TVar "b"))
+          )
+          (TmArg (Anno (Forall "b" (TVar "b" `FuncTy` TVar "b")) (TyLam "b" (Lam "x" (Var "x")))))
+      )
 
-  -- Error cases
-  section "Error Cases (expected failures)"
-  testErr
-    "type application of non-forall"
-    (TyAp (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (Var "x"))) BoolTy)
-  testErr
-    "type lambda at non-forall type"
-    ( Anno
-        (BoolTy `FuncTy` BoolTy)
-        (TyLam "a" (Lam "x" (Var "x")))
-    )
-  testErr
-    "unbound type variable"
-    ( Anno
-        (TVar "a" `FuncTy` TVar "a")
-        (Lam "x" (Var "x"))
-    )
-  putStrLn ""
+    -- Error cases
+    section "Error Cases (expected failures)"
+    err
+      "type application of non-forall"
+      (TyAp (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (Var "x"))) BoolTy)
+    err
+      "type lambda at non-forall type"
+      ( Anno
+          (BoolTy `FuncTy` BoolTy)
+          (TyLam "a" (Lam "x" (Var "x")))
+      )
+    err
+      "unbound type variable"
+      ( Anno
+          (TVar "a" `FuncTy` TVar "a")
+          (Lam "x" (Var "x"))
+      )
 
-  -- Polymorphic ADTs
-  section "Polymorphic ADTs - Maybe"
-  test
-    "Nothing at Maybe Bool"
-    (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Nothing" []))
-  test
-    "Just True at Maybe Bool"
-    (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
-  test
-    "Just unit at Maybe Unit"
-    (Anno (AdtTy "Maybe" [UnitTy]) (Cnstr "Just" [Unit]))
-  putStrLn ""
+    -- Polymorphic ADTs
+    section "Polymorphic ADTs - Maybe"
+    test
+      "Nothing at Maybe Bool"
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Nothing" []))
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Nothing" []))
+    test
+      "Just True at Maybe Bool"
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
+    test
+      "Just unit at Maybe Unit"
+      (Anno (AdtTy "Maybe" [UnitTy]) (Cnstr "Just" [Unit]))
+      (Anno (AdtTy "Maybe" [UnitTy]) (Cnstr "Just" [Unit]))
 
-  section "Polymorphic ADTs - List"
-  test
-    "Nil at List Bool"
-    (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
-  test
-    "singleton list"
-    ( Anno
-        (AdtTy "List" [BoolTy])
-        (Cnstr "Cons" [Tru, Cnstr "Nil" []])
-    )
-  test
-    "two-element list"
-    ( Anno
-        (AdtTy "List" [BoolTy])
-        (Cnstr "Cons" [Fls, Cnstr "Cons" [Tru, Cnstr "Nil" []]])
-    )
-  putStrLn ""
+    section "Polymorphic ADTs - List"
+    test
+      "Nil at List Bool"
+      (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
+      (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
+    test
+      "singleton list"
+      ( Anno
+          (AdtTy "List" [BoolTy])
+          (Cnstr "Cons" [Tru, Cnstr "Nil" []])
+      )
+      ( Anno
+          (AdtTy "List" [BoolTy])
+          (Cnstr "Cons" [Tru, Cnstr "Nil" []])
+      )
+    test
+      "two-element list"
+      ( Anno
+          (AdtTy "List" [BoolTy])
+          (Cnstr "Cons" [Fls, Cnstr "Cons" [Tru, Cnstr "Nil" []]])
+      )
+      ( Anno
+          (AdtTy "List" [BoolTy])
+          (Cnstr "Cons" [Fls, Cnstr "Cons" [Tru, Cnstr "Nil" []]])
+      )
 
-  section "Polymorphic ADTs - Case"
-  test
-    "case on Just"
-    ( Anno
-        BoolTy
-        ( Case
-            (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
-            [ ("Nothing", [], Fls),
-              ("Just", ["x"], Var "x")
-            ]
-        )
-    )
-  test
-    "case on Nil"
-    ( Anno
-        BoolTy
-        ( Case
-            (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
-            [ ("Nil", [], Tru),
-              ("Cons", ["x", "xs"], Var "x")
-            ]
-        )
-    )
-  test
-    "predecessor via case on Nat"
-    ( Anno
-        (AdtTy "Nat" [])
-        ( Case
-            (Anno (AdtTy "Nat" []) (Cnstr "S" [Cnstr "S" [Cnstr "Z" []]]))
-            [ ("Z", [], Cnstr "Z" []),
-              ("S", ["n"], Var "n")
-            ]
-        )
-    )
-  putStrLn ""
+    section "Polymorphic ADTs - Case"
+    test
+      "case on Just"
+      ( Anno
+          BoolTy
+          ( Case
+              (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Tru]))
+              [ ("Nothing", [], Fls),
+                ("Just", ["x"], Var "x")
+              ]
+          )
+      )
+      (Anno BoolTy Tru)
+    test
+      "case on Nil"
+      ( Anno
+          BoolTy
+          ( Case
+              (Anno (AdtTy "List" [BoolTy]) (Cnstr "Nil" []))
+              [ ("Nil", [], Tru),
+                ("Cons", ["x", "xs"], Var "x")
+              ]
+          )
+      )
+      (Anno BoolTy Tru)
+    test
+      "predecessor via case on Nat"
+      ( Anno
+          (AdtTy "Nat" [])
+          ( Case
+              (Anno (AdtTy "Nat" []) (Cnstr "S" [Cnstr "S" [Cnstr "Z" []]]))
+              [ ("Z", [], Cnstr "Z" []),
+                ("S", ["n"], Var "n")
+              ]
+          )
+      )
+      (Anno (AdtTy "Nat" []) (Cnstr "S" [Cnstr "Z" []]))
 
-  section "Polymorphic ADTs - Partial Application"
-  test
-    "partially applied Just"
-    (Anno (FuncTy BoolTy (AdtTy "Maybe" [BoolTy])) (Cnstr "Just" []))
-  test
-    "fully unapplied Cons"
-    ( Anno
-        (FuncTy BoolTy (FuncTy (AdtTy "List" [BoolTy]) (AdtTy "List" [BoolTy])))
-        (Cnstr "Cons" [])
-    )
-  putStrLn ""
+    section "Polymorphic ADTs - Partial Application"
+    smoke
+      "partially applied Just"
+      (Anno (FuncTy BoolTy (AdtTy "Maybe" [BoolTy])) (Cnstr "Just" []))
+    smoke
+      "fully unapplied Cons"
+      ( Anno
+          (FuncTy BoolTy (FuncTy (AdtTy "List" [BoolTy]) (AdtTy "List" [BoolTy])))
+          (Cnstr "Cons" [])
+      )
 
-  section "Polymorphic ADTs - Errors"
-  testErr
-    "wrong number of type args"
-    (Anno (AdtTy "Maybe" []) (Cnstr "Just" [Tru]))
-  testErr
-    "constructor arg type mismatch"
-    (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Unit]))
-  testErr
-    "Constructor belongs to wrong ADT: Cons checked at Maybe (issue #23)"
-    (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Cons" [Tru]))
-  testErr
-    "Wrong ADT in recursive position: Nothing inside Cons (issue #23)"
-    (Anno (AdtTy "List" [BoolTy]) (Cnstr "Cons" [Tru, Cnstr "Nothing" []]))
-  putStrLn ""
+    section "Polymorphic ADTs - Errors"
+    err
+      "wrong number of type args"
+      (Anno (AdtTy "Maybe" []) (Cnstr "Just" [Tru]))
+    err
+      "constructor arg type mismatch"
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Just" [Unit]))
+    err
+      "Constructor belongs to wrong ADT: Cons checked at Maybe (issue #23)"
+      (Anno (AdtTy "Maybe" [BoolTy]) (Cnstr "Cons" [Tru]))
+    err
+      "Wrong ADT in recursive position: Nothing inside Cons (issue #23)"
+      (Anno (AdtTy "List" [BoolTy]) (Cnstr "Cons" [Tru, Cnstr "Nothing" []]))
 
-  section "Function & Higher-Rank Constructor Fields"
-  test
-    "MkFn (\\x. x) at Fn"
-    (Anno (AdtTy "Fn" []) (Cnstr "MkFn" [Lam "x" (Var "x")]))
-  test
-    "MkWrap (/\\a. \\x. x) at Wrap"
-    (Anno (AdtTy "Wrap" []) (Cnstr "MkWrap" [TyLam "a" (Lam "x" (Var "x"))]))
+    section "Function & Higher-Rank Constructor Fields"
+    smoke
+      "MkFn (\\x. x) at Fn"
+      (Anno (AdtTy "Fn" []) (Cnstr "MkFn" [Lam "x" (Var "x")]))
+    smoke
+      "MkWrap (/\\a. \\x. x) at Wrap"
+      (Anno (AdtTy "Wrap" []) (Cnstr "MkWrap" [TyLam "a" (Lam "x" (Var "x"))]))

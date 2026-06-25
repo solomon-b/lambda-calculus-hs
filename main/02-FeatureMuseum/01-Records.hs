@@ -34,7 +34,7 @@ import Data.String
 import Data.These
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), runTest, runTestErr, section)
+import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
 import Utils (SnocList (..), alignWithM, nth)
 
 --------------------------------------------------------------------------------
@@ -1223,7 +1223,7 @@ bindVar ty lvl f =
 --------------------------------------------------------------------------------
 -- Main
 
-run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax, Holes)
+run :: Term -> Either (Error, Holes) (RunResult Syntax Type Syntax Value, Holes)
 run term =
   let action = do
         ((ty, syn), hs) <- listen (runSynth (synth term))
@@ -1235,155 +1235,159 @@ run term =
         ((Left err, holes), _metas) -> Left (err, holes)
         ((Right (type', syntax, holes), _unZonkedHoles), _metas) -> do
           let evalEnv = EvalEnv Nil
-              result = flip runEvalM evalEnv $ do
-                value <- eval syntax
-                quote initLevel type' value
-          pure (RunResult syntax type' result, holes)
+              val = runEvalM (eval syntax) evalEnv
+              result = runEvalM (quote initLevel type' val) evalEnv
+          pure (RunResult syntax type' result val, holes)
 
 main :: IO ()
 main = do
-  let test = runTest run
-      testErr = runTestErr run
+  putStrLn "=== Records ==="
+  runTests $ do
+    let test = assertEval run
+        smoke = testOk run
+        err = testErr run
 
-  putStrLn "=== First Order Unification ==="
-  putStrLn ""
+    -- Lambda / application
+    section "Lambda & Application"
+    test
+      "identity: (\\x. x) () ==> ()"
+      ( Ap
+          (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
+          Unit
+      )
+      (Anno UnitTy Unit)
+    test
+      "const: (\\x. \\y. x) () () ==> ()"
+      ( Ap
+          ( Ap
+              (Anno (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy)) (Lam "x" (Lam "_" (Var "x"))))
+              Unit
+          )
+          Unit
+      )
+      (Anno UnitTy Unit)
+    test
+      "not True ==> False"
+      ( Ap
+          (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
+          (Anno BoolTy Tru)
+      )
+      (Anno BoolTy Fls)
 
-  -- Lambda / application
-  section "Lambda & Application"
-  test
-    "identity: (\\x. x) () ==> ()"
-    ( Ap
-        (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-        Unit
-    )
-  test
-    "const: (\\x. \\y. x) () () ==> ()"
-    ( Ap
-        ( Ap
-            (Anno (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy)) (Lam "x" (Lam "_" (Var "x"))))
-            Unit
-        )
-        Unit
-    )
-  test
-    "not True ==> False"
-    ( Ap
-        (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
-        (Anno BoolTy Tru)
-    )
-  putStrLn ""
+    -- Pairs
+    section "Pairs"
+    test
+      "fst (True, False) ==> True"
+      (Fst (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
+      (Anno BoolTy Tru)
+    test
+      "snd (True, False) ==> False"
+      (Snd (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
+      (Anno BoolTy Fls)
 
-  -- Pairs
-  section "Pairs"
-  test
-    "fst (True, False) ==> True"
-    (Fst (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-  test
-    "snd (True, False) ==> False"
-    (Snd (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-  putStrLn ""
+    -- Sums
+    section "Sums"
+    test
+      "case InL True of InL x -> x | InR y -> y ==> True"
+      ( Anno
+          BoolTy
+          ( SumCase
+              (Anno (SumTy BoolTy BoolTy) (InL Tru))
+              ("x", Var "x")
+              ("y", Var "y")
+          )
+      )
+      (Anno BoolTy Tru)
+    test
+      "case InR False of InL x -> x | InR y -> y ==> False"
+      ( Anno
+          BoolTy
+          ( SumCase
+              (Anno (SumTy BoolTy BoolTy) (InR Fls))
+              ("x", Var "x")
+              ("y", Var "y")
+          )
+      )
+      (Anno BoolTy Fls)
 
-  -- Sums
-  section "Sums"
-  test
-    "case InL True of InL x -> x | InR y -> y ==> True"
-    ( Anno
-        BoolTy
-        ( SumCase
-            (Anno (SumTy BoolTy BoolTy) (InL Tru))
-            ("x", Var "x")
-            ("y", Var "y")
-        )
-    )
-  test
-    "case InR False of InL x -> x | InR y -> y ==> False"
-    ( Anno
-        BoolTy
-        ( SumCase
-            (Anno (SumTy BoolTy BoolTy) (InR Fls))
-            ("x", Var "x")
-            ("y", Var "y")
-        )
-    )
-  putStrLn ""
+    -- Booleans / If
+    section "Booleans"
+    test
+      "if True then False else True ==> False"
+      (Anno BoolTy (If Tru Fls Tru))
+      (Anno BoolTy Fls)
+    test
+      "if False then False else True ==> True"
+      (Anno BoolTy (If Fls Fls Tru))
+      (Anno BoolTy Tru)
 
-  -- Booleans / If
-  section "Booleans"
-  test
-    "if True then False else True ==> False"
-    (Anno BoolTy (If Tru Fls Tru))
-  test
-    "if False then False else True ==> True"
-    (Anno BoolTy (If Fls Fls Tru))
-  putStrLn ""
+    -- Records
+    section "Records"
+    test
+      "get foo { foo = True, bar = () } ==> True"
+      ( Get
+          "foo"
+          (Anno (RecordTy [("foo", BoolTy), ("bar", UnitTy)]) (Record [("foo", Tru), ("bar", Unit)]))
+      )
+      (Anno BoolTy Tru)
+    test
+      "{ foo = True, bar = () } ==> { foo = True, bar = () }"
+      (Anno (RecordTy [("foo", BoolTy), ("bar", UnitTy)]) (Record [("foo", Tru), ("bar", Unit)]))
+      (Anno (RecordTy [("foo", BoolTy), ("bar", UnitTy)]) (Record [("foo", Tru), ("bar", Unit)]))
 
-  -- Records
-  section "Records"
-  test
-    "get foo { foo = True, bar = () } ==> True"
-    ( Get
-        "foo"
-        (Anno (RecordTy [("foo", BoolTy), ("bar", UnitTy)]) (Record [("foo", Tru), ("bar", Unit)]))
-    )
-  putStrLn ""
+    -- Holes
+    section "Holes"
+    smoke
+      "identity with hole body"
+      ( Anno
+          (UnitTy `FuncTy` UnitTy)
+          (Lam "x" Hole)
+      )
 
-  -- Holes
-  section "Holes"
-  test
-    "identity with hole body"
-    ( Anno
-        (UnitTy `FuncTy` UnitTy)
-        (Lam "x" Hole)
-    )
-  putStrLn ""
+    -- Unification: a hole in synthesizing position no longer fails. It mints a
+    -- fresh metavariable, survives elaboration, and reports whatever skeleton the
+    -- surrounding eliminators carve out for it. These normal forms are still
+    -- partly metavariables, so they are smoke tested rather than asserted.
+    section "Unification (solvable holes)"
+    smoke
+      "bare _ synthesizes an unsolved metavariable"
+      Hole
+    smoke
+      "fst _ : the hole is forced to a pair skeleton"
+      (Fst Hole)
+    smoke
+      "fst (snd _) : nested skeleton, ?a * (?b * ?c)"
+      (Fst (Snd Hole))
+    smoke
+      "_ () : the hole is forced to a function, domain solved by the arg"
+      (Ap Hole Unit)
+    smoke
+      "(_ () : Unit) : argument and result pin the hole to Unit -> Unit"
+      (Anno UnitTy (Ap Hole Unit))
+    smoke
+      "case _ of InL/InR : the scrutinee hole is imitated to a sum"
+      (Anno BoolTy (SumCase Hole ("x", Var "x") ("y", Var "y")))
+    smoke
+      "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
+      (Ap Hole (InL Tru))
+    smoke
+      "_ { foo = True, bar = () } : the hole's domain is imitated to a record"
+      (Ap Hole (Record [("foo", Tru), ("bar", Unit)]))
 
-  -- Unification: a hole in synthesizing position no longer fails. It mints a
-  -- fresh metavariable, survives elaboration, and reports whatever skeleton the
-  -- surrounding eliminators carve out for it. A hole pinned by the types that
-  -- flow in around it gets fully solved.
-  section "Unification (solvable holes)"
-  test
-    "bare _ synthesizes an unsolved metavariable"
-    Hole
-  test
-    "fst _ : the hole is forced to a pair skeleton"
-    (Fst Hole)
-  test
-    "fst (snd _) : nested skeleton, ?a * (?b * ?c)"
-    (Fst (Snd Hole))
-  test
-    "_ () : the hole is forced to a function, domain solved by the arg"
-    (Ap Hole Unit)
-  test
-    "(_ () : Unit) : argument and result pin the hole to Unit -> Unit"
-    (Anno UnitTy (Ap Hole Unit))
-  test
-    "case _ of InL/InR : the scrutinee hole is imitated to a sum"
-    (Anno BoolTy (SumCase Hole ("x", Var "x") ("y", Var "y")))
-  test
-    "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
-    (Ap Hole (InL Tru))
-  test
-    "_ { foo = True, bar = () } : the hole's domain is imitated to a record"
-    (Ap Hole (Record [("foo", Tru), ("bar", Unit)]))
-  putStrLn ""
+    -- Unification: rigid mismatches and the occurs check.
+    section "Unification (expected failures)"
+    err
+      "(_, ()) : Bool : a pair cannot unify with Bool"
+      (Anno BoolTy (Pair Hole Unit))
 
-  -- Unification: rigid mismatches and the occurs check.
-  section "Unification (expected failures)"
-  testErr
-    "(_, ()) : Bool : a pair cannot unify with Bool"
-    (Anno BoolTy (Pair Hole Unit))
-  putStrLn ""
-
-  -- Error cases
-  section "Error Cases (expected failures)"
-  testErr
-    "Cannot synthesize lambda"
-    (Lam "x" (Var "x"))
-  testErr
-    "Absurd on non-Void"
-    ( Anno
-        BoolTy
-        (Absurd (Anno BoolTy Tru))
-    )
-  putStrLn ""
+    -- Error cases
+    section "Error Cases (expected failures)"
+    err
+      "Cannot synthesize lambda"
+      (Lam "x" (Var "x"))
+    err
+      "Absurd on non-Void"
+      ( Anno
+          BoolTy
+          (Absurd (Anno BoolTy Tru))
+      )
