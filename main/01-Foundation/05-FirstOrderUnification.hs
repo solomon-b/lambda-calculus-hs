@@ -40,9 +40,10 @@ import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String
+import FoundationSuite (CoreVocab (..), foundationSuite)
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
+import TestHarness (RunResult (..), runTests)
 import Utils (SnocList (..), nth)
 
 --------------------------------------------------------------------------------
@@ -189,7 +190,7 @@ data Type
 -- hole evaluates to a neutral and quoting a neutral ignores its type. It
 -- is resolved only in the typechecker, never by the evaluator.
 newtype MetaId = MetaId Int
-  deriving (Eq, Ord, Show)
+  deriving stock (Eq, Ord, Show)
 
 prettyType :: Prec -> Type -> PP.Doc ann
 prettyType p (FuncTy a b) =
@@ -1153,168 +1154,38 @@ run term =
               result = runEvalM (quote initLevel type' val) evalEnv
           pure (RunResult syntax type' result val, holes)
 
+-- | This module's mapping of the shared core vocabulary onto its own
+-- constructors, so the foundation suite can run against it.
+foundationVocab :: CoreVocab Term Type
+foundationVocab =
+  CoreVocab
+    { var = Var . Name,
+      lam = Lam . Name,
+      ap = Ap,
+      let_ = Let . Name,
+      anno = Anno,
+      hole = Hole,
+      pair = Pair,
+      fst_ = Fst,
+      snd_ = Snd,
+      inl = InL,
+      inr = InR,
+      sumCase = \s (x, l) (y, r) -> SumCase s (Name x, l) (Name y, r),
+      absurd = Absurd,
+      unit = Unit,
+      tru = Tru,
+      fls = Fls,
+      if_ = If,
+      funcTy = FuncTy,
+      pairTy = PairTy,
+      sumTy = SumTy,
+      boolTy = BoolTy,
+      unitTy = UnitTy,
+      voidTy = VoidTy
+    }
+
 main :: IO ()
 main = do
   putStrLn "=== First Order Unification ==="
   runTests $ do
-    let test = assertEval run
-        smoke = testOk run
-        err = testErr run
-
-    -- Lambda / application
-    section "Lambda & Application"
-    test
-      "identity: (\\x. x) () ==> ()"
-      (Ap (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x"))) Unit)
-      (Anno UnitTy Unit)
-    test
-      "const: (\\x. \\y. x) () () ==> ()"
-      ( Ap
-          ( Ap
-              (Anno (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy)) (Lam "x" (Lam "_" (Var "x"))))
-              Unit
-          )
-          Unit
-      )
-      (Anno UnitTy Unit)
-    test
-      "not True ==> False"
-      ( Ap
-          (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
-          (Anno BoolTy Tru)
-      )
-      (Anno BoolTy Fls)
-    -- Resolving a function typed bound variable eta expands it during quoting,
-    -- which applies the variable. The binder must carry a function type, not
-    -- the fresh metavariable it was created with. The normal form has a binder,
-    -- so we only smoke test it (binder names in the quoted form are not stable
-    -- enough to assert against).
-    smoke
-      "id on functions: (\\f. f) : (Bool -> Bool) -> Bool -> Bool"
-      ( Anno
-          ((BoolTy `FuncTy` BoolTy) `FuncTy` (BoolTy `FuncTy` BoolTy))
-          (Lam "f" (Var "f"))
-      )
-
-    -- Let bindings
-    section "Let Bindings"
-    test
-      "let x = True in (x, x) ==> (True, True)"
-      (Anno (PairTy BoolTy BoolTy) (Let "x" Tru (Pair (Var "x") (Var "x"))))
-      (Anno (PairTy BoolTy BoolTy) (Pair Tru Tru))
-    test
-      "let f = \\y. y in f () ==> () : the use pins f's metavariable to Unit"
-      (Anno UnitTy (Let "f" (Lam "y" (Var "y")) (Ap (Var "f") Unit)))
-      (Anno UnitTy Unit)
-
-    -- Pairs
-    section "Pairs"
-    test
-      "fst (True, False) ==> True"
-      (Fst (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-      (Anno BoolTy Tru)
-    test
-      "snd (True, False) ==> False"
-      (Snd (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-      (Anno BoolTy Fls)
-
-    -- Sums
-    section "Sums"
-    test
-      "case InL True of InL x -> x | InR y -> y ==> True"
-      ( Anno
-          BoolTy
-          (SumCase (Anno (SumTy BoolTy BoolTy) (InL Tru)) ("x", Var "x") ("y", Var "y"))
-      )
-      (Anno BoolTy Tru)
-    test
-      "case InR False of InL x -> x | InR y -> y ==> False"
-      ( Anno
-          BoolTy
-          (SumCase (Anno (SumTy BoolTy BoolTy) (InR Fls)) ("x", Var "x") ("y", Var "y"))
-      )
-      (Anno BoolTy Fls)
-    smoke
-      "\\s. case s of inl x -> x | inr y -> y (stuck on neutral s, builds VSumCase)"
-      ( Anno
-          (SumTy BoolTy BoolTy `FuncTy` BoolTy)
-          (Lam "s" (SumCase (Var "s") ("x", Var "x") ("y", Var "y")))
-      )
-
-    -- Booleans / If
-    section "Booleans"
-    test
-      "if True then False else True ==> False"
-      (Anno BoolTy (If Tru Fls Tru))
-      (Anno BoolTy Fls)
-    test
-      "if False then False else True ==> True"
-      (Anno BoolTy (If Fls Fls Tru))
-      (Anno BoolTy Tru)
-    smoke
-      "\\b. if b then False else True (if stuck on neutral b, builds VIf)"
-      (Anno (BoolTy `FuncTy` BoolTy) (Lam "b" (If (Var "b") Fls Tru)))
-
-    -- Void — absurd has no values to reduce; its only behaviour is the stuck
-    -- read-back of a neutral Void scrutinee under a binder.
-    section "Void"
-    smoke
-      "\\x. absurd x : Void -> Bool (stuck absurd builds VAbsurd)"
-      (Anno (VoidTy `FuncTy` BoolTy) (Lam "x" (Absurd (Var "x"))))
-
-    -- Holes
-    section "Holes"
-    smoke
-      "identity with hole body"
-      (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" Hole))
-
-    -- Unification: a hole in synthesizing position no longer fails. It mints a
-    -- fresh metavariable, survives elaboration, and reports whatever skeleton
-    -- the surrounding eliminators carve out for it. These normal forms are
-    -- still partly metavariables, so they are smoke tested rather than asserted.
-    section "Unification (solvable holes)"
-    smoke
-      "bare _ synthesizes an unsolved metavariable"
-      Hole
-    smoke
-      "fst _ : the hole is forced to a pair skeleton"
-      (Fst Hole)
-    smoke
-      "fst (snd _) : nested skeleton, ?a * (?b * ?c)"
-      (Fst (Snd Hole))
-    smoke
-      "_ () : the hole is forced to a function, domain solved by the arg"
-      (Ap Hole Unit)
-    smoke
-      "(_ () : Unit) : argument and result pin the hole to Unit -> Unit"
-      (Anno UnitTy (Ap Hole Unit))
-    smoke
-      "case _ of InL/InR : the scrutinee hole is imitated to a sum"
-      (Anno BoolTy (SumCase Hole ("x", Var "x") ("y", Var "y")))
-    smoke
-      "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
-      (Ap Hole (InL Tru))
-    smoke
-      "let x = _ in (x, True) : Bool * Bool : a use solves the hole to Bool"
-      (Anno (PairTy BoolTy BoolTy) (Let "x" Hole (Pair (Var "x") Tru)))
-
-    -- Unification: rigid mismatches and the occurs check.
-    section "Unification (expected failures)"
-    err
-      "(_, ()) : Bool : a pair cannot unify with Bool"
-      (Anno BoolTy (Pair Hole Unit))
-    err
-      "let x = _ in (x, x) : Bool * Unit : conflicting uses of the same hole"
-      (Anno (PairTy BoolTy UnitTy) (Let "x" Hole (Pair (Var "x") (Var "x"))))
-    err
-      "let x = _ in x x : self-application triggers the occurs check"
-      (Anno BoolTy (Let "x" Hole (Ap (Var "x") (Var "x"))))
-
-    -- Error cases
-    section "Error Cases (expected failures)"
-    err
-      "Cannot synthesize lambda"
-      (Lam "x" (Var "x"))
-    err
-      "Absurd on non-Void"
-      (Anno BoolTy (Absurd (Anno BoolTy Tru)))
+    foundationSuite run [] foundationVocab

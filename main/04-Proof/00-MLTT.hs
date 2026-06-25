@@ -38,6 +38,7 @@ import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific)
 import Data.String
 import Data.These
+import FoundationSuite (CoreVocab (..), foundationSuite)
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
@@ -2281,10 +2282,62 @@ run term =
           quotedType = runEvalM (quote initLevel VUniv type') evalEnv
       pure (RunResult syntax quotedType result value, holes)
 
+-- | This module's mapping of the shared core vocabulary onto its own
+-- constructors. Types are collapsed into terms here, so the vocab's surface
+-- type is 'Term' and the type formers are ordinary 'Term' constructors.
+foundationVocab :: CoreVocab Term Term
+foundationVocab =
+  CoreVocab
+    { var = Var . Name,
+      lam = Lam . Name,
+      ap = Ap,
+      let_ = Let . Name,
+      anno = Anno,
+      hole = Hole,
+      pair = Pair,
+      fst_ = Fst,
+      snd_ = Snd,
+      inl = InL,
+      inr = InR,
+      sumCase = \s (x, l) (y, r) -> SumCase s (Name x, l) (Name y, r),
+      absurd = Absurd,
+      unit = Unit,
+      tru = Tru,
+      fls = Fls,
+      if_ = If,
+      funcTy = FuncTy,
+      pairTy = PairTy,
+      sumTy = SumTy,
+      boolTy = BoolTy,
+      unitTy = UnitTy,
+      voidTy = VoidTy
+    }
+
 main :: IO ()
 main = do
   putStrLn "=== MLTT ==="
   runTests $ do
+    -- These foundation tests need unification (metavariable inference): the two
+    -- inference lets plus all the holes and unification tests. This module has
+    -- no metavariables yet, so they are skipped until it gains unification.
+    foundationSuite
+      run
+      [ "let x = True in (x, x) ==> (True, True)",
+        "let f = \\y. y in f () ==> ()",
+        "bare _ synthesizes an unsolved metavariable",
+        "fst _ : the hole is forced to a pair skeleton",
+        "fst (snd _) : nested skeleton",
+        "_ () : the hole is forced to a function",
+        "(_ () : Unit) pins the hole to Unit -> Unit",
+        "case _ of InL/InR : scrutinee hole imitated to a sum",
+        "_ (InL True) : domain imitated to a sum",
+        "let x = _ in (x, True) : a use solves the hole to Bool",
+        "(_, ()) : Bool : a pair cannot unify with Bool",
+        "let x = _ in (x, x) : conflicting uses of the same hole",
+        "let x = _ in x x : occurs check"
+      ]
+      foundationVocab
+
     let test = assertEval run
         smoke = testOk run
         err = testErr run
@@ -2575,63 +2628,6 @@ main = do
       )
       (Anno UnitTy Unit)
 
-    -- Let bindings
-    section "Let Bindings"
-    test
-      "let x = True in x"
-      (Anno BoolTy (Let "x" (Anno BoolTy Tru) (Var "x")))
-      (Anno BoolTy Tru)
-    test
-      "let id = (\\x. x) in id True"
-      ( Anno
-          BoolTy
-          ( Let
-              "id"
-              (Anno (FuncTy BoolTy BoolTy) (Lam "x" (Var "x")))
-              (Ap (Var "id") Tru)
-          )
-      )
-      (Anno BoolTy Tru)
-
-    -- Pairs (non-dependent)
-    section "Pairs"
-    test
-      "pair of booleans"
-      (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls))
-      (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls))
-    test
-      "nested pair"
-      ( Anno
-          (PairTy BoolTy (PairTy UnitTy BoolTy))
-          (Pair Tru (Pair Unit Fls))
-      )
-      ( Anno
-          (PairTy BoolTy (PairTy UnitTy BoolTy))
-          (Pair Tru (Pair Unit Fls))
-      )
-
-    -- Sums
-    section "Sum Types"
-    test
-      "inl into Bool + Unit"
-      (Anno (SumTy BoolTy UnitTy) (InL Tru))
-      (Anno (SumTy BoolTy UnitTy) (InL Tru))
-    test
-      "inr into Bool + Unit"
-      (Anno (SumTy BoolTy UnitTy) (InR Unit))
-      (Anno (SumTy BoolTy UnitTy) (InR Unit))
-    test
-      "case on sum"
-      ( Anno
-          BoolTy
-          ( SumCase
-              (Anno (SumTy BoolTy UnitTy) (InL Tru))
-              ("x", Var "x")
-              ("y", Fls)
-          )
-      )
-      (Anno BoolTy Tru)
-
     -- Records
     section "Records"
     test
@@ -2669,9 +2665,3 @@ main = do
       "Int as Real"
       (Anno RealTy (Integer 42))
       (Anno RealTy (Integer 42))
-
-    -- Holes
-    section "Holes"
-    smoke
-      "hole in check position"
-      (Anno BoolTy Hole)

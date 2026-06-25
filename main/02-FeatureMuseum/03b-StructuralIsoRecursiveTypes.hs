@@ -39,6 +39,7 @@ import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String
+import FoundationSuite (CoreVocab (..), foundationSuite)
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
@@ -729,7 +730,7 @@ synth = \case
   Var bndr -> varTactic bndr
   Ap tm1 tm2 -> lamElim (synth tm1) (check tm2)
   Anno ty tm -> annoTactic ty (check tm)
-  Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
+  Hole -> holeSynthTactic
   Fst tm -> pairElimFst (synth tm)
   Snd tm -> pairElimSnd (synth tm)
   Unfold tm -> unfoldElim (synth tm)
@@ -1339,10 +1340,42 @@ run term =
               result = runEvalM (quote initLevel type' val) evalEnv
           pure (RunResult syntax type' result val, holes)
 
+-- | This module's mapping of the shared core vocabulary onto its own
+-- constructors, so the foundation suite can run against it.
+foundationVocab :: CoreVocab Term Type
+foundationVocab =
+  CoreVocab
+    { var = Var . Name,
+      lam = Lam . Name,
+      ap = Ap,
+      let_ = Let . Name,
+      anno = Anno,
+      hole = Hole,
+      pair = Pair,
+      fst_ = Fst,
+      snd_ = Snd,
+      inl = InL,
+      inr = InR,
+      sumCase = \s (x, l) (y, r) -> SumCase s (Name x, l) (Name y, r),
+      absurd = Absurd,
+      unit = Unit,
+      tru = Tru,
+      fls = Fls,
+      if_ = If,
+      funcTy = FuncTy,
+      pairTy = PairTy,
+      sumTy = SumTy,
+      boolTy = BoolTy,
+      unitTy = UnitTy,
+      voidTy = VoidTy
+    }
+
 main :: IO ()
 main = do
   putStrLn "=== Structural Iso-Recursive Types ==="
   runTests $ do
+    foundationSuite run [] foundationVocab
+
     let test = assertEval run
         smoke = testOk run
         err = testErr run

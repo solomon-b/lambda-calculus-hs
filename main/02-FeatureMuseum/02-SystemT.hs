@@ -29,6 +29,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String
+import FoundationSuite (CoreVocab (..), foundationSuite)
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf)
 import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
@@ -632,7 +633,7 @@ synth = \case
   Var bndr -> varTactic bndr
   Ap tm1 tm2 -> lamElim (synth tm1) (check tm2)
   Anno ty tm -> annoTactic ty (check tm)
-  Hole -> Synth $ throwError $ TypeError "Cannot sythesize holes"
+  Hole -> holeSynthTactic
   Fst tm -> pairElimFst (synth tm)
   Snd tm -> pairElimSnd (synth tm)
   tm -> Synth $ throwError $ TypeError $ "Cannot synthesize type for " <> show tm
@@ -646,6 +647,10 @@ check Tru = boolIntroTrue
 check Fls = boolIntroFalse
 check (If tm1 tm2 tm3) = boolElim (check tm1) (check tm2) (check tm3)
 check Unit = unitIntro
+check (InL tm1) = sumIntroL (check tm1)
+check (InR tm2) = sumIntroR (check tm2)
+check (SumCase scrut (bndr1, t1) (bndr2, t2)) = sumElim (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
+check (Absurd tm) = voidElim (synth tm)
 check Zero = natIntroZero
 check (Succ tm) = natIntroSucc (check tm)
 check (NatRec tm1 tm2 n) = natElim (check tm1) (check tm2) (check n)
@@ -1248,10 +1253,42 @@ run term =
               result = runEvalM (quote initLevel type' val) evalEnv
           pure (RunResult syntax type' result val, holes)
 
+-- | This module's mapping of the shared core vocabulary onto its own
+-- constructors, so the foundation suite can run against it.
+foundationVocab :: CoreVocab Term Type
+foundationVocab =
+  CoreVocab
+    { var = Var . Name,
+      lam = Lam . Name,
+      ap = Ap,
+      let_ = Let . Name,
+      anno = Anno,
+      hole = Hole,
+      pair = Pair,
+      fst_ = Fst,
+      snd_ = Snd,
+      inl = InL,
+      inr = InR,
+      sumCase = \s (x, l) (y, r) -> SumCase s (Name x, l) (Name y, r),
+      absurd = Absurd,
+      unit = Unit,
+      tru = Tru,
+      fls = Fls,
+      if_ = If,
+      funcTy = FuncTy,
+      pairTy = PairTy,
+      sumTy = SumTy,
+      boolTy = BoolTy,
+      unitTy = UnitTy,
+      voidTy = VoidTy
+    }
+
 main :: IO ()
 main = do
   putStrLn "=== System T ==="
   runTests $ do
+    foundationSuite run [] foundationVocab
+
     let test = assertEval run
         smoke = testOk run
         err = testErr run

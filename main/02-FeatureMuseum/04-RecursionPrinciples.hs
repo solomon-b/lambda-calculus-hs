@@ -28,6 +28,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String
 import Data.These
+import FoundationSuite (CoreVocab (..), foundationSuite)
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
@@ -1766,87 +1767,45 @@ run term =
               result = runEvalM (quote initLevel type' val) evalEnv
           pure (RunResult syntax type' result val, holes)
 
+-- | This module's mapping of the shared core vocabulary onto its own
+-- constructors, so the foundation suite can run against it.
+foundationVocab :: CoreVocab Term Type
+foundationVocab =
+  CoreVocab
+    { var = Var . Name,
+      lam = Lam . Name,
+      ap = Ap,
+      let_ = Let . Name,
+      anno = Anno,
+      hole = Hole,
+      pair = Pair,
+      fst_ = Fst,
+      snd_ = Snd,
+      inl = InL,
+      inr = InR,
+      sumCase = \s (x, l) (y, r) -> SumCase s (Name x, l) (Name y, r),
+      absurd = Absurd,
+      unit = Unit,
+      tru = Tru,
+      fls = Fls,
+      if_ = If,
+      funcTy = FuncTy,
+      pairTy = PairTy,
+      sumTy = SumTy,
+      boolTy = BoolTy,
+      unitTy = UnitTy,
+      voidTy = VoidTy
+    }
+
 main :: IO ()
 main = do
   putStrLn "=== Recursion Principles ==="
   runTests $ do
+    foundationSuite run [] foundationVocab
+
     let test = assertEval run
         smoke = testOk run
         err = testErr run
-
-    -- Lambda / application
-    section "Lambda & Application"
-    test
-      "identity: (\\x. x) () ==> ()"
-      ( Ap
-          (Anno (UnitTy `FuncTy` UnitTy) (Lam "x" (Var "x")))
-          Unit
-      )
-      (Anno UnitTy Unit)
-    test
-      "const: (\\x. \\y. x) () () ==> ()"
-      ( Ap
-          ( Ap
-              (Anno (UnitTy `FuncTy` (UnitTy `FuncTy` UnitTy)) (Lam "x" (Lam "_" (Var "x"))))
-              Unit
-          )
-          Unit
-      )
-      (Anno UnitTy Unit)
-    test
-      "not True ==> False"
-      ( Ap
-          (Anno (BoolTy `FuncTy` BoolTy) (Lam "x" (If (Var "x") Fls Tru)))
-          (Anno BoolTy Tru)
-      )
-      (Anno BoolTy Fls)
-
-    -- Pairs
-    section "Pairs"
-    test
-      "fst (True, False) ==> True"
-      (Fst (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-      (Anno BoolTy Tru)
-    test
-      "snd (True, False) ==> False"
-      (Snd (Anno (PairTy BoolTy BoolTy) (Pair Tru Fls)))
-      (Anno BoolTy Fls)
-
-    -- Sums
-    section "Sums"
-    test
-      "case InL True of InL x -> x | InR y -> y ==> True"
-      ( Anno
-          BoolTy
-          ( SumCase
-              (Anno (SumTy BoolTy BoolTy) (InL Tru))
-              ("x", Var "x")
-              ("y", Var "y")
-          )
-      )
-      (Anno BoolTy Tru)
-    test
-      "case InR False of InL x -> x | InR y -> y ==> False"
-      ( Anno
-          BoolTy
-          ( SumCase
-              (Anno (SumTy BoolTy BoolTy) (InR Fls))
-              ("x", Var "x")
-              ("y", Var "y")
-          )
-      )
-      (Anno BoolTy Fls)
-
-    -- Booleans / If
-    section "Booleans"
-    test
-      "if True then False else True ==> False"
-      (Anno BoolTy (If Tru Fls Tru))
-      (Anno BoolTy Fls)
-    test
-      "if False then False else True ==> True"
-      (Anno BoolTy (If Fls Fls Tru))
-      (Anno BoolTy Tru)
 
     -- Constructor tests
     section "Construction"
@@ -1997,12 +1956,6 @@ main = do
     -- Holes
     section "Holes"
     smoke
-      "identity with hole body"
-      ( Anno
-          (UnitTy `FuncTy` UnitTy)
-          (Lam "x" Hole)
-      )
-    smoke
       "Cons ? Nil (hole in constructor arg)"
       (Anno (AdtTy "ListBool") (Cnstr "Cons" [Hole, Cnstr "Nil" []]))
 
@@ -2011,21 +1964,6 @@ main = do
     -- surrounding eliminators carve out for it. A hole pinned by the types that
     -- flow in around it gets fully solved.
     section "Unification (solvable holes)"
-    smoke
-      "bare _ synthesizes an unsolved metavariable"
-      Hole
-    smoke
-      "fst _ : the hole is forced to a pair skeleton"
-      (Fst Hole)
-    smoke
-      "fst (snd _) : nested skeleton, ?a * (?b * ?c)"
-      (Fst (Snd Hole))
-    smoke
-      "_ () : the hole is forced to a function, domain solved by the arg"
-      (Ap Hole Unit)
-    smoke
-      "(_ () : Unit) : argument and result pin the hole to Unit -> Unit"
-      (Anno UnitTy (Ap Hole Unit))
     smoke
       "case _ of Nil/Cons : the scrutinee hole is imitated to ListBool"
       ( Anno
@@ -2044,18 +1982,9 @@ main = do
     smoke
       "_ (Cons True Nil) : the hole's domain is imitated to ListBool"
       (Ap Hole (Cnstr "Cons" [Tru, Cnstr "Nil" []]))
-    smoke
-      "case _ of InL/InR : the scrutinee hole is imitated to a sum"
-      (Anno BoolTy (SumCase Hole ("x", Var "x") ("y", Var "y")))
-    smoke
-      "_ (InL True) : the hole's domain is imitated to a sum, right summand free"
-      (Ap Hole (InL Tru))
 
     -- Unification: rigid mismatches and the occurs check.
     section "Unification (expected failures)"
-    err
-      "(_, ()) : Bool : a pair cannot unify with Bool"
-      (Anno BoolTy (Pair Hole Unit))
     err
       "case _ of {} : an empty case on a hole cannot infer the ADT"
       (Anno BoolTy (Case Hole []))
@@ -2082,15 +2011,6 @@ main = do
       ( Anno
           BoolTy
           (Case (Anno BoolTy Tru) [("Nil", [], Fls)])
-      )
-    err
-      "Cannot synthesize lambda"
-      (Lam "x" (Var "x"))
-    err
-      "Absurd on non-Void"
-      ( Anno
-          BoolTy
-          (Absurd (Anno BoolTy Tru))
       )
 
     -- A Cons method: receives the head, the tail, and the recursive result

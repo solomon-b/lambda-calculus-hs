@@ -28,6 +28,7 @@ import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific)
 import Data.String
 import Data.These (These (..))
+import FoundationSuite (CoreVocab (..), foundationSuite)
 import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
 import TestHarness (RunResult (..), assertEval, runTests, section, testErr)
@@ -1180,10 +1181,61 @@ run term =
           result = runEvalM (quote initLevel type' val) Nil
       pure (RunResult syntax type' result val, holes)
 
+-- | This module's mapping of the shared core vocabulary onto its own
+-- constructors, so the foundation suite can run against it.
+foundationVocab :: CoreVocab Term Type
+foundationVocab =
+  CoreVocab
+    { var = Var . Name,
+      lam = Lam . Name,
+      ap = Ap,
+      let_ = Let . Name,
+      anno = Anno,
+      hole = Hole,
+      pair = Pair,
+      fst_ = Fst,
+      snd_ = Snd,
+      inl = InL,
+      inr = InR,
+      sumCase = \s (x, l) (y, r) -> Case s (Name x, l) (Name y, r),
+      absurd = Absurd,
+      unit = Unit,
+      tru = Tru,
+      fls = Fls,
+      if_ = If,
+      funcTy = FuncTy,
+      pairTy = PairTy,
+      sumTy = SumTy,
+      boolTy = BoolTy,
+      unitTy = UnitTy,
+      voidTy = VoidTy
+    }
+
 main :: IO ()
 main = do
   putStrLn "=== Subtyping ==="
   runTests $ do
+    -- These foundation tests need unification (metavariable inference): the two
+    -- inference lets plus all the holes and unification tests. This module has
+    -- no metavariables yet, so they are skipped until it gains unification.
+    foundationSuite
+      run
+      [ "let x = True in (x, x) ==> (True, True)",
+        "let f = \\y. y in f () ==> ()",
+        "bare _ synthesizes an unsolved metavariable",
+        "fst _ : the hole is forced to a pair skeleton",
+        "fst (snd _) : nested skeleton",
+        "_ () : the hole is forced to a function",
+        "(_ () : Unit) pins the hole to Unit -> Unit",
+        "case _ of InL/InR : scrutinee hole imitated to a sum",
+        "_ (InL True) : domain imitated to a sum",
+        "let x = _ in (x, True) : a use solves the hole to Bool",
+        "(_, ()) : Bool : a pair cannot unify with Bool",
+        "let x = _ in (x, x) : conflicting uses of the same hole",
+        "let x = _ in x x : occurs check"
+      ]
+      foundationVocab
+
     let test = assertEval run
         err = testErr run
 

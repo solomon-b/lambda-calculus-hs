@@ -71,6 +71,6 @@ run target="":
 # run all numbered executables
 run-all:
     #!/usr/bin/env bash
-    for i in 00 01 02 03 04 05 06 07 08 09 10; do
-        exe=$(cabal list-bin "$i-*" 2>/dev/null) && echo "=== $i ===" && $exe && echo
+    for exe in $(grep -oP '(?<=^executable )\d+\w*-\S+' lambda-calculus-hs.cabal); do
+        echo "=== $exe ===" && cabal run -v0 "$exe" && echo
     done
