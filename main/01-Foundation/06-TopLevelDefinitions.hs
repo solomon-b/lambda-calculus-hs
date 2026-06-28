@@ -2,14 +2,26 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
--- | System T, natural numbers and primitive recursion.
+-- | Top level definitions.
 --
--- Extends the type system with natural numbers ('NatTy') and booleans
--- ('BoolTy'). Natural numbers are introduced by 'Zero' and 'Succ', and
--- eliminated by 'NatRec' (Gödel's primitive recursor), which takes a base case,
--- a step function of type @Nat -> T -> T@ (receiving the predecessor and the
--- recursive result), and a scrutinee. This gives us a total language where
--- every well-typed program terminates.
+-- Adds a global scope: named definitions that live outside any binder
+-- and can be referenced by later definitions and by the program. A
+-- definition is a name, a declared type, and a body, checked and
+-- evaluated once when it is brought into scope.
+--
+-- Globals do not fit the de Bruijn scheme, which is for bound variables.
+-- They are a separate, flat namespace, so the core gets a distinct
+-- reference form, 'SDef', resolved by name. Name resolution decides
+-- between the two: a use is looked up in the local context first and
+-- emitted as a de Bruijn 'SVar' if found, otherwise looked up in the
+-- global environment and emitted as 'SDef'. A local binder therefore
+-- shadows a global of the same name.
+--
+-- Definitions are transparent. A global's body is evaluated once when
+-- the definition is elaborated and the resulting value is cached, so a
+-- reference evaluates to that value directly. Each definition is checked
+-- with the earlier definitions already in scope, which is how one
+-- definition refers to another.
 module Main where
 
 --------------------------------------------------------------------------------
@@ -25,14 +37,14 @@ import Control.Monad.Trans.State.Strict (StateT (..))
 import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
 import Data.Foldable (find)
-import Data.Map.Strict (Map)
+import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.String
 import FoundationSuite (CoreVocab (..), foundationSuite)
-import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf)
+import PrettyTerm (Prec, appPrec, arrowPrec, arrowSym, atomPrec, lamPrec, lambdaSym, parensIf, sumPrec)
 import PrettyTerm qualified as PP
-import TestHarness (RunResult (..), assertEval, runTests, section, testErr, testOk)
+import TestHarness (RunResult (..), assertEval, runTests, section)
 import Utils (SnocList (..), nth)
 
 --------------------------------------------------------------------------------
@@ -47,9 +59,6 @@ import Utils (SnocList (..), nth)
 -- 'Term' uses named variables ('Name') instead of de Bruijn indices. The
 -- typechecker resolves names to indices during elaboration, producing 'Syntax'.
 -- This means typechecking and elaboration happen in a single pass.
---
--- New in this module: booleans ('Tru', 'Fls', 'If') and natural numbers
--- ('Zero', 'Succ', 'NatRec') in both the surface syntax and core IR.
 
 -- | Surface syntax with named variables. The programmer writes @λx. x@ and
 -- elaboration resolves @x@ to the appropriate de Bruijn index.
@@ -90,14 +99,6 @@ data Term
     Fls
   | -- | Conditional. @if scrut then t else f@
     If Term Term Term
-  | -- | Zero, the base case for natural numbers.
-    Zero
-  | -- | Successor of a natural number.
-    Succ Term
-  | -- | Primitive recursion: @NatRec base step scrut@ eliminates a natural
-    -- number. At zero it returns @base@; at @Succ n@ it applies @step@ to the
-    -- predecessor @n@ and the recursive result.
-    NatRec Term Term Term
   deriving stock (Show, Eq, Ord)
 
 prettyTerm :: Prec -> Term -> PP.Doc ann
@@ -128,6 +129,20 @@ prettyTerm p (Fst e) =
 prettyTerm p (Snd e) =
   parensIf (p > appPrec) $
     "snd" PP.<+> prettyTerm atomPrec e
+prettyTerm _ Tru = "True"
+prettyTerm _ Fls = "False"
+prettyTerm p (If scrut t f) =
+  parensIf (p > lamPrec) $
+    "if"
+      PP.<+> prettyTerm lamPrec scrut
+      PP.<+> "then"
+      PP.<+> prettyTerm lamPrec t
+      PP.<+> "else"
+      PP.<+> prettyTerm lamPrec f
+prettyTerm _ Unit = "()"
+prettyTerm p (Absurd e) =
+  parensIf (p > appPrec) $
+    "absurd" PP.<+> prettyTerm atomPrec e
 prettyTerm p (InL e) =
   parensIf (p > appPrec) $
     "inl" PP.<+> prettyTerm atomPrec e
@@ -148,40 +163,12 @@ prettyTerm p (SumCase scrut (ln, l) (rn, r)) =
         PP.<+> PP.pretty (getName rn)
         PP.<+> arrowSym
         PP.<+> prettyTerm lamPrec r
-prettyTerm p (Absurd e) =
-  parensIf (p > appPrec) $
-    "absurd" PP.<+> prettyTerm atomPrec e
-prettyTerm _ Unit = "()"
-prettyTerm _ Tru = "True"
-prettyTerm _ Fls = "False"
-prettyTerm p (If scrut t f) =
-  parensIf (p > lamPrec) $
-    "if"
-      PP.<+> prettyTerm lamPrec scrut
-      PP.<+> "then"
-      PP.<+> prettyTerm lamPrec t
-      PP.<+> "else"
-      PP.<+> prettyTerm lamPrec f
-prettyTerm _ Zero = "0"
-prettyTerm p (Succ e) =
-  parensIf (p > appPrec) $
-    "S" PP.<+> prettyTerm atomPrec e
-prettyTerm p (NatRec base step scrut) =
-  parensIf (p > appPrec) $
-    "natrec" PP.<+> prettyTerm atomPrec base PP.<+> prettyTerm atomPrec step PP.<+> prettyTerm atomPrec scrut
 
 instance PP.Pretty Term where
   pretty = prettyTerm lamPrec
 
--- | A metavariable identifier. A metavariable is an unknown type; it
--- rides through 'Syntax' and 'Value' as an opaque atomic head, since a
--- hole evaluates to a neutral and quoting a neutral ignores its type. It
--- is resolved only in the typechecker, never by the evaluator.
-newtype MetaId = MetaId Int
-  deriving (Eq, Ord, Show)
-
--- | The type language. Functions, pairs, sums, unit, booleans, void,
--- natural numbers, and unification metavariables.
+-- | The type language. Functions, pairs, unit, booleans, natural numbers, and
+-- record types.
 data Type
   = -- | Function type. @A -> B@.
     FuncTy Type Type
@@ -195,11 +182,16 @@ data Type
     UnitTy
   | -- | The empty type. No values inhabit it.
     VoidTy
-  | -- | Natural Numbers Type. @Nat@.
-    NatTy
   | -- | A metavariable: an unknown type, to be solved by unification.
     MetaTy MetaId
   deriving stock (Show, Eq, Ord)
+
+-- | A metavariable identifier. A metavariable is an unknown type; it
+-- rides through 'Syntax' and 'Value' as an opaque atomic head, since a
+-- hole evaluates to a neutral and quoting a neutral ignores its type. It
+-- is resolved only in the typechecker, never by the evaluator.
+newtype MetaId = MetaId Int
+  deriving stock (Eq, Ord, Show)
 
 prettyType :: Prec -> Type -> PP.Doc ann
 prettyType p (FuncTy a b) =
@@ -209,12 +201,11 @@ prettyType p (PairTy a b) =
   parensIf (p > arrowPrec) $
     prettyType (arrowPrec + 1) a PP.<+> "*" PP.<+> prettyType arrowPrec b
 prettyType p (SumTy a b) =
-  parensIf (p > PP.sumPrec) $
-    prettyType (PP.sumPrec + 1) a PP.<+> "+" PP.<+> prettyType PP.sumPrec b
+  parensIf (p > sumPrec) $
+    prettyType (sumPrec + 1) a PP.<+> "+" PP.<+> prettyType sumPrec b
+prettyType _ BoolTy = "Bool"
 prettyType _ UnitTy = "Unit"
 prettyType _ VoidTy = "Void"
-prettyType _ BoolTy = "Bool"
-prettyType _ NatTy = "Nat"
 prettyType _ (MetaTy (MetaId n)) = "?" <> PP.pretty n
 
 instance PP.Pretty Type where
@@ -257,14 +248,6 @@ data Syntax
     SFls
   | -- | Conditional. @if scrut then t else f@.
     SIf Syntax Type Syntax Syntax
-  | -- | Zero, the base case for natural numbers.
-    SZero
-  | -- | Successor of a natural number.
-    SSucc Syntax
-  | -- | Primitive recursion on natural numbers. @NatRec base step scrut@
-    -- eliminates a natural number. At zero it returns @base@; at @Succ n@
-    -- it applies @step@ to the predecessor @n@ and the recursive result.
-    SNatRec Type Syntax Syntax Syntax
   | -- | A reference to a top-level definition, resolved by name in the
     -- global environment. Distinct from 'SVar', which is a local de
     -- Bruijn index.
@@ -300,10 +283,6 @@ data Value
     VFls
   | -- | The unit value.
     VUnit
-  | -- | The natural number zero.
-    VZero
-  | -- | Successor of a natural number value.
-    VSucc Value
   deriving stock (Show, Eq, Ord)
 
 -- | De Bruijn Indices.
@@ -330,7 +309,7 @@ newtype Ix
 -- have a 'Closure' holding a stack of free variables.
 newtype Lvl
   = Lvl Int
-  deriving newtype (Show, Eq, Ord)
+  deriving newtype (Show, Eq, Ord, Enum)
 
 initLevel :: Lvl
 initLevel = Lvl 0
@@ -348,8 +327,6 @@ newtype Name = Name {getName :: String}
 data Neutral = Neutral {head :: Head, spine :: SnocList Frame}
   deriving stock (Show, Eq, Ord)
 
--- | The head of a neutral is always a variable, represented as a de Bruijn
--- level (not index) so it stays stable under context extension.
 data Head
   = VVar Lvl
   | VHole Type
@@ -367,9 +344,6 @@ data Frame
   | -- | A stuck if-then-else: the condition is neutral, so we can't choose a
     -- branch. Carries the motive type and both branch values.
     VIf Type Value Value
-  | -- | A stuck primitive recursion: the scrutinee is neutral. Carries the
-    -- motive type, the base case value, and the step function value.
-    VNatRec Type Value Value
   deriving stock (Show, Eq, Ord)
 
 pushFrame :: Neutral -> Frame -> Neutral
@@ -629,8 +603,6 @@ zonkSyntax = \case
   SInL tm -> SInL <$> zonkSyntax tm
   SInR tm -> SInR <$> zonkSyntax tm
   SSumCase scrut ty f g -> SSumCase <$> zonkSyntax scrut <*> zonk ty <*> zonkSyntax f <*> zonkSyntax g
-  SSucc tm -> SSucc <$> zonkSyntax tm
-  SNatRec ty base step scrut -> SNatRec <$> zonk ty <*> zonkSyntax base <*> zonkSyntax step <*> zonkSyntax scrut
   syn -> pure syn
 
 -- | Make two types equal by solving metavariables.
@@ -679,7 +651,6 @@ data Error
   | UnknownVariable Name
   | InfiniteTypeError Type
   | UnificationError Type Type
-  | OutOfScopeError Name
   deriving (Show)
 
 -- | Accumulated hole types from typechecking. Each time the typechecker
@@ -715,13 +686,10 @@ check Tru = boolIntroTrue
 check Fls = boolIntroFalse
 check (If tm1 tm2 tm3) = boolElim (check tm1) (check tm2) (check tm3)
 check Unit = unitIntro
+check (Absurd tm) = voidElim (synth tm)
 check (InL tm1) = sumIntroL (check tm1)
 check (InR tm2) = sumIntroR (check tm2)
 check (SumCase scrut (bndr1, t1) (bndr2, t2)) = sumElim (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
-check (Absurd tm) = voidElim (synth tm)
-check Zero = natIntroZero
-check (Succ tm) = natIntroSucc (check tm)
-check (NatRec tm1 tm2 n) = natElim (check tm1) (check tm2) (check n)
 check tm = switchTactic (synth tm)
 
 -- | Variable Resolution
@@ -788,8 +756,8 @@ switchTactic switchTac = Check $ \ty1 -> do
 -- ─────────────── Anno⇒
 -- Γ ⊢ (e : A) ⇒ A
 annoTactic :: Type -> Check -> Synth
-annoTactic ty bndrTac = Synth $ do
-  tm <- runCheck bndrTac ty
+annoTactic ty termTac = Synth $ do
+  tm <- runCheck termTac ty
   pure (ty, tm)
 
 -- | Lambda Introduction
@@ -1075,47 +1043,6 @@ sumElim scrutTac leftTac rightTac = Check $ \ty -> do
   g <- runCheck rightTac (FuncTy b ty)
   pure $ SSumCase scrut ty f g
 
--- | Nat Zero Introduction
---
--- Checked against 'NatTy'. Elaborates to 'SZero'.
---
--- ───────── Zero⇐
--- Γ ⊢ 0 ⇐ ℕ
-natIntroZero :: Check
-natIntroZero = Check $ \ty -> unify ty NatTy >> pure SZero
-
--- | Nat Succ Introduction
---
--- Checked against 'NatTy'. The argument is also checked against 'NatTy'.
--- Elaborates to @SSucc t'@.
---
---   Γ ⊢ t ⇐ ℕ
--- ────────────── Succ⇐
--- Γ ⊢ Succ t ⇐ ℕ
-natIntroSucc :: Check -> Check
-natIntroSucc baseTac = Check $ \ty -> do
-  unify ty NatTy
-  SSucc <$> runCheck baseTac NatTy
-
--- | Nat Elimination (Gödel's primitive recursor)
---
--- The scrutinee is checked at 'NatTy'. The base case is checked at the motive
--- type @T@. The step function is checked at @ℕ → T → T@: it receives the
--- predecessor and the recursive result, and returns a @T@. This is what makes
--- it primitive recursion rather than simple iteration, the step function has
--- access to the predecessor. Elaborates to @SNatRec base' step' scrut'@.
---
--- Γ ⊢ s ⇐ ℕ  Γ ⊢ t₁ ⇐ T  Γ ⊢ t₂ ⇐ ℕ → T → T
--- ───────────────────────────────────────── ℕ-Elim⇐
---           Γ ⊢ elim t₁ t₂ s ⇐ T
-natElim :: Check -> Check -> Check -> Check
-natElim zeroTac succTac scrutTac =
-  Check $ \motive -> do
-    scrutinee <- runCheck scrutTac NatTy
-    base <- runCheck zeroTac motive
-    step <- runCheck succTac (NatTy `FuncTy` (motive `FuncTy` motive))
-    pure (SNatRec motive base step scrutinee)
-
 --------------------------------------------------------------------------------
 -- Evaluator
 --
@@ -1132,6 +1059,10 @@ natElim zeroTac succTac scrutTac =
 --           body yet, since we don't know the argument).
 -- - 'SAp': evaluate both sides, then apply. This is where beta reduction
 --          happens, by instantiating the closure with the argument.
+--
+-- The eliminators for sums, booleans, and void reduce on a known scrutinee
+-- and, on a neutral scrutinee, produce a stuck frame ('VSumCase', 'VIf',
+-- 'VAbsurd') that carries the motive for read-back.
 
 newtype EvalM a = EvalM {runEvalM :: EvalEnv -> a}
   deriving
@@ -1143,11 +1074,6 @@ eval = \case
   SVar (Ix ix) -> do
     env <- ask
     pure $ fromMaybe (error "internal error") $ nth env.evalValues ix
-  SDef nm -> do
-    defs <- asks (defSpecs . evalGlobals)
-    case Map.lookup nm defs of
-      Just (Defn _ val) -> pure val
-      Nothing -> error "internal error: unbound global reference"
   SLam bndr body -> do
     env <- ask
     pure $ VLam bndr (Closure env body)
@@ -1169,9 +1095,6 @@ eval = \case
     t2' <- eval t2
     t3' <- eval t3
     doSumCase t1' motive t2' t3'
-  SAbsurd ty tm -> do
-    tm' <- eval tm
-    doSumAbsurd tm' ty
   SUnit -> pure VUnit
   STru -> pure VTru
   SFls -> pure VFls
@@ -1180,13 +1103,14 @@ eval = \case
     t1' <- eval t1
     t2' <- eval t2
     doIf p' motive t1' t2'
-  SZero -> pure VZero
-  SSucc tm -> VSucc <$> eval tm
-  SNatRec motive base step n -> do
-    n' <- eval n
-    base' <- eval base
-    step' <- eval step
-    doNatRec n' motive base' step'
+  SAbsurd ty tm -> do
+    tm' <- eval tm
+    doSumAbsurd tm' ty
+  SDef nm -> do
+    defs <- asks (defSpecs . evalGlobals)
+    case Map.lookup nm defs of
+      Just (Defn _ val) -> pure val
+      Nothing -> error "internal error: unbound global reference"
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appTermClosure clo arg
@@ -1215,23 +1139,10 @@ doSumAbsurd (VNeutral _ neu) ty = pure $ VNeutral ty (pushFrame neu (VAbsurd ty)
 doSumAbsurd _ _ = error "impossible case in doSumAbsurd"
 
 doIf :: Value -> Type -> Value -> Value -> EvalM Value
-doIf VTru _ p _ = pure p
-doIf VFls _ _ q = pure q
+doIf VTru _ t1 _ = pure t1
+doIf VFls _ _ t2 = pure t2
 doIf (VNeutral _ neu) motive t1 t2 = pure $ VNeutral motive (pushFrame neu (VIf motive t1 t2))
 doIf _ _ _ _ = error "impossible case in doIf"
-
--- | Evaluate primitive recursion. At 'VZero' return the base case. At @VSucc n@
--- apply the step function to the predecessor @n@ and the recursive result on
--- @n@. At a neutral, produce a stuck 'VNatRec' frame.
-doNatRec :: Value -> Type -> Value -> Value -> EvalM Value
-doNatRec VZero _ z _f = pure z
-doNatRec (VSucc n) motive z f = do
-  hd <- doApply f n
-  tl <- doNatRec n motive z f
-  doApply hd tl
-doNatRec (VNeutral _ neu) motive z f = do
-  pure $ VNeutral motive $ pushFrame neu $ VNatRec motive z f
-doNatRec _ _ _ _ = error "impossible case in doNatRec"
 
 appTermClosure :: Closure -> Value -> EvalM Value
 appTermClosure (Closure env body) v = local (const $ env {evalValues = Snoc env.evalValues v}) $ eval body
@@ -1252,11 +1163,7 @@ appTermClosure (Closure env body) v = local (const $ env {evalValues = Snoc env.
 --
 -- Produces 'Syntax' rather than 'Term' since that's what the evaluator and
 -- the output both use.
---
--- Booleans and naturals quote back to their syntax constructors ('STru',
--- 'SFls', 'SZero', 'SSucc').
 
--- | Quote a value to its beta-normal eta-long 'Syntax' form.
 quote :: Lvl -> Type -> Value -> EvalM Syntax
 quote l (FuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) = do
   body <- bindVar ty1 l $ \v l' -> do
@@ -1276,8 +1183,6 @@ quote l (SumTy _a b) (VInR tm) = SInR <$> quote l b tm
 quote _ _ VUnit = pure SUnit
 quote _ _ VTru = pure STru
 quote _ _ VFls = pure SFls
-quote _ _ VZero = pure SZero
-quote l ty (VSucc tm) = SSucc <$> quote l ty tm
 quote l _ (VNeutral _ neu) = quoteNeutral l neu
 quote _ ty tm = error $ "impossible case in quote:\n" <> show ty <> "\n" <> show tm
 
@@ -1300,12 +1205,8 @@ quoteFrame l scrut = \case
     f' <- quote l tyF f
     g' <- quote l tyG g
     pure $ SSumCase scrut mot f' g'
+  VIf ty t1 t2 -> liftA2 (SIf scrut ty) (quote l ty t1) (quote l ty t2)
   VAbsurd ty -> pure $ SAbsurd ty scrut
-  VIf motive p q -> liftA2 (SIf scrut motive) (quote l motive p) (quote l motive q)
-  VNatRec motive base step -> do
-    sbase <- quote l motive base
-    sstep <- quote l (NatTy `FuncTy` (motive `FuncTy` motive)) step
-    pure $ SNatRec motive sbase sstep scrut
 
 bindVar :: Type -> Lvl -> (Value -> Lvl -> a) -> a
 bindVar ty lvl f =
@@ -1363,248 +1264,45 @@ foundationVocab =
 
 main :: IO ()
 main = do
-  putStrLn "=== System T ==="
+  putStrLn "=== Top Level Definitions ==="
   runTests $ do
     foundationSuite run [] foundationVocab
 
+    -- TODO: Add to foundation test suite once we have propagated this feature
+    -- through the subsequent modules:
+
+    -- Stock top-level definitions. Each case resolves one or more globals
+    -- through the def environment and evaluates it. Functions are checked by
+    -- application (you cannot compare functions directly), so every test
+    -- applies a global to concrete arguments and asserts the resulting Bool.
+    -- Expected results are annotated because a bare Bool does not synthesize.
     let test = assertEval run
-        smoke = testOk run
-        err = testErr run
-
-    -- Nat introduction
-    section "Nat Introduction"
+        true_ = Anno BoolTy Tru
+        false_ = Anno BoolTy Fls
+    section "Top Level Definitions"
+    -- not: a standalone definition, resolved and applied.
+    test "not True ==> False" (Ap (Var "not") Tru) false_
+    test "not False ==> True" (Ap (Var "not") Fls) true_
+    -- and / or: standalone, representative truth-table entries.
+    test "and True True ==> True" (Ap (Ap (Var "and") Tru) Tru) true_
+    test "and True False ==> False" (Ap (Ap (Var "and") Tru) Fls) false_
+    test "and False True ==> False" (Ap (Ap (Var "and") Fls) Tru) false_
+    test "or False False ==> False" (Ap (Ap (Var "or") Fls) Fls) false_
+    test "or False True ==> True" (Ap (Ap (Var "or") Fls) Tru) true_
+    test "or True False ==> True" (Ap (Ap (Var "or") Tru) Fls) true_
+    -- eq references not: a definition that resolves an earlier definition.
+    test "eq True True ==> True" (Ap (Ap (Var "eq") Tru) Tru) true_
+    test "eq True False ==> False" (Ap (Ap (Var "eq") Tru) Fls) false_
+    test "eq False True ==> False" (Ap (Ap (Var "eq") Fls) Tru) false_
+    test "eq False False ==> True" (Ap (Ap (Var "eq") Fls) Fls) true_
+    -- nand references not and and: a definition resolving two earlier ones.
+    test "nand True True ==> False" (Ap (Ap (Var "nand") Tru) Tru) false_
+    test "nand True False ==> True" (Ap (Ap (Var "nand") Tru) Fls) true_
+    -- twice: higher order, a global function passed as an argument.
+    test "twice not True ==> True" (Ap (Ap (Var "twice") (Var "not")) Tru) true_
+    test "twice not False ==> False" (Ap (Ap (Var "twice") (Var "not")) Fls) false_
+    -- a local binder shadows a global of the same name (local resolved first).
     test
-      "Zero"
-      (Anno NatTy Zero)
-      (Anno NatTy Zero)
-    test
-      "Succ Zero (1)"
-      (Anno NatTy (Succ Zero))
-      (Anno NatTy (Succ Zero))
-    test
-      "Succ (Succ (Succ Zero)) (3)"
-      (Anno NatTy (Succ (Succ (Succ Zero))))
-      (Anno NatTy (Succ (Succ (Succ Zero))))
-
-    -- NatRec — base case
-    section "NatRec Base Case"
-    test
-      "natrec True (\\x.\\y. False) Zero ==> True"
-      ( Anno
-          BoolTy
-          (NatRec Tru (Lam "x" (Lam "y" Fls)) Zero)
-      )
-      (Anno BoolTy Tru)
-    test
-      "natrec Zero (\\x.\\y. Succ y) Zero ==> Zero"
-      ( Anno
-          NatTy
-          (NatRec Zero (Lam "x" (Lam "y" (Succ (Var "y")))) Zero)
-      )
-      (Anno NatTy Zero)
-
-    -- NatRec — successor cases
-    section "NatRec Successor Cases"
-    test
-      "natrec Zero (\\x.\\y. Succ y) (Succ Zero) ==> Succ Zero (add 1 0)"
-      ( Anno
-          NatTy
-          (NatRec Zero (Lam "x" (Lam "y" (Succ (Var "y")))) (Succ Zero))
-      )
-      (Anno NatTy (Succ Zero))
-    test
-      "natrec Zero (\\x.\\y. Succ y) (Succ (Succ Zero)) ==> Succ (Succ Zero) (add 2 0)"
-      ( Anno
-          NatTy
-          (NatRec Zero (Lam "x" (Lam "y" (Succ (Var "y")))) (Succ (Succ Zero)))
-      )
-      (Anno NatTy (Succ (Succ Zero)))
-
-    -- NatRec — addition via lambda
-    section "NatRec as Addition"
-    test
-      "add 2 1 ==> 3"
-      ( Ap
-          ( Ap
-              ( Anno
-                  (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
-                  (Lam "n" (Lam "m" (NatRec (Var "m") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "n"))))
-              )
-              (Anno NatTy (Succ (Succ Zero)))
-          )
-          (Anno NatTy (Succ Zero))
-      )
-      (Anno NatTy (Succ (Succ (Succ Zero))))
-    test
-      "add 0 3 ==> 3"
-      ( Ap
-          ( Ap
-              ( Anno
-                  (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
-                  (Lam "n" (Lam "m" (NatRec (Var "m") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "n"))))
-              )
-              (Anno NatTy Zero)
-          )
-          (Anno NatTy (Succ (Succ (Succ Zero))))
-      )
-      (Anno NatTy (Succ (Succ (Succ Zero))))
-
-    -- NatRec — using the predecessor argument
-    section "NatRec Using Predecessor"
-    test
-      "isZero: natrec True (\\x.\\y. False) 0 ==> True"
-      ( Anno
-          BoolTy
-          (NatRec Tru (Lam "_" (Lam "_" Fls)) Zero)
-      )
-      (Anno BoolTy Tru)
-    test
-      "isZero: natrec True (\\x.\\y. False) 1 ==> False"
-      ( Anno
-          BoolTy
-          (NatRec Tru (Lam "_" (Lam "_" Fls)) (Succ Zero))
-      )
-      (Anno BoolTy Fls)
-    test
-      "isZero: natrec True (\\x.\\y. False) 3 ==> False"
-      ( Anno
-          BoolTy
-          (NatRec Tru (Lam "_" (Lam "_" Fls)) (Succ (Succ (Succ Zero))))
-      )
-      (Anno BoolTy Fls)
-
-    -- NatRec — step function uses predecessor
-    section "NatRec Using Predecessor Argument"
-    test
-      "predecessor: natrec Zero (\\pred.\\acc. pred) 3 ==> 2"
-      ( Anno
-          NatTy
-          (NatRec Zero (Lam "pred" (Lam "_" (Var "pred"))) (Succ (Succ (Succ Zero))))
-      )
-      (Anno NatTy (Succ (Succ Zero)))
-    test
-      "predecessor: natrec Zero (\\pred.\\acc. pred) 1 ==> 0"
-      ( Anno
-          NatTy
-          (NatRec Zero (Lam "pred" (Lam "_" (Var "pred"))) (Succ Zero))
-      )
-      (Anno NatTy Zero)
-    test
-      "predecessor of Zero: natrec Zero (\\pred.\\acc. pred) 0 ==> 0"
-      ( Anno
-          NatTy
-          (NatRec Zero (Lam "pred" (Lam "_" (Var "pred"))) Zero)
-      )
-      (Anno NatTy Zero)
-
-    -- NatRec — factorial. The successor step multiplies the current value
-    -- (Succ of the predecessor) by the recursive result, so it needs BOTH
-    -- the predecessor and the recursion. A catamorphism could not write this
-    -- without first reconstructing the predecessor. add and mult are
-    -- themselves NatRecs, bound with let.
-    --
-    --   let add  = λm n. natrec n (λx y. Succ y) m            -- m + n
-    --       mult = λm n. natrec Zero (λx y. add n y) m        -- m * n
-    --       fact = λn. natrec (Succ Zero) (λx y. mult (Succ x) y) n
-    --   in fact 3                                             -- ==> 6
-    section "NatRec Factorial"
-    test
-      "fact 3 ==> 6"
-      ( Anno
-          NatTy
-          ( Let
-              "add"
-              ( Anno
-                  (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
-                  (Lam "m" (Lam "n" (NatRec (Var "n") (Lam "x" (Lam "y" (Succ (Var "y")))) (Var "m"))))
-              )
-              ( Let
-                  "mult"
-                  ( Anno
-                      (NatTy `FuncTy` (NatTy `FuncTy` NatTy))
-                      (Lam "m" (Lam "n" (NatRec Zero (Lam "x" (Lam "y" (Ap (Ap (Var "add") (Var "n")) (Var "y")))) (Var "m"))))
-                  )
-                  ( Let
-                      "fact"
-                      ( Anno
-                          (NatTy `FuncTy` NatTy)
-                          (Lam "n" (NatRec (Succ Zero) (Lam "x" (Lam "y" (Ap (Ap (Var "mult") (Succ (Var "x"))) (Var "y")))) (Var "n")))
-                      )
-                      (Ap (Var "fact") (Succ (Succ (Succ Zero))))
-                  )
-              )
-          )
-      )
-      (Anno NatTy (Succ (Succ (Succ (Succ (Succ (Succ Zero)))))))
-
-    -- NatRec — returning non-Nat type
-    section "NatRec with Non-Nat Motive"
-    test
-      "natrec () (\\x.\\y. ()) 2 ==> () (motive is Unit)"
-      ( Anno
-          UnitTy
-          (NatRec Unit (Lam "_" (Lam "_" Unit)) (Succ (Succ Zero)))
-      )
-      (Anno UnitTy Unit)
-    test
-      "natrec (True, False) (\\x.\\y. (False, True)) 1 ==> (False, True) (motive is Pair)"
-      ( Anno
-          (PairTy BoolTy BoolTy)
-          (NatRec (Pair Tru Fls) (Lam "_" (Lam "_" (Pair Fls Tru))) (Succ Zero))
-      )
-      (Anno (PairTy BoolTy BoolTy) (Pair Fls Tru))
-
-    -- NatRec stuck on a neutral scrutinee with a non-Nat motive. Under a
-    -- lambda the scrutinee is neutral, so the recursor does not reduce and
-    -- must be read back. This exercises the motive threaded through SNatRec.
-    -- The normal forms have binders, so these are smoke tested.
-    section "NatRec Stuck on Neutral (non-Nat motive)"
-    -- Quoting the stuck recursor reads the base back at the motive Unit (not
-    -- at Nat). Before the motive was threaded, this quoted () at Nat.
-    smoke
-      "\\n. natrec () (\\x y. ()) n  : Nat -> Unit"
-      ( Anno
-          (NatTy `FuncTy` UnitTy)
-          (Lam "n" (NatRec Unit (Lam "x" (Lam "y" Unit)) (Var "n")))
-      )
-    -- The stuck recursor has a function motive (Nat -> Nat) and is then
-    -- applied. doApply needs the neutral tagged with the motive, not Nat.
-    smoke
-      "\\n. (natrec (\\x. x) (\\p r. r) n) Zero  : Nat -> Nat"
-      ( Anno
-          (NatTy `FuncTy` NatTy)
-          ( Lam
-              "n"
-              ( Ap
-                  ( Anno
-                      (NatTy `FuncTy` NatTy)
-                      (NatRec (Lam "x" (Var "x")) (Lam "p" (Lam "r" (Var "r"))) (Var "n"))
-                  )
-                  Zero
-              )
-          )
-      )
-
-    -- Error cases
-    section "Error Cases (expected failures)"
-    err
-      "Zero checked at Bool"
-      (Anno BoolTy Zero)
-    err
-      "Succ Zero checked at Bool"
-      (Anno BoolTy (Succ Zero))
-    err
-      "Succ True (non-Nat under Succ)"
-      (Anno NatTy (Succ Tru))
-    err
-      "NatRec with non-Nat scrutinee"
-      ( Anno
-          BoolTy
-          (NatRec Tru (Lam "_" (Lam "_" Fls)) Tru)
-      )
-    err
-      "NatRec step function wrong type (expects Nat -> T -> T)"
-      ( Anno
-          BoolTy
-          (NatRec Tru (Lam "_" Fls) Zero)
-      )
+      "shadowing: (\\and. and) True ==> True"
+      (Ap (Anno (FuncTy BoolTy BoolTy) (Lam "and" (Var "and"))) Tru)
+      true_

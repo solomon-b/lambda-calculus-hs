@@ -567,7 +567,7 @@ data DataConstructorSpec = Constr
 -- resolve a written name to its definition. @byType@ maps each type to
 -- its level. @byCnstr@ maps each constructor to the level of its owning
 -- type.
-data AdtIndex = AdtIndex
+data DataIndex = DataIndex
   { specs :: Map Lvl Def,
     byType :: Map TyCnstrName Lvl,
     byCnstr :: Map DtCnstrName Lvl
@@ -589,13 +589,13 @@ data AdtError
   | NonStrictlyPositive TyCnstrName DtCnstrName
   deriving stock (Show, Eq, Ord)
 
--- | Elaborate a batch of surface data declarations into an 'AdtIndex' in
+-- | Elaborate a batch of surface data declarations into a 'DataIndex' in
 -- two phases. Phase 1 registers every type header in @byType@ so that
 -- constructor bodies may reference any declared type, including forward
 -- and self references. Phase 2 resolves each constructor's field types
 -- and caches its function type, recording constructors in @byCnstr@. Both
 -- phases reject duplicate type and constructor names.
-elaborateDefinitions :: [DataDecl] -> Either AdtError AdtIndex
+elaborateDefinitions :: [DataDecl] -> Either AdtError DataIndex
 elaborateDefinitions decls = do
   -- Phase 1: Walk the headers
   byType <- foldM insert Map.empty (zip [Lvl 0 ..] decls)
@@ -603,7 +603,7 @@ elaborateDefinitions decls = do
   -- Phase 2: Walk the bodies
   (specs, byCnstr) <- foldM (elabDecl byType) (Map.empty, Map.empty) (zip [Lvl 0 ..] decls)
 
-  pure AdtIndex {..}
+  pure DataIndex {..}
   where
     insert acc (l, DataDecl tyName _) =
       case Map.lookup tyName acc of
@@ -669,8 +669,8 @@ resolveTypeRef byType = go
 
 -- | Look up a data type's spec by name. Returns 'Nothing' if the name is
 -- unbound or refers to a term definition rather than a data type.
-lookupType :: TyCnstrName -> AdtIndex -> Maybe DataTypeSpec
-lookupType tyName AdtIndex {..} = do
+lookupType :: TyCnstrName -> DataIndex -> Maybe DataTypeSpec
+lookupType tyName DataIndex {..} = do
   lvl <- Map.lookup tyName byType
   Map.lookup lvl specs >>= \case
     Data dtSpec -> pure dtSpec
@@ -678,8 +678,8 @@ lookupType tyName AdtIndex {..} = do
 
 -- | Look up a data constructor by name, returning its owning type and
 -- spec. Returns 'Nothing' if no data type declares it.
-lookupCnstr :: DtCnstrName -> AdtIndex -> Maybe (TyCnstrName, DataConstructorSpec)
-lookupCnstr dtName AdtIndex {..} = do
+lookupCnstr :: DtCnstrName -> DataIndex -> Maybe (TyCnstrName, DataConstructorSpec)
+lookupCnstr dtName DataIndex {..} = do
   lvl <- Map.lookup dtName byCnstr
   Map.lookup lvl specs >>= \case
     Data (DataTypeSpec tyName dtSpecs) -> do
@@ -690,14 +690,14 @@ lookupCnstr dtName AdtIndex {..} = do
 -- | Look up a constructor by name within a specific data type. Returns
 -- 'Nothing' when that type declares no constructor of the name, which is
 -- how constructor membership is checked.
-lookupCnstrInType :: TyCnstrName -> DtCnstrName -> AdtIndex -> Maybe DataConstructorSpec
+lookupCnstrInType :: TyCnstrName -> DtCnstrName -> DataIndex -> Maybe DataConstructorSpec
 lookupCnstrInType tyName dtName adtIndex = do
   (DataTypeSpec _ cnstrs) <- lookupType tyName adtIndex
   find (\(Constr dtName' _ _) -> dtName == dtName') cnstrs
 
 -- | We predefine a few ADTs here for demonstration purposes. In a complete
 -- language these would be defined using 'data' declarations in a module.
-stockADTs :: AdtIndex
+stockADTs :: DataIndex
 stockADTs =
   fromRight (error "Impossible! Invalid data type spec") $
     elaborateDefinitions
@@ -736,29 +736,30 @@ data TypeCheckEnv = TypeCheckEnv
     size :: Int,
     -- | Holes encountered during typechecking
     holes :: [Type],
-    -- | Stock ADTs
-    adtEnv :: AdtIndex
+    -- | The data type environment (seeded with the stock ADTs).
+    adtEnv :: DataIndex
   }
   deriving stock (Show, Eq, Ord)
 
--- | The evaluator's environment. Carries two independent snoc lists: one for
--- term variable bindings ('Value') and one for type variable bindings
--- ('VType'). The lengths track the current depth in each index space. Used both
--- as the top-level eval environment and captured inside closures.
+-- | The evaluator's environment. Carries the term variable bindings
+-- ('Value') indexed by de Bruijn index, plus the data type environment
+-- used when quoting constructors and cases back to syntax. Used both as
+-- the top-level eval environment and captured inside closures.
 data EvalEnv = EvalEnv
   { -- | Term variable bindings, indexed by de Bruijn index.
-    envValues :: SnocList Value,
-    envAdtEnv :: AdtIndex
+    evalValues :: SnocList Value,
+    -- | The data type environment, for quoting constructors and cases.
+    envAdtEnv :: DataIndex
   }
   deriving stock (Show, Eq, Ord)
 
 -- | Project the evaluator environment from the typechecker context. The
--- typechecker carries extra metadata (names, holes, ADT specs) that the
+-- typechecker carries extra metadata (names, holes, binding depth) that the
 -- evaluator does not need.
 toEvalEnv :: TypeCheckEnv -> EvalEnv
 toEvalEnv env =
   EvalEnv
-    { envValues = env.locals,
+    { evalValues = env.locals,
       envAdtEnv = env.adtEnv
     }
 
@@ -1664,7 +1665,7 @@ eval :: Syntax -> EvalM Value
 eval = \case
   SVar (Ix ix) -> do
     env <- ask
-    pure $ fromMaybe (error "internal error") $ nth env.envValues ix
+    pure $ fromMaybe (error "internal error") $ nth env.evalValues ix
   SLam bndr body -> do
     env <- ask
     pure $ VLam bndr (Closure env body)
@@ -1812,7 +1813,7 @@ isRecursor tyName = \case
   _ -> False
 
 appTermClosure :: Closure -> Value -> EvalM Value
-appTermClosure (Closure env body) v = local (const $ env {envValues = Snoc env.envValues v}) $ eval body
+appTermClosure (Closure env body) v = local (const $ env {evalValues = Snoc env.evalValues v}) $ eval body
 
 --------------------------------------------------------------------------------
 -- Quoting

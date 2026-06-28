@@ -382,21 +382,20 @@ data TypeCheckEnv = TypeCheckEnv
   }
   deriving stock (Show, Eq, Ord)
 
--- | The evaluator's environment. Carries two independent snoc lists: one for
--- term variable bindings ('Value') and one for type variable bindings
--- ('VType'). The lengths track the current depth in each index space. Used both
--- as the top-level eval environment and captured inside closures.
+-- | The evaluator's environment. Carries the term variable bindings
+-- ('Value') indexed by de Bruijn index. Used both as the top-level eval
+-- environment and captured inside closures.
 newtype EvalEnv = EvalEnv
   { -- | Term variable bindings, indexed by de Bruijn index.
-    envValues :: SnocList Value
+    evalValues :: SnocList Value
   }
   deriving stock (Show, Eq, Ord)
 
 -- | Project the evaluator environment from the typechecker context. The
--- typechecker carries extra metadata (names, holes, ADT specs) that the
+-- typechecker carries extra metadata (names, holes, binding depth) that the
 -- evaluator does not need.
 toEvalEnv :: TypeCheckEnv -> EvalEnv
-toEvalEnv env = EvalEnv {envValues = env.locals}
+toEvalEnv env = EvalEnv {evalValues = env.locals}
 
 initEnv :: TypeCheckEnv
 initEnv = TypeCheckEnv Nil [] 0 mempty
@@ -1000,7 +999,7 @@ eval :: Syntax -> EvalM Value
 eval = \case
   SVar (Ix ix) -> do
     env <- ask
-    pure $ fromMaybe (error "internal error") $ nth env.envValues ix
+    pure $ fromMaybe (error "internal error") $ nth env.evalValues ix
   SLam bndr body -> do
     env <- ask
     pure $ VLam bndr (Closure env body)
@@ -1067,7 +1066,7 @@ doIf (VNeutral _ neu) motive t1 t2 = pure $ VNeutral motive (pushFrame neu (VIf 
 doIf _ _ _ _ = error "impossible case in doIf"
 
 appTermClosure :: Closure -> Value -> EvalM Value
-appTermClosure (Closure env body) v = local (const $ env {envValues = Snoc env.envValues v}) $ eval body
+appTermClosure (Closure env body) v = local (const $ env {evalValues = Snoc env.evalValues v}) $ eval body
 
 --------------------------------------------------------------------------------
 -- Quoting

@@ -155,6 +155,12 @@ executable 01-05-FirstOrderUnification
   hs-source-dirs:      main
   build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
 
+executable 01-06-TopLevelDefinitions
+  import:              common-settings
+  main-is:             01-Foundation/06-TopLevelDefinitions.hs
+  hs-source-dirs:      main
+  build-depends:       base >= 2 && <5, mtl, transformers, containers, these, semialign, scientific, test-harness, utils
+
 -- ===========================================================================
 -- Part 2: Feature Museum
 -- ===========================================================================

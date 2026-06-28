@@ -26,7 +26,7 @@ module Main where
 import Control.Monad (foldM, unless, (>=>))
 import Control.Monad.Except (MonadError (..))
 import Control.Monad.Identity
-import Control.Monad.Reader (MonadReader (..))
+import Control.Monad.Reader (MonadReader (..), asks)
 import Control.Monad.State.Strict (MonadState (..), gets, modify)
 import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
@@ -175,8 +175,8 @@ prettyTerm p (Unfold e) =
 instance PP.Pretty Term where
   pretty = prettyTerm lamPrec
 
--- | The type language. Functions, pairs, unit, booleans, natural numbers, and
--- record types.
+-- | The type language. Functions, pairs, sums, void, unit, booleans,
+-- iso-recursive types ('MuTy'), and type variables ('TVar').
 data Type
   = -- | Function type. @A -> B@.
     FuncTy Type Type
@@ -269,6 +269,10 @@ data Syntax
     -- explicitly in the surface as @unfold e@. Carries the mu-type for
     -- read-back of a stuck unfold.
     SUnfold Syntax SType
+  | -- | A reference to a top-level definition, resolved by name in the
+    -- global environment. Distinct from 'SVar', which is a local de
+    -- Bruijn index.
+    SDef Name
   deriving stock (Show, Eq, Ord)
 
 data SType
@@ -397,8 +401,67 @@ pushFrame Neutral {..} frame = Neutral {head = head, spine = Snoc spine frame}
 -- Instantiation extends the captured environment with the argument rather than
 -- substituting. Closures also appear inside neutrals (as arguments in 'VApp'
 -- frames).
-data Closure = Closure {env :: SnocList Value, body :: Syntax}
+data Closure = Closure {env :: EvalEnv, body :: Syntax}
   deriving stock (Show, Eq, Ord)
+
+--------------------------------------------------------------------------------
+-- Top Level Definitions
+
+-- | Surface syntax for a top-level definition: a name, its declared
+-- type, and its body.
+data DefDecl = DefDecl Name Type Term
+
+-- | A single top-level definition: a term definition ('Defn') carrying
+-- its declared type and the value of its evaluated body. The body is
+-- evaluated once, when the definition is brought into scope, so every
+-- reference shares the same value.
+data Def = Defn SType Value
+  deriving stock (Show, Eq, Ord)
+
+-- | The global environment: top-level definitions keyed by name.
+newtype GlobalIndex = GlobalIndex {defSpecs :: Map Name Def}
+  deriving stock (Show, Eq, Ord)
+
+-- | Elaborate a list of top-level declarations into the global
+-- environment. Each definition is checked and evaluated with the earlier
+-- definitions already in scope (the left fold extends @globals@ as it
+-- goes), which is how a definition refers to ones declared before it.
+elaborateDefinitions :: [DefDecl] -> TypecheckM GlobalIndex
+elaborateDefinitions decls =
+  GlobalIndex <$> foldM elabDef mempty decls
+  where
+    elabDef :: Map Name Def -> DefDecl -> TypecheckM (Map Name Def)
+    elabDef acc (DefDecl nm ty tm) =
+      local (\env -> env {globals = GlobalIndex acc}) $ do
+        sty <- elaborateType ty
+        syn <- zonkSyntax =<< runCheck (check tm) sty
+        evalEnv <- asks toEvalEnv
+        let val = runEvalM (eval syn) evalEnv
+        pure $ Map.insert nm (Defn sty val) acc
+
+bootstrapEnv :: TypeCheckEnv
+bootstrapEnv = TypeCheckEnv Nil [] 0 [] (GlobalIndex mempty)
+
+-- | The predefined top-level definitions available to every program. In
+-- a complete language these would be written in source; here they are
+-- elaborated once at startup against an empty global environment.
+stockDefs :: GlobalIndex
+stockDefs =
+  either (error . show) id $
+    fst $
+      fst $
+        runTypecheckM
+          ( elaborateDefinitions
+              [ DefDecl "not" (FuncTy BoolTy BoolTy) (Lam "p" (If (Var "p") Fls Tru)),
+                DefDecl "eq" (FuncTy BoolTy (FuncTy BoolTy BoolTy)) (Lam "p" (Lam "q" (If (Var "p") (Var "q") (Ap (Var "not") (Var "q"))))),
+                DefDecl "and" (FuncTy BoolTy (FuncTy BoolTy BoolTy)) (Lam "p" (Lam "q" (If (Var "p") (Var "q") Fls))),
+                DefDecl "or" (FuncTy BoolTy (FuncTy BoolTy BoolTy)) (Lam "p" (Lam "q" (If (Var "p") Tru (Var "q")))),
+                DefDecl "nand" (FuncTy BoolTy (FuncTy BoolTy BoolTy)) (Lam "p" (Lam "q" (Ap (Var "not") (Ap (Ap (Var "and") (Var "p")) (Var "q"))))),
+                DefDecl "twice" (FuncTy (FuncTy BoolTy BoolTy) (FuncTy BoolTy BoolTy)) (Lam "f" (Lam "x" (Ap (Var "f") (Ap (Var "f") (Var "x")))))
+              ]
+          )
+          initMetas
+          bootstrapEnv
 
 --------------------------------------------------------------------------------
 -- Recursive Types
@@ -493,28 +556,32 @@ data TypeCheckEnv = TypeCheckEnv
     localNames :: [Cell],
     size :: Int,
     -- | Holes encountered during typechecking
-    holes :: [Type]
+    holes :: [Type],
+    -- | Top-level definitions in scope (the global environment).
+    globals :: GlobalIndex
   }
   deriving stock (Show, Eq, Ord)
 
--- | The evaluator's environment. Carries two independent snoc lists: one for
--- term variable bindings ('Value') and one for type variable bindings
--- ('VType'). The lengths track the current depth in each index space. Used both
--- as the top-level eval environment and captured inside closures.
-newtype EvalEnv = EvalEnv
+-- | The evaluator's environment. Carries the local term variable
+-- bindings, indexed by de Bruijn index, and the global definition
+-- environment used to resolve 'SDef'. Used both as the top-level eval
+-- environment and captured inside closures.
+data EvalEnv = EvalEnv
   { -- | Term variable bindings, indexed by de Bruijn index.
-    envValues :: SnocList Value
+    evalValues :: SnocList Value,
+    -- | Top-level definitions, for resolving 'SDef'.
+    evalGlobals :: GlobalIndex
   }
   deriving stock (Show, Eq, Ord)
 
 -- | Project the evaluator environment from the typechecker context. The
--- typechecker carries extra metadata (names, holes, ADT specs) that the
--- evaluator does not need.
+-- evaluator needs the local values and the global definitions, but not
+-- the typechecker's name resolution table or hole list.
 toEvalEnv :: TypeCheckEnv -> EvalEnv
-toEvalEnv env = EvalEnv {envValues = env.locals}
+toEvalEnv env = EvalEnv {evalValues = env.locals, evalGlobals = env.globals}
 
 initEnv :: TypeCheckEnv
-initEnv = TypeCheckEnv Nil [] 0 mempty
+initEnv = TypeCheckEnv Nil [] 0 mempty stockDefs
 
 extendLocalNames :: TypeCheckEnv -> Cell -> TypeCheckEnv
 extendLocalNames e@TypeCheckEnv {localNames} cell = e {localNames = cell : localNames}
@@ -528,7 +595,8 @@ bindCell cell@Cell {..} TypeCheckEnv {..} =
     { locals = Snoc locals cellValue,
       localNames = cell : localNames,
       size = size + 1,
-      holes = holes
+      holes = holes,
+      globals = globals
     }
 
 resolveCell :: TypeCheckEnv -> Name -> Maybe Cell
@@ -779,7 +847,12 @@ varTactic bndr = Synth $ do
       ty <- zonk cellType
       let quoted = flip runEvalM (toEvalEnv ctx) $ quote (Lvl $ size ctx) ty cellValue
       pure (ty, quoted)
-    Nothing -> throwError $ UnknownVariable bndr
+    -- Not local: resolve against the global environment, emitting 'SDef'.
+    -- Locals are tried first, so a local binder shadows a global.
+    Nothing ->
+      case Map.lookup bndr ctx.globals.defSpecs of
+        Just (Defn ty _val) -> pure (ty, SDef bndr)
+        Nothing -> throwError $ UnknownVariable bndr
 
 -- | Switch
 --
@@ -1168,14 +1241,19 @@ unfoldElim scutTac = Synth $ do
 
 newtype EvalM a = EvalM {runEvalM :: EvalEnv -> a}
   deriving
-    (Functor, Applicative, Monad, MonadReader (SnocList Value))
-    via Reader (SnocList Value)
+    (Functor, Applicative, Monad, MonadReader EvalEnv)
+    via Reader EvalEnv
 
 eval :: Syntax -> EvalM Value
 eval = \case
   SVar (Ix ix) -> do
-    env <- ask
+    env <- asks evalValues
     pure $ fromMaybe (error "internal error") $ nth env ix
+  SDef nm -> do
+    defs <- asks (defSpecs . evalGlobals)
+    case Map.lookup nm defs of
+      Just (Defn _ val) -> pure val
+      Nothing -> error "internal error: unbound global reference"
   SLam bndr body -> do
     env <- ask
     pure $ VLam bndr (Closure env body)
@@ -1249,7 +1327,7 @@ doUnfold muTy (VNeutral _ neu) = pure $ VNeutral (unrollMuTy muTy) (pushFrame ne
 doUnfold _ _ = error "impossible case in doUnfold"
 
 appTermClosure :: Closure -> Value -> EvalM Value
-appTermClosure (Closure env body) v = local (const $ Snoc env v) $ eval body
+appTermClosure (Closure env body) v = local (const $ env {evalValues = Snoc env.evalValues v}) $ eval body
 
 --------------------------------------------------------------------------------
 -- Quoting
@@ -1335,7 +1413,7 @@ run term =
    in case runTypecheckM action initMetas initEnv of
         ((Left err, holes), _metas) -> Left (err, holes)
         ((Right (type', syntax, holes), _unZonkedHoles), _metas) -> do
-          let evalEnv = EvalEnv Nil
+          let evalEnv = EvalEnv Nil stockDefs
               val = runEvalM (eval syntax) evalEnv
               result = runEvalM (quote initLevel type' val) evalEnv
           pure (RunResult syntax type' result val, holes)

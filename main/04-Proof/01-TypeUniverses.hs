@@ -638,7 +638,7 @@ data DataConstructorSpec = Constr
 -- resolve a written name to its definition. @byType@ maps each type to
 -- its level and type parameter arity. @byCnstr@ maps each constructor to
 -- the level of its owning type.
-data AdtIndex = AdtIndex
+data DataIndex = DataIndex
   { specs :: Map Lvl Def,
     byType :: Map TyCnstrName (Lvl, Int),
     byCnstr :: Map DtCnstrName Lvl
@@ -654,17 +654,17 @@ data Def
 
 -- | An index with no definitions, used to bootstrap elaboration of the
 -- stock data types.
-emptyAdtIndex :: AdtIndex
-emptyAdtIndex = AdtIndex mempty mempty mempty
+emptyDataIndex :: DataIndex
+emptyDataIndex = DataIndex mempty mempty mempty
 
--- | Elaborate a batch of surface data declarations into an 'AdtIndex' in
+-- | Elaborate a batch of surface data declarations into a 'DataIndex' in
 -- two phases. Phase 1 registers every type header in @byType@ (with its
 -- arity) so that constructor bodies may reference any declared type,
 -- including forward and self references. Phase 2 elaborates each
 -- constructor, binding the type parameters and building its polymorphic
 -- type scheme, and records constructors in @byCnstr@. Both phases reject
 -- duplicate type and constructor names.
-elaborateDefinitions :: [DataDecl] -> TypecheckM AdtIndex
+elaborateDefinitions :: [DataDecl] -> TypecheckM DataIndex
 elaborateDefinitions decls = do
   -- Phase 1: Walk the headers
   byType <- foldM insert Map.empty (zip [Lvl 0 ..] decls)
@@ -674,7 +674,7 @@ elaborateDefinitions decls = do
     local (\env -> env {adtEnv = env.adtEnv {byType}}) $
       foldM elabDecl (Map.empty, Map.empty) (zip [Lvl 0 ..] decls)
 
-  pure $ AdtIndex {..}
+  pure $ DataIndex {..}
   where
     insert :: Map TyCnstrName (Lvl, Int) -> (Lvl, DataDecl) -> TypecheckM (Map TyCnstrName (Lvl, Int))
     insert acc (l, DataDecl tyName tyParams _) =
@@ -735,8 +735,8 @@ elaborateDefinitions decls = do
 
 -- | Look up a data type's spec by name. Returns 'Nothing' if the name is
 -- unbound or refers to a term definition rather than a data type.
-lookupType :: TyCnstrName -> AdtIndex -> Maybe DataTypeSpec
-lookupType tyName AdtIndex {..} = do
+lookupType :: TyCnstrName -> DataIndex -> Maybe DataTypeSpec
+lookupType tyName DataIndex {..} = do
   (lvl, _) <- Map.lookup tyName byType
   Map.lookup lvl specs >>= \case
     Data dtSpec -> pure dtSpec
@@ -744,8 +744,8 @@ lookupType tyName AdtIndex {..} = do
 
 -- | Look up a data constructor by name, returning its owning type and
 -- spec. Returns 'Nothing' if no data type declares it.
-lookupCnstr :: DtCnstrName -> AdtIndex -> Maybe (TyCnstrName, DataConstructorSpec)
-lookupCnstr dtName AdtIndex {..} = do
+lookupCnstr :: DtCnstrName -> DataIndex -> Maybe (TyCnstrName, DataConstructorSpec)
+lookupCnstr dtName DataIndex {..} = do
   lvl <- Map.lookup dtName byCnstr
   Map.lookup lvl specs >>= \case
     Data (DataTypeSpec tyName _arity dtSpecs) -> do
@@ -756,13 +756,13 @@ lookupCnstr dtName AdtIndex {..} = do
 -- | Look up a constructor by name within a specific data type. Returns
 -- 'Nothing' when that type declares no constructor of the name, which is
 -- how constructor membership is checked.
-lookupCnstrInType :: TyCnstrName -> DtCnstrName -> AdtIndex -> Maybe DataConstructorSpec
+lookupCnstrInType :: TyCnstrName -> DtCnstrName -> DataIndex -> Maybe DataConstructorSpec
 lookupCnstrInType tyName dtName adtIndex = do
   (DataTypeSpec _ _arity cnstrs) <- lookupType tyName adtIndex
   find (\(Constr dtName' _) -> dtName == dtName') cnstrs
 
 bootstrapEnv :: TypeCheckEnv
-bootstrapEnv = TypeCheckEnv Nil [] 0 mempty emptyAdtIndex
+bootstrapEnv = TypeCheckEnv Nil [] 0 mempty emptyDataIndex
 
 -- | We predefine a few ADTs here for demonstration purposes. In a complete
 -- language these would be defined using 'data' declarations in a module.
@@ -770,7 +770,7 @@ bootstrapEnv = TypeCheckEnv Nil [] 0 mempty emptyAdtIndex
 -- All stock ADTs here are level-0: their parameters and fields live at
 -- 'Type 0'. Higher-universe and dependent-field ADTs require level
 -- polymorphism, which is a later module.
-stockADTs :: AdtIndex
+stockADTs :: DataIndex
 stockADTs =
   either (error . show) id $
     fst $
@@ -811,31 +811,33 @@ data TypeCheckEnv = TypeCheckEnv
     localValuesSize :: Int,
     -- | Holes encountered during typechecking
     holes :: [Syntax],
-    -- | ADT Spec by Constructor Name
-    adtEnv :: AdtIndex
+    -- | The data type environment (seeded with the stock ADTs).
+    adtEnv :: DataIndex
   }
   deriving stock (Show, Eq, Ord)
 
--- | The evaluator's environment. A snoc list of variable bindings
--- and the current depth. Used as the top-level eval environment
--- and projected from the typechecker context.
+-- | The evaluator's environment. A snoc list of variable bindings with
+-- the current depth, plus the data type environment used when quoting
+-- constructors and cases. Used as the top-level eval environment and
+-- projected from the typechecker context.
 data EvalEnv = EvalEnv
   { -- | Variable bindings, indexed by de Bruijn index.
-    envValues :: SnocList Value,
+    evalValues :: SnocList Value,
     -- | Current term binding depth.
-    envValuesLen :: Int,
-    envAdtEnv :: AdtIndex
+    evalValuesLen :: Int,
+    -- | The data type environment, for quoting constructors and cases.
+    envAdtEnv :: DataIndex
   }
   deriving stock (Show, Eq, Ord)
 
 -- | Project the evaluator environment from the typechecker context. The
--- typechecker carries extra metadata (names, holes, ADT specs) that the
+-- typechecker carries extra metadata (names, holes, binding depth) that the
 -- evaluator does not need.
 toEvalEnv :: TypeCheckEnv -> EvalEnv
 toEvalEnv env =
   EvalEnv
-    { envValues = env.localValues,
-      envValuesLen = env.localValuesSize,
+    { evalValues = env.localValues,
+      evalValuesLen = env.localValuesSize,
       envAdtEnv = env.adtEnv
     }
 
@@ -1934,7 +1936,7 @@ constrBranchType :: EvalEnv -> Value -> [Value] -> DataConstructorSpec -> (DtCns
 constrBranchType evalEnv motive tys (Constr nm scheme) =
   let build = do
         instTy <- instantiateScheme scheme tys
-        (_ret, fields) <- decomposeFunction (Lvl evalEnv.envValuesLen) instTy
+        (_ret, fields) <- decomposeFunction (Lvl evalEnv.evalValuesLen) instTy
         foldrM vArrow motive fields
    in (nm, runEvalM build evalEnv)
 
@@ -2181,10 +2183,10 @@ eval :: Syntax -> EvalM Value
 eval = \case
   -- Core
   SVar (Ix ix) -> do
-    env <- asks envValues
+    env <- asks evalValues
     pure $ fromMaybe (error "internal error") $ nth env ix
   SLam bndr body -> do
-    env <- asks envValues
+    env <- asks evalValues
     pure $ VLam bndr (Closure env body)
   SAp tm1 tm2 -> do
     fun <- eval tm1
@@ -2197,12 +2199,12 @@ eval = \case
   SUniv l -> pure $ VUniv l
   -- Pi / Function
   SPi nm a b -> do
-    env <- asks envValues
+    env <- asks evalValues
     a <- eval a
     pure $ VPi nm a $ Closure env b
   -- Sigma / Pair
   SSigma nm a b -> do
-    env <- asks envValues
+    env <- asks evalValues
     a <- eval a
     pure $ VSigma nm a $ Closure env b
   SPairTy t1 t2 -> do
@@ -2336,7 +2338,7 @@ doCase scrut patterns = do
 -- evaluating the body.
 appClosure :: Closure -> Value -> EvalM Value
 appClosure (Closure env body) v =
-  local (\e -> e {envValues = Snoc env v}) $ eval body
+  local (\e -> e {evalValues = Snoc env v}) $ eval body
 
 --------------------------------------------------------------------------------
 -- Quoting
@@ -2468,8 +2470,8 @@ vArrow :: Value -> Value -> EvalM Value
 vArrow dom cod = do
   env <- ask
   -- quote at depth+1
-  codS <- quote (incLevel (Lvl env.envValuesLen)) (VUniv (Level 0)) cod
-  pure $ VPi "_" dom (Closure env.envValues codS)
+  codS <- quote (incLevel (Lvl env.evalValuesLen)) (VUniv (Level 0)) cod
+  pure $ VPi "_" dom (Closure env.evalValues codS)
 
 quoteLevel :: Lvl -> Lvl -> Ix
 quoteLevel (Lvl l) (Lvl x) = Ix (l - (x + 1))

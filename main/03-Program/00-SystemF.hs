@@ -237,8 +237,9 @@ prettyTerm p (Case scrut branches) =
 instance PP.Pretty Term where
   pretty = prettyTerm lamPrec
 
--- | The type language. Functions, pairs, unit, booleans, natural numbers, and
--- record types.
+-- | The type language. Type variables, universal quantification,
+-- functions, pairs, sums, unit, booleans, void, the numeric tower
+-- (naturals, integers, reals), records, and nominal data types ('AdtTy').
 data Type
   = -- | A type variable reference by name. @a@. Elaboration resolves this to a
     -- de Bruijn index ('STVar').
@@ -361,6 +362,10 @@ data Syntax
     -- constructor name with an elaborated body (a lambda over the constructor's
     -- fields).
     SCase Syntax SType [(DtCnstrName, Syntax)]
+  | -- | A reference to a top-level definition, resolved by name in the
+    -- global environment. Distinct from 'SVar', which is a local de
+    -- Bruijn index.
+    SDef Name
   deriving stock (Show, Eq, Ord)
 
 -- | Core type IR with de Bruijn indices. Produced by 'elaborateType' from
@@ -593,7 +598,7 @@ data Closure var a = Closure EvalEnv a
   deriving stock (Show, Eq, Ord)
 
 --------------------------------------------------------------------------------
--- ADTs
+-- Algebraic Data Types
 
 newtype TyCnstrName = TyCnstrName {getTyCnstrName :: Name}
   deriving newtype (Show, Eq, Ord, IsString)
@@ -644,83 +649,56 @@ data DataConstructorSpec = Constr
   }
   deriving stock (Show, Eq, Ord)
 
--- | The collection of top-level definitions, with name-based indices
--- for resolving references during elaboration.
---
--- @specs@ is the canonical store, keyed by 'Lvl'. @byType@ and @byCnstr@
--- map surface names to levels and exist only so the elaborator can
--- resolve a written name to its definition. @byType@ maps each type to
--- its level and type parameter arity. @byCnstr@ maps each constructor to
--- the level of its owning type.
-data AdtIndex = AdtIndex
-  { specs :: Map Lvl Def,
-    byType :: Map TyCnstrName (Lvl, Int),
-    byCnstr :: Map DtCnstrName Lvl
-  }
-  deriving stock (Show, Eq, Ord)
+-- | Elaborate one surface data declaration into the 'GlobalIndex'. The
+-- type's own header is registered in @byType@ at a fresh level, paired
+-- with its parameter arity, so its constructor fields may refer to the
+-- type itself (self reference) and to any type declared earlier in the
+-- fold. With the type parameters bound as fresh type variables, each
+-- constructor's polymorphic scheme is built and recorded in @byCnstr@.
+-- Duplicate type names and duplicate constructor names are both rejected.
+-- A type declared later in the program is not yet registered, so a
+-- forward reference to it fails.
+elaborateDataDecl :: GlobalIndex -> DataDecl -> TypecheckM GlobalIndex
+elaborateDataDecl idx (DataDecl tyName tyParams cnstrs) = do
+  let lvl = nextLvl idx
+      arity = length tyParams
+  byType' <-
+    Map.alterF
+      (\case Just _ -> throwError (DuplicateTypeName tyName); Nothing -> pure (Just (lvl, arity)))
+      tyName
+      (byType idx)
 
--- | A single top-level definition: either a datatype ('Data') or a
--- term definition ('Defn') carrying its type and elaborated body.
-data Def
-  = Data DataTypeSpec
-  | Defn Type Syntax
-  deriving stock (Show, Eq, Ord)
+  dcSpecs <-
+    local (\env -> env {globals = idx {byType = byType'}}) $ do
+      withTyParams tyParams $
+        forM cnstrs $ \(CnstrDecl dtName argSurfTys) -> do
+          args <- traverse elaborateType argSurfTys
+          let retParams = fmap (STVar . Ix) (reverse [0 .. arity - 1])
+              body = foldr SFuncTy (SAdtTy tyName retParams) args
+          pure $ Constr dtName (iterate SForall body !! arity)
 
--- | An index with no definitions, used to bootstrap elaboration of the
--- stock data types.
-emptyAdtIndex :: AdtIndex
-emptyAdtIndex = AdtIndex mempty mempty mempty
+  byCnstr' <-
+    foldM
+      ( \acc spec ->
+          Map.alterF
+            (\case Just _ -> throwError (DuplicateConstructorName spec.cnstrName); Nothing -> pure (Just lvl))
+            spec.cnstrName
+            acc
+      )
+      (byCnstr idx)
+      dcSpecs
 
--- | Elaborate a batch of surface data declarations into an 'AdtIndex' in
--- two phases. Phase 1 registers every type header in @byType@ (with its
--- arity) so that constructor bodies may reference any declared type,
--- including forward and self references. Phase 2 elaborates each
--- constructor, binding the type parameters and building its polymorphic
--- type scheme, and records constructors in @byCnstr@. Both phases reject
--- duplicate type and constructor names.
-elaborateDefinitions :: [DataDecl] -> TypecheckM AdtIndex
-elaborateDefinitions decls = do
-  -- Phase 1: Walk the headers
-  byType <- foldM insert Map.empty (zip [Lvl 0 ..] decls)
-
-  -- Phase 2: Walk the bodies
-  (specs, byCnstr) <-
-    local (\env -> env {adtEnv = env.adtEnv {byType}}) $
-      foldM elabDecl (Map.empty, Map.empty) (zip [Lvl 0 ..] decls)
-
-  pure $ AdtIndex {..}
-  where
-    insert :: Map TyCnstrName (Lvl, Int) -> (Lvl, DataDecl) -> TypecheckM (Map TyCnstrName (Lvl, Int))
-    insert acc (l, DataDecl tyName tyParams _) =
-      case Map.lookup tyName acc of
-        Just _ -> throwError (DuplicateTypeName tyName)
-        Nothing -> pure (Map.insert tyName (l, length tyParams) acc)
-
-    elabDecl :: (Map Lvl Def, Map DtCnstrName Lvl) -> (Lvl, DataDecl) -> TypecheckM (Map Lvl Def, Map DtCnstrName Lvl)
-    elabDecl (specs, byCnstr) (l, DataDecl tyName tyParams cnstrDecls) = do
-      dcSpecs <- withTyParams tyParams $ forM cnstrDecls $ \(CnstrDecl dtName argSurfTys) -> do
-        args <- traverse elaborateType argSurfTys
-        let k = length tyParams
-            retParams = fmap (STVar . Ix) (reverse [0 .. k - 1])
-            body = foldr SFuncTy (SAdtTy tyName retParams) args
-        pure $ Constr dtName (iterate SForall body !! k)
-
-      let def = Data $ DataTypeSpec tyName (length tyParams) dcSpecs
-          specs' = Map.insert l def specs
-
-      byCnstr' <-
-        foldM
-          ( \acc spec ->
-              Map.alterF (\case Just _ -> throwError $ DuplicateConstructorName spec.cnstrName; Nothing -> pure $ Just l) spec.cnstrName acc
-          )
-          byCnstr
-          dcSpecs
-      pure (specs', byCnstr')
+  pure
+    idx
+      { byType = byType',
+        specs = Map.insert lvl (Data (DataTypeSpec tyName arity dcSpecs)) (specs idx),
+        byCnstr = byCnstr'
+      }
 
 -- | Look up a data type's spec by name. Returns 'Nothing' if the name is
 -- unbound or refers to a term definition rather than a data type.
-lookupType :: TyCnstrName -> AdtIndex -> Maybe DataTypeSpec
-lookupType tyName AdtIndex {..} = do
+lookupType :: TyCnstrName -> GlobalIndex -> Maybe DataTypeSpec
+lookupType tyName GlobalIndex {..} = do
   (lvl, _) <- Map.lookup tyName byType
   Map.lookup lvl specs >>= \case
     Data dtSpec -> pure dtSpec
@@ -728,8 +706,8 @@ lookupType tyName AdtIndex {..} = do
 
 -- | Look up a data constructor by name, returning its owning type and
 -- spec. Returns 'Nothing' if no data type declares it.
-lookupCnstr :: DtCnstrName -> AdtIndex -> Maybe (TyCnstrName, DataConstructorSpec)
-lookupCnstr dtName AdtIndex {..} = do
+lookupCnstr :: DtCnstrName -> GlobalIndex -> Maybe (TyCnstrName, DataConstructorSpec)
+lookupCnstr dtName GlobalIndex {..} = do
   lvl <- Map.lookup dtName byCnstr
   Map.lookup lvl specs >>= \case
     Data (DataTypeSpec tyName _arity dtSpecs) -> do
@@ -740,32 +718,114 @@ lookupCnstr dtName AdtIndex {..} = do
 -- | Look up a constructor by name within a specific data type. Returns
 -- 'Nothing' when that type declares no constructor of the name, which is
 -- how constructor membership is checked.
-lookupCnstrInType :: TyCnstrName -> DtCnstrName -> AdtIndex -> Maybe DataConstructorSpec
+lookupCnstrInType :: TyCnstrName -> DtCnstrName -> GlobalIndex -> Maybe DataConstructorSpec
 lookupCnstrInType tyName dtName adtIndex = do
   (DataTypeSpec _ _arity cnstrs) <- lookupType tyName adtIndex
   find (\(Constr dtName' _) -> dtName == dtName') cnstrs
 
-bootstrapEnv :: TypeCheckEnv
-bootstrapEnv = TypeCheckEnv Nil [] 0 Nil [] 0 mempty emptyAdtIndex
-
 -- | We predefine a few ADTs here for demonstration purposes. In a complete
 -- language these would be defined using 'data' declarations in a module.
-stockADTs :: AdtIndex
+stockADTs :: [DataDecl]
 stockADTs =
+  [ DataDecl "Maybe" ["a"] [CnstrDecl "Nothing" [], CnstrDecl "Just" [TVar "a"]],
+    DataDecl "List" ["a"] [CnstrDecl "Nil" [], CnstrDecl "Cons" [TVar "a", AdtTy "List" [TVar "a"]]],
+    DataDecl "Tree" ["a"] [CnstrDecl "Leaf" [TVar "a"], CnstrDecl "Node" [AdtTy "Tree" [TVar "a"], AdtTy "Tree" [TVar "a"]]],
+    DataDecl "Nat" [] [CnstrDecl "Z" [], CnstrDecl "S" [AdtTy "Nat" []]],
+    DataDecl "Wrap" [] [CnstrDecl "MkWrap" [Forall "a" (TVar "a" `FuncTy` TVar "a")]],
+    DataDecl "Fn" [] [CnstrDecl "MkFn" [BoolTy `FuncTy` BoolTy]],
+    DataDecl "Rect" [] [CnstrDecl "Rect" [RecordTy [("x", NaturalTy), ("y", NaturalTy)]]]
+  ]
+
+--------------------------------------------------------------------------------
+-- Top Level Definitions
+
+-- | Surface syntax for a top-level definition: a name, its declared
+-- type, and its body.
+data DefDecl = DefDecl Name Type Term
+
+-- | Elaborate a list of top-level declarations into the global
+-- environment. Each definition is checked and evaluated with the earlier
+-- definitions already in scope (the left fold extends @globals@ as it
+-- goes), which is how a definition refers to ones declared before it.
+elaborateDefDecl :: GlobalIndex -> DefDecl -> TypecheckM GlobalIndex
+elaborateDefDecl idx (DefDecl nm ty tm) = do
+  local (\env -> env {globals = idx}) $ do
+    sty <- elaborateType ty
+    syn <- zonkSyntax =<< runCheck (check tm) sty
+    evalEnv <- asks toEvalEnv
+    let lvl = nextLvl idx
+        val = runEvalM (eval syn) evalEnv
+    pure
+      idx
+        { specs = Map.insert lvl (Defn sty val) idx.specs,
+          byName = Map.insert nm lvl idx.byName
+        }
+
+--------------------------------------------------------------------------------
+-- Globals
+
+-- | A single top-level definition: either a datatype ('Data') or a
+-- term definition ('Defn') carrying its type and elaborated body.
+data Def
+  = Data DataTypeSpec
+  | Defn SType Value
+  deriving stock (Show, Eq, Ord)
+
+bootstrapEnv :: TypeCheckEnv
+bootstrapEnv = TypeCheckEnv Nil [] 0 Nil [] 0 [] emptyGlobals
+
+-- | The global environment: every top-level declaration, data type and
+-- term definition alike, in one store. @specs@ is the canonical map, keyed
+-- by the level a declaration is bound at. The other three are name indices
+-- into it, one per namespace. A declaration is reached by looking its name
+-- up in the relevant index to get a level, then reading @specs@ there.
+data GlobalIndex = GlobalIndex
+  { -- | The canonical store, keyed by binding level. 'Data' and 'Defn'
+    -- declarations live here together.
+    specs :: Map Lvl Def,
+    -- | Type namespace: a data type name to its level and arity.
+    byType :: Map TyCnstrName (Lvl, Int),
+    -- | Constructor namespace: a constructor name to the level of the
+    -- data type that declares it.
+    byCnstr :: Map DtCnstrName Lvl,
+    -- | Term namespace: a top-level definition name to its level.
+    byName :: Map Name Lvl
+  }
+  deriving stock (Show, Eq, Ord)
+
+emptyGlobals :: GlobalIndex
+emptyGlobals = GlobalIndex mempty mempty mempty mempty
+
+nextLvl :: GlobalIndex -> Lvl
+nextLvl idx = Lvl (Map.size (specs idx))
+
+-- | The predefined top-level definitions available to every program. In
+-- a complete language these would be written in source; here they are
+-- elaborated once at startup against an empty global environment.
+stockDefs :: [DefDecl]
+stockDefs =
+  [ DefDecl "not" (FuncTy BoolTy BoolTy) (Lam "p" (If (Var "p") Fls Tru)),
+    DefDecl "eq" (FuncTy BoolTy (FuncTy BoolTy BoolTy)) (Lam "p" (Lam "q" (If (Var "p") (Var "q") (Ap (Var "not") (TmArg (Var "q")))))),
+    DefDecl "and" (FuncTy BoolTy (FuncTy BoolTy BoolTy)) (Lam "p" (Lam "q" (If (Var "p") (Var "q") Fls))),
+    DefDecl "or" (FuncTy BoolTy (FuncTy BoolTy BoolTy)) (Lam "p" (Lam "q" (If (Var "p") Tru (Var "q")))),
+    DefDecl "nand" (FuncTy BoolTy (FuncTy BoolTy BoolTy)) (Lam "p" (Lam "q" (Ap (Var "not") (TmArg (Ap (Ap (Var "and") (TmArg (Var "p"))) (TmArg (Var "q"))))))),
+    DefDecl "twice" (FuncTy (FuncTy BoolTy BoolTy) (FuncTy BoolTy BoolTy)) (Lam "f" (Lam "x" (Ap (Var "f") (TmArg (Ap (Var "f") (TmArg (Var "x")))))))
+  ]
+
+data Decl = DefDecl' DefDecl | DataDecl' DataDecl
+
+elaborateDecl :: GlobalIndex -> Decl -> TypecheckM GlobalIndex
+elaborateDecl idx = \case
+  DefDecl' def -> elaborateDefDecl idx def
+  DataDecl' def -> elaborateDataDecl idx def
+
+stockGlobals :: GlobalIndex
+stockGlobals =
   either (error . show) id $
     fst $
       fst $
         runTypecheckM
-          ( elaborateDefinitions
-              [ DataDecl "Maybe" ["a"] [CnstrDecl "Nothing" [], CnstrDecl "Just" [TVar "a"]],
-                DataDecl "List" ["a"] [CnstrDecl "Nil" [], CnstrDecl "Cons" [TVar "a", AdtTy "List" [TVar "a"]]],
-                DataDecl "Tree" ["a"] [CnstrDecl "Leaf" [TVar "a"], CnstrDecl "Node" [AdtTy "Tree" [TVar "a"], AdtTy "Tree" [TVar "a"]]],
-                DataDecl "Nat" [] [CnstrDecl "Z" [], CnstrDecl "S" [AdtTy "Nat" []]],
-                DataDecl "Wrap" [] [CnstrDecl "MkWrap" [Forall "a" (TVar "a" `FuncTy` TVar "a")]],
-                DataDecl "Fn" [] [CnstrDecl "MkFn" [BoolTy `FuncTy` BoolTy]],
-                DataDecl "Rect" [] [CnstrDecl "Rect" [RecordTy [("x", NaturalTy), ("y", NaturalTy)]]]
-              ]
-          )
+          (foldM elaborateDecl emptyGlobals (fmap DataDecl' stockADTs <> fmap DefDecl' stockDefs))
           initMetas
           bootstrapEnv
 
@@ -817,43 +877,45 @@ data TypeCheckEnv = TypeCheckEnv
     localTypesSize :: Int,
     -- | Holes encountered during typechecking
     holes :: [SType],
-    -- | ADT Spec by Constructor Name
-    adtEnv :: AdtIndex
+    -- | The global environment: data types and term definitions.
+    globals :: GlobalIndex
   }
   deriving stock (Show, Eq, Ord)
 
 -- | The evaluator's environment. Carries two independent snoc lists: one for
 -- term variable bindings ('Value') and one for type variable bindings
--- ('VType'). The lengths track the current depth in each index space. Used both
--- as the top-level eval environment and captured inside closures.
+-- ('VType'), plus the global environment for resolving top-level references
+-- ('SDef'). The lengths track the current depth in each index space. Used
+-- both as the top-level eval environment and captured inside closures.
 data EvalEnv = EvalEnv
   { -- | Type variable bindings, indexed by de Bruijn index.
-    envTypes :: SnocList VType,
+    evalTypes :: SnocList VType,
     -- | Current type binding depth.
-    envTypesLen :: Int,
+    evalTypesLen :: Int,
     -- | Term variable bindings, indexed by de Bruijn index.
-    envValues :: SnocList Value,
+    evalValues :: SnocList Value,
     -- | Current term binding depth.
-    envValuesLen :: Int,
-    envAdtEnv :: AdtIndex
+    evalValuesLen :: Int,
+    -- | The global environment, for resolving top-level definitions.
+    evalGlobals :: GlobalIndex
   }
   deriving stock (Show, Eq, Ord)
 
 -- | Project the evaluator environment from the typechecker context. The
--- typechecker carries extra metadata (names, holes, ADT specs) that the
+-- typechecker carries extra metadata (names, holes, binding depth) that the
 -- evaluator does not need.
 toEvalEnv :: TypeCheckEnv -> EvalEnv
 toEvalEnv env =
   EvalEnv
-    { envTypes = env.localTypes,
-      envTypesLen = env.localTypesSize,
-      envValues = env.localValues,
-      envValuesLen = env.localValuesSize,
-      envAdtEnv = env.adtEnv
+    { evalTypes = env.localTypes,
+      evalTypesLen = env.localTypesSize,
+      evalValues = env.localValues,
+      evalValuesLen = env.localValuesSize,
+      evalGlobals = env.globals
     }
 
 initEnv :: TypeCheckEnv
-initEnv = TypeCheckEnv Nil [] 0 Nil [] 0 mempty stockADTs
+initEnv = TypeCheckEnv Nil [] 0 Nil [] 0 mempty stockGlobals
 
 extendLocalNames :: TypeCheckEnv -> Cell -> TypeCheckEnv
 extendLocalNames e@TypeCheckEnv {localValuesNames} cell = e {localValuesNames = cell : localValuesNames}
@@ -871,7 +933,7 @@ bindCell cell@Cell {..} TypeCheckEnv {..} =
       localTypesNames = localTypesNames,
       localTypesSize = localTypesSize,
       holes = holes,
-      adtEnv = adtEnv
+      globals = globals
     }
 
 resolveCell :: TypeCheckEnv -> Name -> Maybe Cell
@@ -896,7 +958,7 @@ bindTypeCell cell@TypeCell {..} TypeCheckEnv {..} =
       localTypesNames = cell : localTypesNames,
       localTypesSize = localTypesSize + 1,
       holes = holes,
-      adtEnv = adtEnv
+      globals = globals
     }
 
 -- | Run an action with a data type's parameters bound as fresh type
@@ -1186,7 +1248,7 @@ elaborateType = \case
     pure $ SRecordTy fields
   AdtTy nm tys -> do
     ctx <- ask
-    case Map.lookup nm ctx.adtEnv.byType of
+    case Map.lookup nm ctx.globals.byType of
       Nothing -> throwError (UnknownDataType nm)
       Just (_lvl, arity) -> do
         unless (length tys == arity) $
@@ -1258,7 +1320,13 @@ varTactic bndr = Synth $ do
       let cellVType = runEvalM (evalType zonkedCellType) (toEvalEnv ctx)
           quoted = flip runEvalM (toEvalEnv ctx) $ quote (Lvl ctx.localValuesSize, Lvl ctx.localTypesSize) cellVType cellValue
       pure (zonkedCellType, quoted)
-    Nothing -> throwError $ UnknownVariable bndr
+    Nothing ->
+      case Map.lookup bndr ctx.globals.byName of
+        Just lvl ->
+          case Map.lookup lvl ctx.globals.specs of
+            Just (Defn ty _val) -> pure (ty, SDef bndr)
+            _ -> throwError $ UnknownVariable bndr
+        _ -> throwError $ UnknownVariable bndr
 
 -- | Switch
 --
@@ -1425,9 +1493,9 @@ forallElim (Synth synth) surfTy = Synth $ do
       ctx <- ask
       let evalEnv = toEvalEnv ctx
           vArg = runEvalM (evalType surfTy) evalEnv
-          extEnv = evalEnv {envTypes = Snoc evalEnv.envTypes vArg, envTypesLen = evalEnv.envTypesLen + 1}
+          extEnv = evalEnv {evalTypes = Snoc evalEnv.evalTypes vArg, evalTypesLen = evalEnv.evalTypesLen + 1}
           resultVTy = runEvalM (evalType body) extEnv
-          resultSTy = runEvalM (quoteType (Lvl extEnv.envTypesLen) resultVTy) extEnv
+          resultSTy = runEvalM (quoteType (Lvl extEnv.evalTypesLen) resultVTy) extEnv
       pure (resultSTy, STyAp tm surfTy)
     _ -> throwError $ TypeError $ "Expected a forall type but got " <> show ty
 
@@ -1728,10 +1796,10 @@ adtIntro :: DtCnstrName -> [Check] -> Check
 adtIntro nm chks = Check $ \expectedTy -> do
   ctx <- ask
   let (returnTy, _) = decomposeFunction expectedTy
-  case lookupCnstr nm ctx.adtEnv of
+  case lookupCnstr nm ctx.globals of
     Nothing -> throwError (UnknownDataConstructor nm)
     Just (tyName, dtSpec) -> do
-      (_, arity) <- maybe (throwError (UnknownDataType tyName)) pure $ Map.lookup tyName ctx.adtEnv.byType
+      (_, arity) <- maybe (throwError (UnknownDataType tyName)) pure $ Map.lookup tyName ctx.globals.byType
       metas <- replicateM arity freshMeta
 
       let instTy = runEvalM (instantiateScheme dtSpec.cnstrType metas) (toEvalEnv ctx)
@@ -1758,7 +1826,7 @@ adtIntro nm chks = Check $ \expectedTy -> do
 -- each type argument in turn, and quotes the result back to an 'SType'.
 instantiateScheme :: SType -> [SType] -> EvalM SType
 instantiateScheme scheme tys = do
-  l <- asks envTypesLen
+  l <- asks evalTypesLen
   vtys <- traverse evalType tys
   vResult <- instantiateSchemeV scheme vtys
   quoteType (Lvl l) vResult
@@ -1831,15 +1899,15 @@ etaExpandCnstr n t = uncurry ($) $ go n (id, t)
 -- @Bool@ and the Cons body against @Bool -> List Bool -> Bool@.
 adtElim :: Synth -> [(DtCnstrName, Check)] -> Check
 adtElim scrut cases = Check $ \motive -> do
-  adtIndex <- asks adtEnv
+  globals <- asks globals
   (scrutTy, scrut') <- runSynth scrut
 
   -- Resolve the ADT name. With branches, any constructor names it (they're
   -- globally unique); with none, only the scrutinee can.
   (tyName, args) <- case cases of
-    ((cn, _) : _) -> case lookupCnstr cn adtIndex of
+    ((cn, _) : _) -> case lookupCnstr cn globals of
       Just (n, _) -> do
-        (_, arity) <- maybe (throwError (UnknownDataType n)) pure $ Map.lookup n adtIndex.byType
+        (_, arity) <- maybe (throwError (UnknownDataType n)) pure $ Map.lookup n globals.byType
         metas <- replicateM arity freshMeta
         pure (n, metas)
       Nothing -> throwError (UnknownDataConstructor cn)
@@ -1852,7 +1920,7 @@ adtElim scrut cases = Check $ \motive -> do
 
   ctx <- ask
 
-  case lookupType tyName adtIndex of
+  case lookupType tyName globals of
     Just dtSpec -> do
       let branchTypes = Map.fromList $ caseBranchTypes (toEvalEnv ctx) motive args dtSpec
           checks = Map.fromList cases
@@ -1912,14 +1980,14 @@ newtype EvalM a = EvalM {runEvalM :: EvalEnv -> a}
     via Reader EvalEnv
 
 -- | Evaluate a core 'SType' into 'VType' under the current
--- environment. Type variables are looked up in @envTypes@.
+-- environment. Type variables are looked up in @evalTypes@.
 -- @SForall@ captures the current environment in a 'VForall'
 -- closure, deferring substitution until the type is
 -- instantiated.
 evalType :: SType -> EvalM VType
 evalType = \case
   STVar (Ix ix) -> do
-    env <- asks envTypes
+    env <- asks evalTypes
     pure $ fromMaybe (error "internal error") $ nth env ix
   SForall body -> do
     env <- ask
@@ -1953,7 +2021,7 @@ evalType = \case
 eval :: Syntax -> EvalM Value
 eval = \case
   SVar (Ix ix) -> do
-    env <- asks envValues
+    env <- asks evalValues
     pure $ fromMaybe (error "internal error") $ nth env ix
   SLam bndr body -> do
     env <- ask
@@ -2006,6 +2074,14 @@ eval = \case
   SCase scrut mot patterns -> do
     mot' <- evalType mot
     doCase scrut mot' patterns
+  SDef nm -> do
+    globals <- asks evalGlobals
+    case Map.lookup nm globals.byName of
+      Just lvl ->
+        case Map.lookup lvl globals.specs of
+          Just (Defn _ value) -> pure value
+          _ -> error "internal error: unbound global reference"
+      Nothing -> error "internal error: unbound global reference"
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appTermClosure clo arg
@@ -2091,14 +2167,14 @@ doCase scrut mot patterns = do
 -- value and evaluating the body. Used for beta reduction at
 -- term lambdas.
 appTermClosure :: Closure Value Syntax -> Value -> EvalM Value
-appTermClosure (Closure env body) v = local (const $ env {envValues = Snoc env.envValues v}) $ eval body
+appTermClosure (Closure env body) v = local (const $ env {evalValues = Snoc env.evalValues v}) $ eval body
 
 -- | Instantiate a type closure by extending the type env with a
 -- type value and evaluating the type body. Used for @∀@
 -- instantiation in the type domain.
 appTypeClosure :: Closure VType SType -> VType -> EvalM VType
 appTypeClosure (Closure env body) v =
-  local (const $ env {envTypes = Snoc env.envTypes v, envTypesLen = env.envTypesLen + 1}) $
+  local (const $ env {evalTypes = Snoc env.evalTypes v, evalTypesLen = env.evalTypesLen + 1}) $
     evalType body
 
 -- | Instantiate a type-lambda closure by extending the type env
@@ -2107,7 +2183,7 @@ appTypeClosure (Closure env body) v =
 -- type argument).
 appTypeTermClosure :: Closure VType Syntax -> VType -> EvalM Value
 appTypeTermClosure (Closure env body) v =
-  local (const $ env {envTypes = Snoc env.envTypes v, envTypesLen = env.envTypesLen + 1}) $
+  local (const $ env {evalTypes = Snoc env.evalTypes v, evalTypesLen = env.evalTypesLen + 1}) $
     eval body
 
 --------------------------------------------------------------------------------
@@ -2175,8 +2251,8 @@ quote _ _ (VInteger z) = pure $ SInteger z
 quote _ _ (VReal r) = pure $ SReal r
 quote l ty (VRecord fields) = SRecord <$> traverse (traverse (quote l ty)) fields
 quote l (VAdtTy tyName vtys) (VCnstr nm args) = do
-  adtEnv <- asks envAdtEnv
-  case lookupCnstrInType tyName nm adtEnv of
+  globals <- asks evalGlobals
+  case lookupCnstrInType tyName nm globals of
     Just (Constr _ scheme) -> do
       instTy <- instantiateSchemeV scheme vtys
       let (_ret, fieldTys) = decomposeVFunc instTy
@@ -2220,7 +2296,7 @@ quoteFrame (l, tl) tm = \case
     mot' <- quoteType tl mot
     args' <- traverse (quoteType tl) args
     patterns' <- forM cases $ \(dtName, val) -> do
-      case lookupCnstrInType scrut dtName ctx.envAdtEnv of
+      case lookupCnstrInType scrut dtName ctx.evalGlobals of
         Just dtSpec -> do
           let (cnstrName, patTy) = constrBranchType ctx mot' args' dtSpec
           patTy' <- evalType patTy
@@ -2300,7 +2376,7 @@ run term =
    in case runTypecheckM action initMetas initEnv of
         ((Left err, holes), _metas) -> Left (err, holes)
         ((Right (type', syntax, holes), _unZonkedHoles), _metas) -> do
-          let evalEnv = EvalEnv Nil 0 Nil 0 stockADTs
+          let evalEnv = EvalEnv Nil 0 Nil 0 stockGlobals
               val = runEvalM (eval syntax) evalEnv
               type'' = runEvalM (evalType type') evalEnv
               result = runEvalM (quote (initLevel, initLevel) type'' val) evalEnv

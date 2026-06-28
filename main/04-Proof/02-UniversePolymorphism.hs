@@ -771,14 +771,15 @@ data TypeCheckEnv = TypeCheckEnv
   }
   deriving stock (Show, Eq, Ord)
 
--- | The evaluator's environment. A snoc list of variable bindings
--- and the current depth. Used as the top-level eval environment
--- and projected from the typechecker context.
+-- | The evaluator's environment. Snoc lists of term and level variable
+-- bindings with their depths, plus the data constructor table used when
+-- quoting cases. Used as the top-level eval environment and projected
+-- from the typechecker context.
 data EvalEnv = EvalEnv
   { -- | Variable bindings, indexed by de Bruijn index.
-    envValues :: SnocList Value,
+    evalValues :: SnocList Value,
     -- | Current term binding depth.
-    envValuesLen :: Int,
+    evalValuesLen :: Int,
     -- | Level variable bindings, indexed by level de
     -- Bruijn index. Separate from term bindings.
     envLevels :: SnocList VLevel,
@@ -790,13 +791,13 @@ data EvalEnv = EvalEnv
   deriving stock (Show, Eq, Ord)
 
 -- | Project the evaluator environment from the typechecker context. The
--- typechecker carries extra metadata (names, holes, ADT specs) that the
+-- typechecker carries extra metadata (names, holes, binding depth) that the
 -- evaluator does not need.
 toEvalEnv :: TypeCheckEnv -> EvalEnv
 toEvalEnv env =
   EvalEnv
-    { envValues = env.localValues,
-      envValuesLen = env.localValuesSize,
+    { evalValues = env.localValues,
+      evalValuesLen = env.localValuesSize,
       envLevels = env.localLevels,
       envLevelsLen = env.localLevelsSize,
       envAdtConstructors = env.adtConstructors
@@ -2353,7 +2354,7 @@ eval :: Syntax -> EvalM Value
 eval = \case
   -- Core
   SVar (Ix ix) -> do
-    env <- asks envValues
+    env <- asks evalValues
     pure $ fromMaybe (error "internal error") $ nth env ix
   SLam bndr body -> do
     env <- ask
@@ -2528,7 +2529,7 @@ doCase scrut patterns = do
 -- evaluating the body.
 appClosure :: Closure -> Value -> EvalM Value
 appClosure (Closure env body) v =
-  local (const $ env {envValues = Snoc env.envValues v, envValuesLen = env.envValuesLen + 1}) $ eval body
+  local (const $ env {evalValues = Snoc env.evalValues v, evalValuesLen = env.evalValuesLen + 1}) $ eval body
 
 appLevelClosure :: LevelClosure -> VLevel -> EvalM Value
 appLevelClosure (LevelClosure env body) l =
