@@ -32,7 +32,7 @@ want to include in your custom language in one place.
   - [X] System T
   - [X] Nominal Inductive Types
   - [X] Structural Iso-Recursive Types
-  - [ ] Equi-Recursive Types
+    - [ ] Equi-Recursive Types
   - [X] Recursion Principles
   - [ ] Subtyping
   - [ ] Row Polymorphism
