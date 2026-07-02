@@ -30,11 +30,10 @@ import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (Reader, ReaderT (..))
 import Control.Monad.Trans.Writer.Strict (WriterT (..))
 import Control.Monad.Writer.Strict (MonadWriter (..))
-import Data.Foldable (find)
+import Data.Foldable (find, foldrM)
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
-import Data.Scientific (Scientific)
 import Data.String
 import Data.These
 import FoundationSuite (CoreVocab (..), foundationSuite)
@@ -84,7 +83,9 @@ data Term
     -- variable in the codomain. Non-dependent functions use
     -- 'FuncTy' as sugar.
     Pi Name Term Term
-  | -- | Non-dependent function type. @A -> B@.
+  | -- | Non-dependent function type. @A -> B@. Sugar for
+    -- @Pi _ A B@ (a 'Pi' whose codomain ignores the bound
+    -- variable), elaborated through the Pi formation rules.
     FuncTy Term Term
   | -- | Level quantification. @forall l. A@. Binds a level
     -- variable in the body.
@@ -132,18 +133,6 @@ data Term
   | -- | Binary sum elimination. Binds a variable in each
     -- branch.
     SumCase Term (Name, Term) (Name, Term)
-  | -- | Natural number type. @Nat@. Subtype of 'IntegerTy'.
-    NaturalTy
-  | -- | Integer type. @Int@. Subtype of 'RealTy'.
-    IntegerTy
-  | -- | Real number type. @Real@. Top of the numeric tower.
-    RealTy
-  | -- | A natural number literal.
-    Natural Integer
-  | -- | An integer literal.
-    Integer Integer
-  | -- | A real number literal.
-    Real Scientific
   | -- | A record type: a list of named fields with their
     -- types.
     RecordTy [(Name, Term)]
@@ -276,12 +265,6 @@ prettyTerm p (SumCase scrut (ln, l) (rn, r)) =
         PP.<+> PP.pretty (getName rn)
         PP.<+> arrowSym
         PP.<+> prettyTerm lamPrec r
-prettyTerm _ NaturalTy = "Nat"
-prettyTerm _ IntegerTy = "Int"
-prettyTerm _ RealTy = "Real"
-prettyTerm _ (Natural n) = PP.pretty n
-prettyTerm _ (Integer n) = PP.pretty n
-prettyTerm _ (Real n) = PP.pretty (show n)
 prettyTerm _ (RecordTy fields) =
   PP.braces $
     PP.sep $
@@ -340,8 +323,6 @@ data Syntax
   | -- | Dependent function type. The body may reference the
     -- bound variable (index 0).
     SPi Name Syntax Syntax
-  | -- | Non-dependent function type. @A -> B@.
-    SFuncTy Syntax Syntax
   | -- | Level quantification. Binds a level variable (index
     -- 0 in the level namespace) in the body.
     SLevelPi Name Syntax
@@ -385,18 +366,6 @@ data Syntax
     SInR Syntax
   | -- | Case analysis on a sum type.
     SSumCase Syntax Syntax Syntax Syntax
-  | -- | Natural number type.
-    SNaturalTy
-  | -- | Integer type.
-    SIntegerTy
-  | -- | Real number type.
-    SRealTy
-  | -- | A natural number literal.
-    SNatural Integer
-  | -- | An integer literal.
-    SInteger Integer
-  | -- | A real number literal.
-    SReal Scientific
   | -- | Record type.
     SRecordTy [(Name, Syntax)]
   | -- | Record introduction. A list of named fields.
@@ -437,8 +406,6 @@ data Value
   | -- | Dependent function type. The closure computes the
     -- codomain given a value of the domain type.
     VPi Name Value Closure
-  | -- | Evaluated non-dependent function type.
-    VFuncTy Value Value
   | -- | Level quantification. The 'LevelClosure' computes
     -- the body type given a level argument.
     VLevelPi Name LevelClosure
@@ -469,18 +436,6 @@ data Value
     VInL Value
   | -- | Right injection value.
     VInR Value
-  | -- | Evaluated natural number type.
-    VNaturalTy
-  | -- | Evaluated integer type.
-    VIntegerTy
-  | -- | Evaluated real number type.
-    VRealTy
-  | -- | A natural number value.
-    VNatural Integer
-  | -- | An integer value.
-    VInteger Integer
-  | -- | A real number value.
-    VReal Scientific
   | -- | Evaluated record type.
     VRecordTy [(Name, Value)]
   | -- | An evaluated record.
@@ -929,8 +884,8 @@ synth = \case
   Univ l -> Synth $ do
     sl <- elaborateLevel l
     runSynth $ univFormation sl
-  -- Pi / Function
-  FuncTy a b -> funcTyFormationSynth (synth a) (synth b)
+  -- Pi / Function. @A -> B@ is sugar for @Pi _ A B@ (an unused binder).
+  FuncTy a b -> piFormationSynth "_" (synth a) (synth b)
   Pi nm a b -> piFormationSynth nm (synth a) (synth b)
   LevelPi nm body -> levelPiFormation nm (synth body)
   LevelAp f l -> levelApElim (synth f) l
@@ -948,10 +903,6 @@ synth = \case
   VoidTy -> voidFormation
   -- Sum
   SumTy a b -> sumFormationSynth (synth a) (synth b)
-  -- Numerics
-  NaturalTy -> natFormation
-  IntegerTy -> intFormation
-  RealTy -> realFormation
   -- Records
   RecordTy fields -> recordFormationSynth (fmap (fmap synth) fields)
   Get name tm -> recordElim name (synth tm)
@@ -992,8 +943,8 @@ check = \case
   Lam bndr body -> piIntro bndr (check body)
   Let bndr e body -> letTactic bndr (synth e) (check body)
   Hole -> holeTactic
-  -- Pi / Function
-  FuncTy a b -> funcTyFormationCheck (check a) (check b)
+  -- Pi / Function. @A -> B@ is sugar for @Pi _ A B@ (an unused binder).
+  FuncTy a b -> piFormationCheck "_" (check a) (check b)
   Pi nm a b -> piFormationCheck nm (check a) (check b)
   LevelLam bndr body -> levelLamIntro bndr (check body)
   -- Sigma / Pair
@@ -1013,10 +964,6 @@ check = \case
   InL tm1 -> sumIntroL (check tm1)
   InR tm2 -> sumIntroR (check tm2)
   SumCase scrut (bndr1, t1) (bndr2, t2) -> sumElim (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
-  -- Numerics
-  Natural n -> natIntro n
-  Integer z -> intIntro z
-  Real r -> realIntro r
   -- Records
   RecordTy fields -> recordFormationCheck (fmap (fmap check) fields)
   Record fields -> recordIntro (fmap (fmap (id &&& check)) fields)
@@ -1128,11 +1075,6 @@ annoTactic ty (Check bodyTac) = Synth $ do
 -- Γ ⊢ (λx.e) ⇐ A₁ → A₂
 piIntro :: Name -> Check -> Check
 piIntro bndr (Check bodyTac) = Check $ \case
-  VFuncTy a b -> do
-    ctx <- ask
-    let var = freshCell ctx bndr a
-    fiber <- local (bindCell var) $ bodyTac b
-    pure $ SLam bndr fiber
   VPi _ a clo -> do
     var <- asks $ \ctx -> freshCell ctx bndr a
     fiber <- local (bindCell var) $ do
@@ -1179,9 +1121,6 @@ piElim :: Synth -> Check -> Synth
 piElim (Synth funcTac) (Check argTac) =
   Synth $
     funcTac >>= \case
-      (a `VFuncTy` b, f) -> do
-        arg <- argTac a
-        pure (b, SAp f arg)
       (VPi _ a clo, f) -> do
         arg <- argTac a
         ctx <- asks toEvalEnv
@@ -1298,43 +1237,6 @@ piFormationCheck nm (Check domTac) (Check codTac) = Check $ \case
         var = freshCell ctx nm va
     sb <- local (bindCell var) $ codTac (VUniv k)
     pure (SPi nm sa sb)
-  ty ->
-    throwError $
-      TypeError $
-        "Expected a Type, but got: " <> show ty
-
--- | Function Type Formation Synth
---
--- Non-dependent function type. Synthesizes both components, extracts their
--- universe levels, and returns the maximum. Elaborates to @SFuncTy sa sb@.
---
---  Γ ⊢ A ⇒ Type n    Γ ⊢ B ⇒ Type m
---  ─────────────────────────────────── Arrow⇒
---       Γ ⊢ A → B ⇒ Type (max n m)
-funcTyFormationSynth :: Synth -> Synth -> Synth
-funcTyFormationSynth (Synth domTac) (Synth codTac) = Synth $ do
-  (domTy, sa) <- domTac
-  n <- expectUniv domTy
-  (codTy, sb) <- codTac
-  m <- expectUniv codTy
-  pure (VUniv (vlmax n m), SFuncTy sa sb)
-
--- | Function Type Formation Check
---
--- Non-dependent function type. The domain and codomain are both checked against
--- the goal universe level. Cumulativity ensures this accepts components at any
--- lower level. Elaborates to @SFuncTy sa sb@.
---
---  Γ ⊢ A ⇐ Type k    Γ ⊢ B ⇐ Type k
---  ─────────────────────────────────── Arrow⇐
---       Γ ⊢ A → B ⇐ Type k
-funcTyFormationCheck :: Check -> Check -> Check
-funcTyFormationCheck (Check domTac) (Check codTac) = Check $ \case
-  VUniv k -> do
-    sa <- domTac (VUniv k)
-    sb <- codTac (VUniv k)
-
-    pure (SFuncTy sa sb)
   ty ->
     throwError $
       TypeError $
@@ -1517,7 +1419,7 @@ boolFormation = Synth $ pure (VUniv (VLNat 0), SBoolTy)
 
 -- | Bool True Introduction
 --
--- Checked against 'BoolTy' (or a supertype via subtyping).
+-- Checked against 'BoolTy'.
 --
 -- ──────────────── True⇐
 -- Γ ⊢ True ⇐ Bool
@@ -1532,7 +1434,7 @@ boolIntroTrue = Check $ \case
 
 -- | Bool False Introduction
 --
--- Checked against 'BoolTy'. Elaborates to 'SFls' (or a supertype via subtyping).
+-- Checked against 'BoolTy'. Elaborates to 'SFls'.
 --
 -- ──────────────── False⇐
 -- Γ ⊢ False ⇐ Bool
@@ -1598,7 +1500,7 @@ unitFormation = Synth $ pure (VUniv (VLNat 0), SUnitTy)
 
 -- | Unit Introduction
 --
--- Verify the expected type is 'UnitTy' (or a supertype).
+-- Verify the expected type is 'UnitTy'.
 --
 -- ───────────── Unit⇐
 -- Γ ⊢ () ⇐ Unit
@@ -1715,81 +1617,14 @@ sumElim (Synth synth) (Check checkT1) (Check checkT2) = Check $ \motiv -> do
   (scrutTy, scrut) <- synth
   case scrutTy of
     VSumTy a b -> do
-      f <- checkT1 (VFuncTy a motiv)
-      g <- checkT2 (VFuncTy b motiv)
+      ctx <- ask
+      let fTy = runEvalM (vArrow a motiv) (toEvalEnv ctx)
+          gTy = runEvalM (vArrow b motiv) (toEvalEnv ctx)
+      f <- checkT1 fTy
+      g <- checkT2 gTy
       motiv <- quoteValue (VUniv (VLNat 0)) motiv
       pure $ SSumCase scrut motiv f g
     _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
-
--- | Natural Type Formation
---
--- ─────────────────── Nat⇒
--- Γ ⊢ Nat ⇒ Type 0
-natFormation :: Synth
-natFormation = Synth $ pure (VUniv (VLNat 0), SNaturalTy)
-
--- | Integer Type Formation
---
--- ─────────────────── Int⇒
--- Γ ⊢ Int ⇒ Type 0
-intFormation :: Synth
-intFormation = Synth $ pure (VUniv (VLNat 0), SIntegerTy)
-
--- | Real Type Formation
---
--- ────────────────── Real⇒
--- Γ ⊢ Real ⇒ Type 0
-realFormation :: Synth
-realFormation = Synth $ pure (VUniv (VLNat 0), SRealTy)
-
--- | Natural Introduction
---
--- Checked against 'NaturalTy' (or a supertype via subtyping, e.g. 'IntegerTy'
--- or 'RealTy'). Validates that the literal is non-negative.
---
--- ───────── ℕ⇐
--- Γ ⊢ n ⇐ ℕ
-natIntro :: Integer -> Check
-natIntro n = Check $ \case
-  VNaturalTy ->
-    if n >= 0
-      then pure (SNatural n)
-      else throwError $ TypeError "Naturals must be greater then or equal to zero."
-  ty -> do
-    ok <- checkSubtype VNaturalTy ty
-    if ok
-      then pure (SNatural n)
-      else throwError $ TypeError $ "'Natural' cannot be a subtype of '" <> show ty <> "'"
-
--- | Integer Introduction
---
--- Checked against 'IntegerTy' (or a supertype via subtyping, e.g. 'RealTy').
---
--- ──────── ℤ⇐
--- Γ ⊢ z ⇐  ℤ
-intIntro :: Integer -> Check
-intIntro z = Check $ \case
-  VIntegerTy -> pure (SInteger z)
-  ty -> do
-    ok <- checkSubtype VIntegerTy ty
-    if ok
-      then pure (SInteger z)
-      else throwError $ TypeError $ "'Integer' cannot be a subtype of '" <> show ty <> "'"
-
--- | Real Introduction
---
--- Checked against 'RealTy' (or a supertype via subtyping).
---
--- ───────── ℝ⇐
--- Γ ⊢ r ⇐ ℝ
-realIntro :: Scientific -> Check
-realIntro r = Check $ \case
-  VRealTy -> pure (SReal r)
-  ty -> do
-    ok <- checkSubtype VRealTy ty
-    if ok
-      then pure (SReal r)
-      else throwError $ TypeError $ "'Real' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Record Type Formation Synth
 --
@@ -1955,7 +1790,9 @@ adtFormationCheck nm tys = Check $ \case
 --   ⇐ Tₘ₊₁[ā] → ... → Tₙ[ā] → T ā
 adtIntro :: Name -> [Check] -> Check
 adtIntro nm chks = Check $ \expectedTy -> do
-  let (returnTy, _) = decomposeFunction expectedTy
+  ctx <- ask
+  let lvl = Lvl ctx.localValuesSize
+      (returnTy, _) = runEvalM (decomposeFunction lvl expectedTy) (toEvalEnv ctx)
   case returnTy of
     VAdtTy tyName tys ->
       lookupDataTypeSpec nm $ \(DataTypeSpec _ arity _) -> do
@@ -1969,9 +1806,8 @@ adtIntro nm chks = Check $ \expectedTy -> do
                 <> " type arguments but got "
                 <> show (length tys)
         lookupDataCnstrSpec nm $ \dataConstrSpec -> do
-          ctx <- ask
-          let constrTy = buildConstrType (toEvalEnv ctx) tyName tys dataConstrSpec
-              (_returnTy, paramTys) = decomposeFunction constrTy
+          let constrTy = runEvalM (buildConstrType tyName tys dataConstrSpec) (toEvalEnv ctx)
+              (_returnTy, paramTys) = runEvalM (decomposeFunction lvl constrTy) (toEvalEnv ctx)
           when (length chks > length paramTys) $
             throwError $
               TypeError $
@@ -2041,19 +1877,29 @@ adtElim scrut cases = Check $ \motive -> do
         pure $ SCase scrut' cases'
     ty -> throwError $ TypeError $ "Expected an ADT type but got: " <> show ty
 
--- | Build a function type from a 'DataConstructorSpec'
-buildConstrType :: EvalEnv -> Name -> [Value] -> DataConstructorSpec -> Value
-buildConstrType _ tyName tys (Constr _nm []) = VAdtTy tyName tys
-buildConstrType ctx tyName tys (Constr nm (Term x : xs)) =
-  let vx = runEvalM (eval x) ctx
-   in VFuncTy vx $ buildConstrType ctx tyName tys (Constr nm xs)
-buildConstrType ctx tyName tys (Constr nm (Rec : xs)) = VFuncTy (VAdtTy tyName tys) $ buildConstrType ctx tyName tys (Constr nm xs)
-buildConstrType ctx tyName tys (Constr nm (TyParam n : xs)) = VFuncTy (tys !! n) $ buildConstrType ctx tyName tys (Constr nm xs)
+-- | Build a constructor's type from a 'DataConstructorSpec'. Each field spec
+-- becomes the domain of a non-dependent function arrow, ending in the data
+-- type applied to its arguments. The arrows are built with 'vArrow', so the
+-- result is a chain of 'VPi's with unused binders.
+buildConstrType :: Name -> [Value] -> DataConstructorSpec -> EvalM Value
+buildConstrType tyName tys (Constr _nm args) = do
+  doms <- traverse argDomain args
+  foldrM vArrow (VAdtTy tyName tys) doms
+  where
+    argDomain (Term x) = eval x
+    argDomain Rec = pure (VAdtTy tyName tys)
+    argDomain (TyParam n) = pure (tys !! n)
 
--- | Decompose a function into its return type and a list of its args.
-decomposeFunction :: Value -> (Value, [Value])
-decomposeFunction (VFuncTy a b) = (a :) <$> decomposeFunction b
-decomposeFunction ty = (ty, [])
+-- | Decompose a function into its return type and a list of its args. Each
+-- 'VPi' is instantiated at a fresh variable to reach the codomain. For the
+-- non-dependent arrows built here the codomain ignores the argument, so the
+-- fresh variable is harmless.
+decomposeFunction :: Lvl Value -> Value -> EvalM (Value, [Value])
+decomposeFunction l (VPi _ dom cod) = do
+  rest <- appClosure cod (VNeutral dom (Neutral (VVar l) Nil))
+  (ret, doms) <- decomposeFunction (incLevel l) rest
+  pure (ret, dom : doms)
+decomposeFunction _ ty = pure (ty, [])
 
 -- | Eta Expand around a data constructor.
 etaExpandCnstr :: Int -> Syntax -> Syntax
@@ -2069,34 +1915,31 @@ mkEliminator ctx motiveTy (DataTypeSpec tyName _airity specs) tys =
 
 mkConstrEliminator :: EvalEnv -> Name -> [Value] -> Value -> DataConstructorSpec -> (Name, Value)
 mkConstrEliminator ctx tyName tys motiveTy (Constr nm args) =
-  ( nm,
-    foldr
-      ( flip $ \acc -> \case
-          Term ty -> VFuncTy (runEvalM (eval ty) ctx) acc
-          Rec -> VAdtTy tyName tys `VFuncTy` acc
-          TyParam ix -> (tys !! ix) `VFuncTy` acc
-      )
-      motiveTy
-      args
-  )
+  let build = do
+        doms <- traverse argDomain args
+        foldrM vArrow motiveTy doms
+      argDomain (Term ty) = eval ty
+      argDomain Rec = pure (VAdtTy tyName tys)
+      argDomain (TyParam ix) = pure (tys !! ix)
+   in (nm, runEvalM build ctx)
 
 --------------------------------------------------------------------------------
 -- Subsumption
 --
--- Subsumption is the mechanism that connects subtyping to typechecking. The sub
+-- Subsumption is the mechanism that connects synthesis to checking. The sub
 -- tactic (used in 'check') synthesizes a type for a term and then verifies
 -- that the synthesized type is a subtype of the expected type. If it is, the
 -- term passes through unchanged.
 --
 -- This is subsumptive (not coercive) subtyping: no conversion term is inserted
--- during elaboration. It works because all our subtypes share the same runtime
--- representation (e.g., a natural literal is already a valid integer literal).
--- A coercive system would need to wrap the term in a conversion function when
--- the representations differ (e.g., Peano nats to machine integers).
+-- during elaboration. The only base axiom is universe cumulativity: @Type n@
+-- is a subtype of @Type m@ when @n <= m@, and a term at the lower universe is
+-- already valid at the higher one with no change to its representation.
 --
--- The subtyping judgment itself is defined by 'isSubtypeOf' below, with
--- dedicated tactics for records (width and depth) and functions
--- (contravariant in the domain, covariant in the codomain).
+-- The subtyping judgment itself is defined by 'isSubtypeOf' below. Cumulativity
+-- is lifted through functions (contravariant in the domain, covariant in the
+-- codomain) and dependent pairs (covariant in both). Every other former falls
+-- through to definitional equality via 'equateValue'.
 
 -- | The subtyping relationship T₁ <: T₂ can be read as "T₁ is a subtype of T₂".
 -- It can be understood as stating that anywhere a T₂ can be used, we can use a
@@ -2110,7 +1953,6 @@ isSubtypeOf l (VPi _ a1 clo1) (VPi _ a2 clo2) = do
   cod2 <- appClosure clo2 x
   codOk <- isSubtypeOf (incLevel l) cod1 cod2
   pure (domOk && codOk)
-isSubtypeOf l s@VFuncTy {} t@VFuncTy {} = functionSubtype l s t
 isSubtypeOf l (VSigma _ a1 clo1) (VSigma _ a2 clo2) = do
   fstOk <- isSubtypeOf l a1 a2
   let x = VNeutral a1 $ Neutral (VVar l) Nil
@@ -2118,10 +1960,6 @@ isSubtypeOf l (VSigma _ a1 clo1) (VSigma _ a2 clo2) = do
   b2 <- appClosure clo2 x
   sndOk <- isSubtypeOf (incLevel l) b1 b2
   pure (fstOk && sndOk)
-isSubtypeOf _ VNaturalTy VIntegerTy = pure True
-isSubtypeOf _ VNaturalTy VRealTy = pure True
-isSubtypeOf _ VIntegerTy VRealTy = pure True
-isSubtypeOf l s@VRecordTy {} t@VRecordTy {} = recordSubtype l s t
 isSubtypeOf l (VNeutral _ n1) (VNeutral _ n2) = equateNeutral l n1 n2
 isSubtypeOf l s t = equateValue l s t
 
@@ -2191,10 +2029,6 @@ equateValue l (VPi _ a1 clo1) (VPi _ a2 clo2) = do
   b2 <- appClosure clo2 x
   bOk <- equateValue (incLevel l) b1 b2
   pure (aOk && bOk)
-equateValue l (VFuncTy a1 b1) (VFuncTy a2 b2) = do
-  aOk <- equateValue l a1 a2
-  bOk <- equateValue l b1 b2
-  pure (aOk && bOk)
 equateValue l (VSigma _ a1 clo1) (VSigma _ a2 clo2) = do
   aOk <- equateValue l a1 a2
   let x = VNeutral a1 $ Neutral (VVar l) Nil
@@ -2222,12 +2056,6 @@ equateValue l (VSumTy a1 b1) (VSumTy a2 b2) = do
   pure (aOk && bOk)
 equateValue l (VInL a1) (VInL a2) = equateValue l a1 a2
 equateValue l (VInR b1) (VInR b2) = equateValue l b1 b2
-equateValue _ VNaturalTy VNaturalTy = pure True
-equateValue _ VIntegerTy VIntegerTy = pure True
-equateValue _ VRealTy VRealTy = pure True
-equateValue _ (VNatural a) (VNatural b) = pure (a == b)
-equateValue _ (VInteger a) (VInteger b) = pure (a == b)
-equateValue _ (VReal a) (VReal b) = pure (a == b)
 equateValue l (VRecordTy fs1) (VRecordTy fs2) =
   allM
     ( \((n1, t1), (n2, t2)) ->
@@ -2253,73 +2081,6 @@ equateValue l (VCnstr n1 as1) (VCnstr n2 as2) =
     then allM (uncurry (equateValue l)) (zip as1 as2)
     else pure False
 equateValue _ _ _ = pure False
-
--- | Function Subtyping
---
--- A subtype of T₁ → T₂ is any type S₁ → S₂ such that T₁ <: S₁ and S₂ <: T₂.
---
--- For example:
---
--- (ℤ → ℕ) <: (ℕ → ℤ)
---
--- These feels backwards at first glance, but the received parameter T₁/S₁ is
--- contravariant. This reverses the subtyping relationship.
---
--- Another way of stating the example above is that you can replace a function ℕ
--- → ℤ with a function ℤ → ℕ.
---
--- This works because any ℕ you would have applied to the supertype function is
--- also an ℤ which can also be applied to the subtype function.
---
--- Likewise the ℕ produced by the subtype function is also a ℤ and thus
--- satisfies the super type's return param.
---
--- Thus our typing rule for function subtyping is:
---
--- T₁ <: S₁  S₂ <: T₂
--- ────────────────── Func-Sub
--- S₁ → S₂ <: T₁ → T₂
-functionSubtype :: Lvl Value -> Value -> Value -> EvalM Bool
-functionSubtype l (s1 `VFuncTy` s2) (t1 `VFuncTy` t2) = do
-  domOk <- isSubtypeOf l t1 s1
-  codOk <- isSubtypeOf l s2 t2
-  pure (domOk && codOk)
-functionSubtype _ _ _ = error "impossible case in functionSubtype"
-
--- | Record Depth Subtyping
---
--- Any field of a record can be replaced by its subtype. Since any operation
--- supported for a field in the supertype is supported for its subtype, any
--- operation feasible on the record supertype is supported by the record
--- subtype.
---
--- For example:
---
--- { foo : ℕ } <: { foo : ℤ }
---
--- We can write our typing rule as:
---
---              Sᵢ <: Tᵢ (i ∈ 1..n)
--- ──────────────────────────────────────────────── RecordDepth
--- { lᵢ : Sᵢ (i ∈ I..n) } <: { lᵢ : Tᵢ (i ∈ I..n) }
---
--- Record width subtyping falls out of 'Map.isSubmapOfBy': the expected record's
--- keys must be a subset of the actual record's keys, so extra fields in the
--- actual record are ignored.
---
--- { foo :: Nat, bar :: Bool } <: { foo :: Nat }
-recordSubtype :: Lvl Value -> Value -> Value -> EvalM Bool
-recordSubtype l (VRecordTy s) (VRecordTy t) = do
-  let s' = Map.fromList s
-      t' = Map.fromList t
-  allM
-    ( \(k, tv) ->
-        case Map.lookup k s' of
-          Nothing -> pure False
-          Just sv -> isSubtypeOf l sv tv
-    )
-    (Map.toList t')
-recordSubtype _ _ _ = error "impossible case in recordSubtype"
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -2373,10 +2134,6 @@ eval = \case
     env <- ask
     a <- eval a
     pure $ VPi nm a $ Closure env b
-  SFuncTy t1 t2 -> do
-    t1 <- eval t1
-    t2 <- eval t2
-    pure $ VFuncTy t1 t2
   SLevelPi nm sa -> do
     env <- ask
     pure $ VLevelPi nm $ LevelClosure env sa
@@ -2432,13 +2189,6 @@ eval = \case
     t2' <- eval t2
     t3' <- eval t3
     doSumCase t1' motive t2' t3'
-  -- Numerics
-  SNaturalTy -> pure VNaturalTy
-  SIntegerTy -> pure VIntegerTy
-  SRealTy -> pure VRealTy
-  SNatural n -> pure $ VNatural n
-  SInteger z -> pure $ VInteger z
-  SReal r -> pure $ VReal r
   -- Records
   SRecordTy fields -> do
     fields <- forM fields $ \(nm, ty) -> (nm,) <$> eval ty
@@ -2454,7 +2204,6 @@ eval = \case
 
 doApply :: Value -> Value -> EvalM Value
 doApply (VLam _ clo) arg = appClosure clo arg
-doApply (VNeutral (VFuncTy ty1 ty2) neu) arg = pure $ VNeutral ty2 (pushFrame neu (VApp ty1 arg))
 doApply (VNeutral (VPi _ a clo) neu) arg = do
   fiber <- appClosure clo arg
   pure $ VNeutral fiber (pushFrame neu (VApp a arg))
@@ -2480,7 +2229,9 @@ doSumCase (VInL v) _motive f _ = doApply f v
 doSumCase (VInR v) _motive _ g = doApply g v
 doSumCase (VNeutral (VSumTy a b) neu) motive f g = do
   motive <- eval motive
-  pure $ VNeutral motive (pushFrame neu (VSumCase (VFuncTy a motive) (VFuncTy b motive) motive f g))
+  tyF <- vArrow a motive
+  tyG <- vArrow b motive
+  pure $ VNeutral motive (pushFrame neu (VSumCase tyF tyG motive f g))
 doSumCase _ _ _ _ = error "impossible case in doSumCase"
 
 doSumAbsurd :: Value -> Syntax -> EvalM Value
@@ -2553,10 +2304,10 @@ evalLevel (SLOmega n) = pure (VLOmega n)
 --
 -- Key cases dispatch on the type:
 --
--- 1. At 'VFuncTy' or 'VPi': eta-expand. Generate a fresh
---    variable at the domain type, apply the value to it, quote
---    the result at the codomain. For 'VPi' the codomain comes
---    from instantiating the closure. Produces 'SLam'.
+-- 1. At 'VPi': eta-expand. Generate a fresh variable at the
+--    domain type, apply the value to it, quote the result at
+--    the codomain. The codomain comes from instantiating the
+--    closure. Produces 'SLam'.
 -- 2. At 'VPairTy' or 'VSigma': quote each component at its
 --    type. For 'VSigma' the second component's type comes from
 --    instantiating the closure with the first component.
@@ -2588,15 +2339,6 @@ quote l ll = \cases
       fiber <- appClosure clo v
       doApply f v >>= quote l' ll fiber
     pure $ SLam "_" b
-  (VFuncTy ty1 ty2) (VLam bndr clo@(Closure _env _body)) -> do
-    body <- bindVar ty1 l $ \v l' -> do
-      clo <- appClosure clo v
-      quote l' ll ty2 clo
-    pure $ SLam bndr body
-  (VFuncTy ty1 ty2) f -> do
-    body <- bindVar ty1 l $ \v l' ->
-      doApply f v >>= quote l' ll ty2
-    pure $ SLam "_" body
   (VLevelPi _nm clo) (VLevelLam bndr body) -> do
     b <- bindLevelVar ll $ \lv ll' -> do
       fiber <- appLevelClosure clo lv
@@ -2632,10 +2374,6 @@ quote l ll = \cases
   -- Sum
   (VSumTy a _b) (VInL tm) -> SInL <$> quote l ll a tm
   (VSumTy _a b) (VInR tm) -> SInR <$> quote l ll b tm
-  -- Numerics
-  _ (VNatural n) -> pure $ SNatural n
-  _ (VInteger z) -> pure $ SInteger z
-  _ (VReal r) -> pure $ SReal r
   -- Records
   (VRecordTy fieldTys) (VRecord fields) ->
     SRecord
@@ -2653,8 +2391,8 @@ quote l ll = \cases
       Just (DataTypeSpec _ _ specs) ->
         case find (\(Constr cnm _) -> cnm == nm) specs of
           Just spec -> do
-            let constrTy = buildConstrType ctx tyName tys spec
-                (_, argTys) = decomposeFunction constrTy
+            constrTy <- buildConstrType tyName tys spec
+            (_, argTys) <- decomposeFunction l constrTy
             SCnstr nm <$> zipWithM (quote l ll) argTys args
           Nothing -> error "impossible: constructor not in spec"
       Nothing -> error "impossible: constructor not in ADT map"
@@ -2666,10 +2404,6 @@ quote l ll = \cases
       fiber <- appClosure clo v
       quote l' ll (VUniv (VLNat 0)) fiber
     pure $ SPi nm a' b'
-  _ (VFuncTy t1 t2) -> do
-    t1 <- quote l ll (VUniv (VLNat 0)) t1
-    t2 <- quote l ll (VUniv (VLNat 0)) t2
-    pure $ SFuncTy t1 t2
   _ (VSigma bndr a clo) -> do
     a' <- quote l ll (VUniv (VLNat 0)) a
     b <- bindVar a l $ \v l' -> do
@@ -2687,9 +2421,6 @@ quote l ll = \cases
     t1 <- quote l ll (VUniv (VLNat 0)) t1
     t2 <- quote l ll (VUniv (VLNat 0)) t2
     pure $ SSumTy t1 t2
-  _ VNaturalTy -> pure SNaturalTy
-  _ VIntegerTy -> pure SIntegerTy
-  _ VRealTy -> pure SRealTy
   _ (VRecordTy fields) -> do
     fields <- forM fields (traverse $ quote l ll (VUniv (VLNat 0)))
     pure $ SRecordTy fields
@@ -2698,6 +2429,22 @@ quote l ll = \cases
     pure $ SAdtTy nm tys
   -- Catch-all
   ty tm -> error $ "impossible case in quote:\n" <> show ty <> "\n" <> show tm
+
+-- | Build the non-dependent function type @dom -> cod@ as a 'VPi' with an
+-- unused binder. Since 'cod' is already a value, we quote it back one level
+-- deeper (under the binder) so the closure reproduces it when applied. The
+-- level namespace depth is unchanged, since no level variable is bound.
+vArrow :: Value -> Value -> EvalM Value
+vArrow dom cod = do
+  env <- ask
+  -- quote the codomain at term depth + 1 (under the unused binder)
+  codS <-
+    quote
+      (incLevel (Lvl env.evalValuesLen))
+      (Lvl env.envLevelsLen)
+      (VUniv (VLNat 0))
+      cod
+  pure $ VPi "_" dom (Closure env codS)
 
 quoteLvl :: Lvl vsort -> Lvl vsort -> Ix ssort
 quoteLvl (Lvl l) (Lvl x) = Ix (l - (x + 1))
@@ -3050,21 +2797,21 @@ main = do
     test
       "dependent pair: (Bool, if fst then Nat else Unit)"
       ( Anno
-          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
-          (Pair Tru (Natural 42))
+          (Sigma "b" BoolTy (If (Var "b") BoolTy UnitTy))
+          (Pair Tru Fls)
       )
       ( Anno
-          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
-          (Pair Tru (Natural 42))
+          (Sigma "b" BoolTy (If (Var "b") BoolTy UnitTy))
+          (Pair Tru Fls)
       )
     test
       "dependent pair: false branch"
       ( Anno
-          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
+          (Sigma "b" BoolTy (If (Var "b") BoolTy UnitTy))
           (Pair Fls Unit)
       )
       ( Anno
-          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
+          (Sigma "b" BoolTy (If (Var "b") BoolTy UnitTy))
           (Pair Fls Unit)
       )
     test
@@ -3093,20 +2840,20 @@ main = do
       ( Ap
           ( Ap
               ( Anno
-                  (Pi "b" BoolTy (FuncTy (If (Var "b") NaturalTy UnitTy) (If (Var "b") NaturalTy UnitTy)))
+                  (Pi "b" BoolTy (FuncTy (If (Var "b") BoolTy UnitTy) (If (Var "b") BoolTy UnitTy)))
                   (Lam "b" (Lam "x" (Var "x")))
               )
               Tru
           )
-          (Anno NaturalTy (Natural 7))
+          (Anno BoolTy Tru)
       )
-      (Anno NaturalTy (Natural 7))
+      (Anno BoolTy Tru)
     test
       "type-level if: false branch"
       ( Ap
           ( Ap
               ( Anno
-                  (Pi "b" BoolTy (FuncTy (If (Var "b") NaturalTy UnitTy) (If (Var "b") NaturalTy UnitTy)))
+                  (Pi "b" BoolTy (FuncTy (If (Var "b") BoolTy UnitTy) (If (Var "b") BoolTy UnitTy)))
                   (Lam "b" (Lam "x" (Var "x")))
               )
               Fls
@@ -3137,21 +2884,6 @@ main = do
           )
       )
       (Anno BoolTy Tru)
-
-    -- Subtyping
-    section "Subtyping"
-    test
-      "Nat as Int"
-      (Anno IntegerTy (Natural 5))
-      (Anno IntegerTy (Natural 5))
-    test
-      "Nat as Real"
-      (Anno RealTy (Natural 5))
-      (Anno RealTy (Natural 5))
-    test
-      "Int as Real"
-      (Anno RealTy (Integer 42))
-      (Anno RealTy (Integer 42))
 
     -- Universe polymorphism
     section "Universe Polymorphism"

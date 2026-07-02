@@ -53,7 +53,6 @@ import Data.Functor ((<&>))
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
-import Data.Scientific (Scientific)
 import Data.String
 import Data.These
 import FoundationSuite (CoreVocab (..), foundationSuite)
@@ -143,18 +142,6 @@ data Term
   | -- | Binary sum elimination. Binds a variable in each
     -- branch.
     SumCase Term (Name, Term) (Name, Term)
-  | -- | Natural number type. @Nat@. Subtype of 'IntegerTy'.
-    NaturalTy
-  | -- | Integer type. @Int@. Subtype of 'RealTy'.
-    IntegerTy
-  | -- | Real number type. @Real@. Top of the numeric tower.
-    RealTy
-  | -- | A natural number literal.
-    Natural Integer
-  | -- | An integer literal.
-    Integer Integer
-  | -- | A real number literal.
-    Real Scientific
   | -- | A record type: a list of named fields with their
     -- types.
     RecordTy [(Name, Term)]
@@ -270,12 +257,6 @@ prettyTerm p (SumCase scrut (ln, l) (rn, r)) =
         PP.<+> PP.pretty (getName rn)
         PP.<+> arrowSym
         PP.<+> prettyTerm lamPrec r
-prettyTerm _ NaturalTy = "Nat"
-prettyTerm _ IntegerTy = "Int"
-prettyTerm _ RealTy = "Real"
-prettyTerm _ (Natural n) = PP.pretty n
-prettyTerm _ (Integer n) = PP.pretty n
-prettyTerm _ (Real n) = PP.pretty (show n)
 prettyTerm _ (RecordTy fields) =
   PP.braces $
     PP.sep $
@@ -369,18 +350,6 @@ data Syntax
     SInR Syntax
   | -- | Case analysis on a sum type.
     SSumCase Syntax Syntax Syntax Syntax
-  | -- | Natural number type.
-    SNaturalTy
-  | -- | Integer type.
-    SIntegerTy
-  | -- | Real number type.
-    SRealTy
-  | -- | A natural number literal.
-    SNatural Integer
-  | -- | An integer literal.
-    SInteger Integer
-  | -- | A real number literal.
-    SReal Scientific
   | -- | Record type.
     SRecordTy [(Name, Syntax)]
   | -- | Record introduction. A list of named fields.
@@ -446,18 +415,6 @@ data Value
     VInL Value
   | -- | Right injection value.
     VInR Value
-  | -- | Evaluated natural number type.
-    VNaturalTy
-  | -- | Evaluated integer type.
-    VIntegerTy
-  | -- | Evaluated real number type.
-    VRealTy
-  | -- | A natural number value.
-    VNatural Integer
-  | -- | An integer value.
-    VInteger Integer
-  | -- | A real number value.
-    VReal Scientific
   | -- | Evaluated record type.
     VRecordTy [(Name, Value)]
   | -- | An evaluated record.
@@ -951,10 +908,6 @@ synth = \case
   VoidTy -> voidFormation
   -- Sum
   SumTy a b -> sumFormationSynth (synth a) (synth b)
-  -- Numerics
-  NaturalTy -> natFormation
-  IntegerTy -> intFormation
-  RealTy -> realFormation
   -- Records
   RecordTy fields -> recordFormationSynth (fmap (fmap synth) fields)
   Get name tm -> recordElim name (synth tm)
@@ -989,10 +942,6 @@ check = \case
   InL tm1 -> sumIntroL (check tm1)
   InR tm2 -> sumIntroR (check tm2)
   SumCase scrut (bndr1, t1) (bndr2, t2) -> sumElim (synth scrut) (check (Lam bndr1 t1)) (check (Lam bndr2 t2))
-  -- Numerics
-  Natural n -> natIntro n
-  Integer z -> intIntro z
-  Real r -> realIntro r
   -- Records
   RecordTy fields -> recordFormationCheck (fmap (fmap check) fields)
   Record fields -> recordIntro (fmap (fmap (id &&& check)) fields)
@@ -1382,7 +1331,7 @@ boolFormation = Synth $ pure (VUniv 0, SBoolTy)
 
 -- | Bool True Introduction
 --
--- Checked against 'BoolTy' (or a supertype via subtyping).
+-- Checked against 'BoolTy'.
 --
 -- ──────────────── True⇐
 -- Γ ⊢ True ⇐ Bool
@@ -1397,7 +1346,7 @@ boolIntroTrue = Check $ \case
 
 -- | Bool False Introduction
 --
--- Checked against 'BoolTy'. Elaborates to 'SFls' (or a supertype via subtyping).
+-- Checked against 'BoolTy'. Elaborates to 'SFls'.
 --
 -- ──────────────── False⇐
 -- Γ ⊢ False ⇐ Bool
@@ -1463,7 +1412,7 @@ unitFormation = Synth $ pure (VUniv 0, SUnitTy)
 
 -- | Unit Introduction
 --
--- Verify the expected type is 'UnitTy' (or a supertype).
+-- Verify the expected type is 'UnitTy'.
 --
 -- ───────────── Unit⇐
 -- Γ ⊢ () ⇐ Unit
@@ -1588,76 +1537,6 @@ sumElim (Synth synth) (Check checkT1) (Check checkT2) = Check $ \motiv -> do
       motiv <- quoteValue (VUniv 0) motiv
       pure $ SSumCase scrut motiv f g
     _ -> throwError $ TypeError $ "Expected a Sum type but got: " <> show scrutTy
-
--- | Natural Type Formation
---
--- ─────────────────── Nat⇒
--- Γ ⊢ Nat ⇒ Type 0
-natFormation :: Synth
-natFormation = Synth $ pure (VUniv 0, SNaturalTy)
-
--- | Integer Type Formation
---
--- ─────────────────── Int⇒
--- Γ ⊢ Int ⇒ Type 0
-intFormation :: Synth
-intFormation = Synth $ pure (VUniv 0, SIntegerTy)
-
--- | Real Type Formation
---
--- ────────────────── Real⇒
--- Γ ⊢ Real ⇒ Type 0
-realFormation :: Synth
-realFormation = Synth $ pure (VUniv 0, SRealTy)
-
--- | Natural Introduction
---
--- Checked against 'NaturalTy' (or a supertype via subtyping, e.g. 'IntegerTy'
--- or 'RealTy'). Validates that the literal is non-negative.
---
--- ───────── ℕ⇐
--- Γ ⊢ n ⇐ ℕ
-natIntro :: Integer -> Check
-natIntro n = Check $ \case
-  VNaturalTy ->
-    if n >= 0
-      then pure (SNatural n)
-      else throwError $ TypeError "Naturals must be greater then or equal to zero."
-  ty -> do
-    ok <- checkSubtype VNaturalTy ty
-    if ok
-      then pure (SNatural n)
-      else throwError $ TypeError $ "'Natural' cannot be a subtype of '" <> show ty <> "'"
-
--- | Integer Introduction
---
--- Checked against 'IntegerTy' (or a supertype via subtyping, e.g. 'RealTy').
---
--- ──────── ℤ⇐
--- Γ ⊢ z ⇐  ℤ
-intIntro :: Integer -> Check
-intIntro z = Check $ \case
-  VIntegerTy -> pure (SInteger z)
-  ty -> do
-    ok <- checkSubtype VIntegerTy ty
-    if ok
-      then pure (SInteger z)
-      else throwError $ TypeError $ "'Integer' cannot be a subtype of '" <> show ty <> "'"
-
--- | Real Introduction
---
--- Checked against 'RealTy' (or a supertype via subtyping).
---
--- ───────── ℝ⇐
--- Γ ⊢ r ⇐ ℝ
-realIntro :: Scientific -> Check
-realIntro r = Check $ \case
-  VRealTy -> pure (SReal r)
-  ty -> do
-    ok <- checkSubtype VRealTy ty
-    if ok
-      then pure (SReal r)
-      else throwError $ TypeError $ "'Real' cannot be a subtype of '" <> show ty <> "'"
 
 -- | Record Type Formation Synth
 --
@@ -1949,20 +1828,20 @@ caseBranchTypes evalEnv motive tys (DataTypeSpec _ _ specs) =
 --------------------------------------------------------------------------------
 -- Subsumption
 --
--- Subsumption is the mechanism that connects subtyping to typechecking. The sub
+-- Subsumption is the mechanism that connects synthesis to checking. The sub
 -- tactic (used in 'check') synthesizes a type for a term and then verifies
 -- that the synthesized type is a subtype of the expected type. If it is, the
 -- term passes through unchanged.
 --
 -- This is subsumptive (not coercive) subtyping: no conversion term is inserted
--- during elaboration. It works because all our subtypes share the same runtime
--- representation (e.g., a natural literal is already a valid integer literal).
--- A coercive system would need to wrap the term in a conversion function when
--- the representations differ (e.g., Peano nats to machine integers).
+-- during elaboration. The only base axiom is universe cumulativity: @Type n@
+-- is a subtype of @Type m@ when @n <= m@, and a term at the lower universe is
+-- already valid at the higher one with no change to its representation.
 --
--- The subtyping judgment itself is defined by 'isSubtypeOf' below, with
--- dedicated tactics for records (width and depth) and functions
--- (contravariant in the domain, covariant in the codomain).
+-- The subtyping judgment itself is defined by 'isSubtypeOf' below. Cumulativity
+-- is lifted through functions (contravariant in the domain, covariant in the
+-- codomain) and dependent pairs (covariant in both). Every other former falls
+-- through to definitional equality via 'equateValue'.
 
 -- | The subtyping relationship T₁ <: T₂ can be read as "T₁ is a subtype of T₂".
 -- It can be understood as stating that anywhere a T₂ can be used, we can use a
@@ -1983,10 +1862,6 @@ isSubtypeOf l (VSigma _ a1 clo1) (VSigma _ a2 clo2) = do
   b2 <- appClosure clo2 x
   sndOk <- isSubtypeOf (incLevel l) b1 b2
   pure (fstOk && sndOk)
-isSubtypeOf _ VNaturalTy VIntegerTy = pure True
-isSubtypeOf _ VNaturalTy VRealTy = pure True
-isSubtypeOf _ VIntegerTy VRealTy = pure True
-isSubtypeOf l s@VRecordTy {} t@VRecordTy {} = recordSubtype l s t
 isSubtypeOf l (VNeutral _ n1) (VNeutral _ n2) = equateNeutral l n1 n2
 isSubtypeOf l s t = equateValue l s t
 
@@ -2083,12 +1958,6 @@ equateValue l (VSumTy a1 b1) (VSumTy a2 b2) = do
   pure (aOk && bOk)
 equateValue l (VInL a1) (VInL a2) = equateValue l a1 a2
 equateValue l (VInR b1) (VInR b2) = equateValue l b1 b2
-equateValue _ VNaturalTy VNaturalTy = pure True
-equateValue _ VIntegerTy VIntegerTy = pure True
-equateValue _ VRealTy VRealTy = pure True
-equateValue _ (VNatural a) (VNatural b) = pure (a == b)
-equateValue _ (VInteger a) (VInteger b) = pure (a == b)
-equateValue _ (VReal a) (VReal b) = pure (a == b)
 equateValue l (VRecordTy fs1) (VRecordTy fs2) =
   allM
     ( \((n1, t1), (n2, t2)) ->
@@ -2114,41 +1983,6 @@ equateValue l (VCnstr n1 as1) (VCnstr n2 as2) =
     then allM (uncurry (equateValue l)) (zip as1 as2)
     else pure False
 equateValue _ _ _ = pure False
-
--- | Record Depth Subtyping
---
--- Any field of a record can be replaced by its subtype. Since any operation
--- supported for a field in the supertype is supported for its subtype, any
--- operation feasible on the record supertype is supported by the record
--- subtype.
---
--- For example:
---
--- { foo : ℕ } <: { foo : ℤ }
---
--- We can write our typing rule as:
---
---              Sᵢ <: Tᵢ (i ∈ 1..n)
--- ──────────────────────────────────────────────── RecordDepth
--- { lᵢ : Sᵢ (i ∈ I..n) } <: { lᵢ : Tᵢ (i ∈ I..n) }
---
--- Record width subtyping falls out of 'Map.isSubmapOfBy': the expected record's
--- keys must be a subset of the actual record's keys, so extra fields in the
--- actual record are ignored.
---
--- { foo :: Nat, bar :: Bool } <: { foo :: Nat }
-recordSubtype :: Lvl -> Value -> Value -> EvalM Bool
-recordSubtype l (VRecordTy s) (VRecordTy t) = do
-  let s' = Map.fromList s
-      t' = Map.fromList t
-  allM
-    ( \(k, tv) ->
-        case Map.lookup k s' of
-          Nothing -> pure False
-          Just sv -> isSubtypeOf l sv tv
-    )
-    (Map.toList t')
-recordSubtype _ _ _ = error "impossible case in recordSubtype"
 
 --------------------------------------------------------------------------------
 -- Evaluator
@@ -2247,13 +2081,6 @@ eval = \case
     t2' <- eval t2
     t3' <- eval t3
     doSumCase t1' motive t2' t3'
-  -- Numerics
-  SNaturalTy -> pure VNaturalTy
-  SIntegerTy -> pure VIntegerTy
-  SRealTy -> pure VRealTy
-  SNatural n -> pure $ VNatural n
-  SInteger z -> pure $ VInteger z
-  SReal r -> pure $ VReal r
   -- Records
   SRecordTy fields -> do
     fields <- forM fields $ \(nm, ty) -> (nm,) <$> eval ty
@@ -2402,10 +2229,6 @@ quote l = \cases
   -- Sum
   (VSumTy a _b) (VInL tm) -> SInL <$> quote l a tm
   (VSumTy _a b) (VInR tm) -> SInR <$> quote l b tm
-  -- Numerics
-  _ (VNatural n) -> pure $ SNatural n
-  _ (VInteger z) -> pure $ SInteger z
-  _ (VReal r) -> pure $ SReal r
   -- Records
   (VRecordTy fieldTys) (VRecord fields) ->
     SRecord
@@ -2451,9 +2274,6 @@ quote l = \cases
     t1 <- quote l (VUniv 0) t1
     t2 <- quote l (VUniv 0) t2
     pure $ SSumTy t1 t2
-  _ VNaturalTy -> pure SNaturalTy
-  _ VIntegerTy -> pure SIntegerTy
-  _ VRealTy -> pure SRealTy
   _ (VRecordTy fields) -> do
     fields <- forM fields (traverse $ quote l (VUniv 0))
     pure $ SRecordTy fields
@@ -2838,21 +2658,21 @@ main = do
     test
       "dependent pair: (Bool, if fst then Nat else Unit)"
       ( Anno
-          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
-          (Pair Tru (Natural 42))
+          (Sigma "b" BoolTy (If (Var "b") BoolTy UnitTy))
+          (Pair Tru Fls)
       )
       ( Anno
-          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
-          (Pair Tru (Natural 42))
+          (Sigma "b" BoolTy (If (Var "b") BoolTy UnitTy))
+          (Pair Tru Fls)
       )
     test
       "dependent pair: false branch"
       ( Anno
-          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
+          (Sigma "b" BoolTy (If (Var "b") BoolTy UnitTy))
           (Pair Fls Unit)
       )
       ( Anno
-          (Sigma "b" BoolTy (If (Var "b") NaturalTy UnitTy))
+          (Sigma "b" BoolTy (If (Var "b") BoolTy UnitTy))
           (Pair Fls Unit)
       )
     test
@@ -2881,20 +2701,20 @@ main = do
       ( Ap
           ( Ap
               ( Anno
-                  (Pi "b" BoolTy (FuncTy (If (Var "b") NaturalTy UnitTy) (If (Var "b") NaturalTy UnitTy)))
+                  (Pi "b" BoolTy (FuncTy (If (Var "b") BoolTy UnitTy) (If (Var "b") BoolTy UnitTy)))
                   (Lam "b" (Lam "x" (Var "x")))
               )
               Tru
           )
-          (Anno NaturalTy (Natural 7))
+          (Anno BoolTy Tru)
       )
-      (Anno NaturalTy (Natural 7))
+      (Anno BoolTy Tru)
     test
       "type-level if: false branch"
       ( Ap
           ( Ap
               ( Anno
-                  (Pi "b" BoolTy (FuncTy (If (Var "b") NaturalTy UnitTy) (If (Var "b") NaturalTy UnitTy)))
+                  (Pi "b" BoolTy (FuncTy (If (Var "b") BoolTy UnitTy) (If (Var "b") BoolTy UnitTy)))
                   (Lam "b" (Lam "x" (Var "x")))
               )
               Fls
@@ -2925,18 +2745,3 @@ main = do
           )
       )
       (Anno BoolTy Tru)
-
-    -- Subtyping
-    section "Subtyping"
-    test
-      "Nat as Int"
-      (Anno IntegerTy (Natural 5))
-      (Anno IntegerTy (Natural 5))
-    test
-      "Nat as Real"
-      (Anno RealTy (Natural 5))
-      (Anno RealTy (Natural 5))
-    test
-      "Int as Real"
-      (Anno RealTy (Integer 42))
-      (Anno RealTy (Integer 42))
